@@ -1,0 +1,38 @@
+:root {
+  --color-rock: #737065;
+  --color-ink: #1c1a17;
+  --color-paper: #f4f1ea;
+  --font-text: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-rock);
+  color: var(--color-paper);
+  font-family: var(--font-text);
+  overflow: hidden;
+}
+
+#scene {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#text-layers {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
