@@ -1,10 +1,10 @@
 # Dependencies
 node_modules
 
-# Build output
+# Build output (root-level only — bare `build` would also match data/build/)
 dist
 dist-ssr
-build
+/build
 .next
 .nuxt
 .output
@@ -27,6 +27,7 @@ data/source/dem.tif
 data/source/ortho-tiles/
 data/source/ortho.png
 data/source/ortho.jpg
+data/source/ortho.json
 data/source/mdt02/
 *.tif
 *.tiff
