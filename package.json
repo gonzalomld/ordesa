@@ -4,12 +4,15 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=24 <25"
+    "node": ">=22.16"
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npx tsx scripts/verify.ts && vite build",
     "build:dev": "vite build --mode development",
+    "data": "npx tsx scripts/00-fetch-gpx.ts && npx tsx scripts/01-fetch-dem.ts && npx tsx scripts/02-fetch-ortho.ts && npx tsx scripts/03-build-heightmap.ts && npx tsx scripts/04-build-texture.ts && npx tsx scripts/05-build-route.ts",
+    "verify": "npx tsx scripts/verify.ts",
+    "doctor": "npx tsx scripts/doctor.ts",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -24,6 +27,7 @@
     "geotiff": "^2.1.3",
     "globals": "^15.9.0",
     "sharp": "^0.34.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.0.1",
     "vite": "^6.3.4"

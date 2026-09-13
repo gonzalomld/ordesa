@@ -3,6 +3,7 @@
   --color-ink: #1c1a17;
   --color-paper: #f4f1ea;
   --font-text: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
 * {
@@ -17,7 +18,7 @@ body {
 }
 
 body {
-  background: var(--color-rock);
+  background: #0e141b;
   color: var(--color-paper);
   font-family: var(--font-text);
   overflow: hidden;
@@ -35,4 +36,86 @@ body {
   position: fixed;
   inset: 0;
   pointer-events: none;
+}
+
+.hud {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 240px;
+  padding: 12px 14px;
+  font-size: 12px;
+  background: rgb(10 12 14 / 55%);
+  border: 1px solid rgb(244 241 234 / 18%);
+  border-radius: 8px;
+  backdrop-filter: blur(6px);
+}
+
+.hud-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hud-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.hud-readout {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud input[type="range"] {
+  width: 100%;
+}
+
+.hud-row {
+  display: flex;
+  gap: 6px;
+}
+
+.hud-btn {
+  flex: 1;
+  padding: 4px 6px;
+  font-size: 11px;
+  color: var(--color-paper);
+  background: transparent;
+  border: 1px solid rgb(244 241 234 / 30%);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.hud-btn.active {
+  background: rgb(244 241 234 / 20%);
+}
+
+.hud-status {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 12px;
+  background: rgb(10 12 14 / 60%);
+  border-radius: 6px;
+}
+
+.fatal {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  padding: 12px;
+  background: #5c1a1a;
+  border-radius: 8px;
+  font-size: 14px;
 }

@@ -1,25 +1,11 @@
-// Puerta fase 1: canvas pintando un color plano. Sin motor 3D hasta que el
-// build y la previsualización estén en verde sin React.
+// Phase-1 viewer entry. No narrative, no scroll — orbit over real terrain.
+import { startViewer } from "./engine/viewer.ts";
+
 const canvas = document.getElementById("scene") as HTMLCanvasElement;
-
-function resize(): void {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-}
-
-resize();
-window.addEventListener("resize", resize);
-
-const gl = canvas.getContext("webgl");
-
-if (gl) {
-  // Gris caliza de Ordesa como color plano provisional.
-  gl.clearColor(0.45, 0.43, 0.4, 1.0);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-} else {
-  const ctx = canvas.getContext("2d");
-  if (ctx) {
-    ctx.fillStyle = "#737065";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  }
-}
+startViewer(canvas).catch((err) => {
+  console.error(err);
+  const d = document.createElement("div");
+  d.className = "fatal";
+  d.textContent = `No se pudo cargar el visor: ${err instanceof Error ? err.message : err}`;
+  document.body.appendChild(d);
+});

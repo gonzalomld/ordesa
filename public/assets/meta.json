@@ -1,0 +1,26 @@
+{
+  "crs": "EPSG:25830",
+  "bbox": {
+    "minx": 738240,
+    "miny": 4722700,
+    "maxx": 749040,
+    "maxy": 4730880
+  },
+  "width": 2160,
+  "height": 1636,
+  "resX": 5,
+  "resY": 5,
+  "originX": 738240,
+  "originY": 4730880,
+  "minZ": 1107,
+  "maxZ": 3347,
+  "maxPixel": {
+    "col": 2079,
+    "row": 325,
+    "z": 3347,
+    "x": 748637.5,
+    "y": 4729252.5
+  },
+  "encoding": "v = round(elev - minZ); R = v >> 8; G = v & 255; B = 0",
+  "generatedAt": "2026-09-13T20:44:01.470Z"
+}

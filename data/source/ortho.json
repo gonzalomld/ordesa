@@ -1,0 +1,16 @@
+{
+  "crs": "EPSG:25830",
+  "bbox": {
+    "minx": 738240,
+    "miny": 4722700,
+    "maxx": 749040,
+    "maxy": 4730880
+  },
+  "widthPx": 8192,
+  "heightPx": 6205,
+  "metersPerPxX": 1.318359375,
+  "metersPerPxY": 1.3182917002417405,
+  "tilesNx": 4,
+  "tilesNy": 4,
+  "source": "WMS https://www.ign.es/wms-inspire/pnoa-ma layer OI.OrthoimageCoverage"
+}

@@ -11,7 +11,7 @@
 
 - Ningún valor que cambie por frame (posición de cámara, progreso de scroll, tiempo) se guarda en estado reactivo ni dispara re-render de nada. El bucle de render es dueño de sus propios datos y escribe en el DOM solo cuando un valor visible para el usuario cambia de verdad.
 - Stack: Vite + vanilla TS + three.js (ES module) + Lenis. No React, no Tailwind, no CSS frameworks. Custom properties in `src/styles/`.
-- Node: `>=24 <25` (`.nvmrc` + `engines`). Package manager: npm (`package-lock.json`; never switch, never mix lockfiles). Native TS (`node scripts/*.ts`) + native `fetch`. No tsx/axios/node-fetch.
+- Node: dev 22.16 (Vibes env limit), Vercel prod 24.x (panel, do NOT touch). Safe direction: code running on 22 runs on 24. `engines: >=22.16` (open range: no local EBADENGINE, Vercel resolves to latest). `.nvmrc` = local reality (24 when env allows: then set `.nvmrc` 24, `engines` 24.x, drop tsx). Pipeline via tsx (`npx tsx scripts/*.ts`) + native `fetch`. No axios/node-fetch. Never switch package manager (npm + `package-lock.json`).
 - Geo: work CRS EPSG:25830. BBOX `738240,4722700 → 749040,4730880` lives in ONE place: `scripts/geo-constants.ts` (source) → `data/build/meta.json` (generated). Front reads `meta.json` only; `verify` cross-checks meta vs geo-constants.
 - Data flow: `npm run data` = local only, never CI. Versioned in git: `data/build/meta.json`, `public/assets/heightmap.png`, `public/assets/terrain-*.webp`, `public/assets/route.json`, `data/source/*.gpx`. Gitignored: `data/source/dem.tif`, ortho tiles/mosaic, `data/source/mdt02/`. `verify` checks versioned artefacts, no network — safe in `build`.
 - Deps for pipeline: `geotiff` (read WCS Int16 + tags) + `sharp` (tiles/mosaic/resize/heightmap PNG/WebP). Nothing else.
