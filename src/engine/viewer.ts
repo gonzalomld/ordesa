@@ -171,7 +171,23 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   const nightBg = new THREE.Color(0x05070f);
   let skyCap: SkyCapture | null = null;
 
-  let hour = boot.t ? Number(boot.t.split(":")[0]) + Number(boot.t.split(":")[1] ?? 0) / 60 : 8.7;
+  function parseHourParam(raw: string | null): number | null {
+    if (raw === null || raw.trim() === "") return null;
+    const s = raw.trim();
+    if (s.includes(":")) {
+      const [hs, ms] = s.split(":");
+      const h = Number(hs);
+      const m = Number(ms ?? 0);
+      if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+      return h + m / 60;
+    }
+    const v = Number(s);
+    return Number.isFinite(v) ? v : null;
+  }
+  const parsedHour = parseHourParam(boot.t);
+  let hour = parsedHour === null ? 8.7 : Math.min(17.5, Math.max(6.5, parsedHour));
+  // T1: user cloud multiplier 0..1 (default 1), applied outside applyLighting
+  let cloudUser = boot.clouds;
   metrics.time = hhmm(hour);
   metrics.cam = boot.cam ?? "general";
 
@@ -223,6 +239,24 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     routeDim = 1 - L.nightMix * 0.3;
     sunDirV.copy(dir);
     cloudDensity = L.cloudDensity;
+    // A1: model-only diagnostics (never framebuffer reads, never opinions).
+    // zenithHex = rough uniform-based estimate of the Preetham zenith
+    // (bluer with elevation, paler with rayleigh — directionally right,
+    // identical with/without clouds by construction, which is the point:
+    // if the model commands blue but the screen looks white, the veil is
+    // clouds/fog, not the sky). fog10km = pure distance term of the
+    // height-fog shader at 10 km (height term excluded).
+    {
+      const ray = L.rayleigh;
+      const elevF = Math.max(0, Math.min(1, sp.elevationDeg / 60));
+      const zr = Math.round(Math.min(255, Math.max(0, 255 * (0.12 + 0.1 * elevF + 0.05 * ray))));
+      const zg = Math.round(Math.min(255, Math.max(0, 255 * (0.32 + 0.22 * elevF))));
+      const zb = Math.round(Math.min(255, Math.max(0, 255 * (0.62 + 0.2 * elevF - 0.08 * ray))));
+      metrics.zenithHex = `#${zr.toString(16).padStart(2, "0")}${zg.toString(16).padStart(2, "0")}${zb.toString(16).padStart(2, "0")}`;
+      const dfog = fogUniforms.uFogDensity.value as number;
+      const df10 = 1 - Math.exp(-Math.pow(10000 / 9000, 2));
+      metrics.fog10km = Math.min(1, Math.max(0, df10 * (0.2 + 0.55 * dfog)));
+    }
     skyCap?.refresh();
   }
 
@@ -579,6 +613,20 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
     metrics.time = hhmm(hour);
     applyLighting(hour);
   });
+  // T1.2: live cloud-density multiplier (0..1), next to the hour slider.
+  // Writes cloudUser only — no reload, no applyLighting, no time touch.
+  const cloudLab = el("div", "hud-label", `nubes ${Math.round(cloudUser * 100)} %`);
+  const cloudIn = document.createElement("input");
+  cloudIn.type = "range";
+  cloudIn.min = "0";
+  cloudIn.max = "1";
+  cloudIn.step = "0.01";
+  cloudIn.value = String(cloudUser);
+  cloudIn.setAttribute("aria-label", "densidad de nubes");
+  cloudIn.addEventListener("input", () => {
+    cloudUser = Number(cloudIn.value);
+    cloudLab.textContent = `nubes ${Math.round(cloudUser * 100)} %`;
+  });
   const nLab = el("div", "hud-label", "detalle del normal map");
   const nIn = document.createElement("input");
   nIn.type = "range";
@@ -622,7 +670,7 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
     });
     lodRow.appendChild(b);
   }
-  hud.append(timeLab, time, nLab, nIn, tLab, tIn, lodRow);
+  hud.append(timeLab, time, cloudLab, cloudIn, nLab, nIn, tLab, tIn, lodRow);
   document.body.appendChild(hud);
 
   gate.setProgress(1, 5);
@@ -657,11 +705,19 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
     const t = telemetryAt(route, sCur);
     const sp = sunPosition(hour);
     driveTelemetry(cells, lastTele, t, hhmm(hour), sp.elevationDeg);
-    clouds.setDensity(cloudDensity, sunDirV);
-    clouds.update(clock.elapsedTime, camera, renderer.domElement.width, renderer.domElement.height);
-    metrics.cloudCoverage = clouds.getCoverage();
-    // S1e hard cap: clouds never cover more than ~25% of the screen.
-    clouds.setCap(clouds.getCoverage() > 0.25);
+    // T1.1: real draw cut, not alpha 0 — group off ⇒ zero cloud cost.
+    const effCloud = cloudDensity * cloudUser;
+    if (effCloud <= 0.001) {
+      clouds.group.visible = false;
+      metrics.cloudCoverage = 0;
+    } else {
+      clouds.group.visible = true;
+      clouds.setDensity(effCloud, sunDirV);
+      clouds.update(clock.elapsedTime, camera, renderer.domElement.width, renderer.domElement.height);
+      metrics.cloudCoverage = clouds.getCoverage();
+      // S1e hard cap: clouds never cover more than ~25% of the screen.
+      clouds.setCap(clouds.getCoverage() > 0.25);
+    }
     line.setDim(routeDim);
     const t1 = performance.now();
     if (shadowNeedsUpdate) {

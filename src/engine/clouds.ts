@@ -182,6 +182,7 @@ export function buildClouds(
       uniforms.uCap.value = on ? 0.45 : 1;
     },
     update(time, camera, vw, vh) {
+      if (!group.visible) return; // T1.1: cut group ⇒ skip CPU work too
       uniforms.uTime.value = time;
       if ((tick++ % 6) !== 0 || vw <= 0 || vh <= 0) return;
       const persp = camera as THREE.PerspectiveCamera;

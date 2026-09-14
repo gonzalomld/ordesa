@@ -17,6 +17,8 @@ export interface Metrics {
   jsLabels: number;
   fps: number;
   cloudCoverage: number;
+  zenithHex: string; // A1: sky-model zenith colour (computed, not read)
+  fog10km: number; // A1: fog factor at 10 km with the live formula
   drawCalls: number;
   triangles: number;
   maxTextureSize: number;
@@ -27,12 +29,19 @@ export interface Metrics {
   cam: string;
 }
 
-export function parseBootQuery(): { debug: boolean; t: string | null; cam: string | null } {
+export function parseBootQuery(): { debug: boolean; t: string | null; cam: string | null; clouds: number } {
   const q = new URLSearchParams(location.search);
+  const rawClouds = q.get("clouds");
+  let clouds = 1;
+  if (rawClouds !== null && rawClouds !== "") {
+    const v = Number(rawClouds);
+    clouds = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
+  }
   return {
     debug: q.get("debug") === "1",
     t: q.get("t"),
     cam: q.get("cam"),
+    clouds,
   };
 }
 
@@ -47,6 +56,8 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     jsLabels: 0,
     fps: 0,
     cloudCoverage: 0,
+    zenithHex: "#000000",
+    fog10km: 0,
     drawCalls: 0,
     triangles: 0,
     maxTextureSize: 0,
@@ -73,7 +84,7 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
       `frame ${metrics.msFrame.toFixed(1)} ms (${metrics.fps.toFixed(0)} fps) · js terr ${metrics.jsTerrain.toFixed(1)} · js etiq ${metrics.jsLabels.toFixed(1)}\n` +
       `gpu terr ${gpu(metrics.msTerrain)} · nub ${gpu(metrics.msClouds)} · cobertura ${(metrics.cloudCoverage * 100).toFixed(0)}%\n` +
       `calls ${metrics.drawCalls} · tris ${(metrics.triangles / 1e6).toFixed(2)}M · maxTex ${metrics.maxTextureSize} · dpr ${metrics.dpr} · lod ${metrics.lod} · ${metrics.texLevel}\n` +
-      `${metrics.time} · cam ${metrics.cam}`;
+      `${metrics.time} · cam ${metrics.cam} · cenit ${metrics.zenithHex} · niebla10km ${metrics.fog10km.toFixed(2)}`;
     if (s !== last) {
       last = s;
       el.textContent = s;
