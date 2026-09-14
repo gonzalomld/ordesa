@@ -262,7 +262,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       const dfog = fogUniforms.uFogDensity.value as number;
       const x10 = 10000 / 9000;
       const df10 = 1 - Math.exp(-x10 * x10 * x10 * x10 * 3.4);
-      metrics.fog10km = Math.min(1, Math.max(0, df10 * (0.35 + 0.55 * dfog)));
+      metrics.fog10km = Math.min(1, Math.max(0, df10 * (0.45 + 0.55 * dfog)));
     }
     skyCap?.refresh();
   }
@@ -415,8 +415,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uNormalMap2"] = normalUniform;
         s.uniforms["uNormalStrength"] = normalStrength;
         s.uniforms["uRock"] = rockUniform;
-        s.uniforms["uTriStart"] = triStart;
-        s.uniforms["uTriScale"] = triScale;
+        s.uniforms["uWallDeg"] = wallDeg;
         s.uniforms["uRockWeight"] = rockWeight;
         s.uniforms["uHasCorr"] = hasCorr;
         s.uniforms["uHasNormal"] = hasNormal;
@@ -430,7 +429,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
             "#include <common>",
             `#include <common>
 uniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNormalStrength; varying vec3 vUv2c;
-uniform sampler2D uRock; uniform float uTriStart; uniform float uTriScale; uniform float uRockWeight;
+uniform sampler2D uRock; uniform float uWallDeg; uniform float uRockWeight;
 uniform float uHasCorr; uniform float uHasNormal; uniform float uHasRock;
 varying vec3 vWPos2; varying vec3 vWNormal2;
 float gSteep = 0.0; // V1: lateral weight shared with the normal-map block below
@@ -447,8 +446,12 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
   // (world XZ/Y in metres, tile 38 m repeat, mirrored to hide seams).
   // V1.2: uTriScale preset so the blend is ~1.0 on >60° faces; uRockWeight
   // (HUD) scales it 0..1 for separate calibration.
+  // V2-steep: normalised degree-space blend. smoothstep output is 0..1 BY
+  // CONSTRUCTION, so no pow-on-a-tiny-number and no magic scale — stable for
+  // ANY slider position 20°..60°. Threshold means what the label says.
   vec3 wn2 = normalize(vWNormal2);
-  float rawSteep = pow(clamp((1.0 - wn2.y - uTriStart) * uTriScale, 0.0, 1.0), 6.0);
+  float slopeDeg = degrees(acos(clamp(wn2.y, 0.0, 1.0)));
+  float rawSteep = smoothstep(uWallDeg, uWallDeg + 15.0, slopeDeg);
   gRaw = rawSteep;
   float steep = rawSteep * uHasRock * uRockWeight;
   gSteep = steep;
@@ -484,8 +487,10 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
           );
         if (boot.steep) {
           // Steep weight map: R = raw geometry, G = effective, B = rock.
-          // Appended AFTER every other chunk so nothing downstream can
-          // overwrite it; replaces the final opaque output.
+          // Written at dithering_fragment (LAST chunk in this three version:
+          // opaque → tonemapping → colorspace → fog → dithering), so fog,
+          // tonemapping and colorspace cannot wash the map. Fog stays ON for
+          // the normal pass — it is simply overwritten here.
           const prevSteep = terrainMat.onBeforeCompile.bind(terrainMat);
           terrainMat.onBeforeCompile = (s2: {
             uniforms: Record<string, unknown>;
@@ -494,9 +499,9 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
           }) => {
             prevSteep(s2);
             s2.fragmentShader = s2.fragmentShader.replace(
-              "#include <opaque_fragment>",
-              `#include <opaque_fragment>
-gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), uHasRock, 1.0);`,
+              "#include <dithering_fragment>",
+              `gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), uHasRock, 1.0);
+#include <dithering_fragment>`,
             );
           };
         }
@@ -513,10 +518,10 @@ gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), uHasRock, 1.
   const normalStrength = { value: 1.0 };
   // R1: selective triplanar — rock tile projected laterally on steep faces.
   const rockUniform = { value: null as THREE.Texture | null };
-  // V1.2: full lateral weight reached at ~60° faces (was 1/120 → ~0.3 at 70°,
-  // which left the stretched zenithal ortho in charge).
-  const triStart = { value: 1 - Math.cos((30 * Math.PI) / 180) };
-  const triScale = { value: 1 / 26 };
+  // V2-steep: threshold in literal degrees (matches the HUD label); the old
+  // triStart/triScale pair + pow(…,6) on a pre-scaled value is gone — it
+  // evaluated to ~1e-9 on vertical walls so the branch never ran.
+  const wallDeg = { value: 30 };
   const rockWeight = { value: 1.0 };
   const hasCorr = { value: 0 };
   const hasNormal = { value: 0 };
@@ -686,9 +691,7 @@ gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), uHasRock, 1.
   nIn.addEventListener("input", () => {
     normalStrength.value = Number(nIn.value);
   });
-  // R1 calibration: slope threshold where lateral rock projection kicks in
-  // (S5: walls above 60° are the max-effect zone, but stretch already shows
-  // on 35-45° ledges — default 30°, blend exponent 6 stays narrow)
+  // V2-steep: threshold in literal degrees — the label means what it says.
   const tLab = el("div", "hud-label", "pared desde 30°");
   const tIn = document.createElement("input");
   tIn.type = "range";
@@ -700,7 +703,7 @@ gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), uHasRock, 1.
   tIn.addEventListener("input", () => {
     const deg = Number(tIn.value);
     tLab.textContent = `pared desde ${deg}°`;
-    triStart.value = 1 - Math.cos((deg * Math.PI) / 180);
+    wallDeg.value = deg;
   });
   // V1.5: separate rock-weight control (0..1) — threshold and weight
   // calibrate independently instead of blind.
@@ -734,6 +737,10 @@ gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), uHasRock, 1.
     lodRow.appendChild(b);
   }
   hud.append(timeLab, time, cloudLab, cloudIn, nLab, nIn, tLab, tIn, wLab, wIn, lodRow);
+  if (boot.steep) {
+    // steep-map legend, kept with the tool (stays in the project).
+    hud.append(el("div", "hud-label", "mapa: R = peso geo · G = efectivo · B = roca"));
+  }
   document.body.appendChild(hud);
 
   gate.setProgress(1, 5);

@@ -61,7 +61,7 @@ float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
   // k=3.4: 4 km → ~0.18, 8 km → ~0.66, 10 km → ~0.83, 10.8 km → ~0.90.
   float x = camd / 9000.0;
   float df = 1.0 - exp(-x * x * x * x * 3.4);
-  float f = clamp(hf * 0.85 + df * (0.35 + 0.55 * uFogDensity), 0.0, 1.0);
+  float f = clamp(hf * 0.85 + df * (0.45 + 0.55 * uFogDensity), 0.0, 1.0);
   float shade = 1.0 - uCloudShade * (0.5 + 0.5 * vnoise(vWPos.xz * 0.00035 + uTime * 0.004)) * 0.35;
   gl_FragColor.rgb *= shade;
   // S9: fog colour sampled from the 64×32 sky capture along the view ray —
