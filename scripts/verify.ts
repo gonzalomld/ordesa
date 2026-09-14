@@ -74,6 +74,7 @@ interface Meta {
   assets?: Record<string, string>;
   sizesBytes?: Record<string, number>;
   albedo?: { residualCorrelation: number; deepMaskFraction: number };
+  climbSmoothM?: number;
 }
 const meta = JSON.parse(readFileSync(META_FILE, "utf8")) as Meta;
 const pngMeta = await sharp(HEIGHTMAP_FILE).metadata();
@@ -135,6 +136,7 @@ const route = JSON.parse(readFileSync(ROUTE_FILE, "utf8")) as {
   lengthM: number;
   totalClimbM: number;
   climbThresholdM: number;
+  climbSmoothM: number;
 };
 const RP = route.x.map((x, i) => ({
   x,
@@ -428,7 +430,7 @@ if (existsSync(DEM_FILE)) {
   info("gpx-vs-mdt", `mean |GPS−LiDAR| ${(sum / count).toFixed(1)} m, max ${max.toFixed(1)} m (n=${count})`);
   info(
     "accumulated-climb",
-    `threshold ${route.climbThresholdM ?? CLIMB_THRESHOLD_M} m → total +${route.totalClimbM} m over ${(route.lengthM / 1000).toFixed(2)} km`,
+    `Z smoothed ±${route.climbSmoothM ?? "?"} m, threshold ${route.climbThresholdM ?? CLIMB_THRESHOLD_M} m → total +${route.totalClimbM} m over ${(route.lengthM / 1000).toFixed(2)} km`,
   );
   const perAct = ACTS.map((a) => {
     const pts = RP.filter((p) => p.d >= a.startM && p.d < a.endM);

@@ -94,6 +94,7 @@ export const ACTS = [
 export const CORRIDOR_MARGIN_M = 400;
 export const CORRIDOR_BLEND_M = 150;
 export const CLIMB_THRESHOLD_M = 5; // watch-style accumulated-climb gate (R6)
+export const CLIMB_SMOOTH_RADIUS_M = 100; // S7: Z smoothing radius for climb ONLY
 
 // --- Pipeline tuning ---
 export const ORTHO_TILE_PX = 2048; // max WMS request size

@@ -4,8 +4,10 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Sky } from "three/addons/objects/Sky.js";
 import { buildClouds } from "./clouds.ts";
-import { mountDebug, parseBootQuery } from "./debug.ts";
+import { frameClock, mountDebug, parseBootQuery } from "./debug.ts";
 import { buildGate, nextFrame } from "./gate.ts";
+import { createGpuTimer } from "./gpu-timer.ts";
+import { createSkyCapture, type SkyCapture } from "./sky-capture.ts";
 import { fogUniforms, patchTerrainMaterial } from "./height-fog.ts";
 import {
   buildLabels,
@@ -13,7 +15,7 @@ import {
   updateLabels,
   type LabelDef,
 } from "./labels.ts";
-import { buildRouteLine2 } from "./route-line2.ts";
+import { buildRouteLine2 } from "./route-line.ts";
 import { lightingAt, sunPosition } from "./sun.ts";
 import {
   driveTelemetry,
@@ -94,6 +96,9 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   metrics.maxTextureSize = maxTex;
 
   const scene = new THREE.Scene();
+  // S2.1: while the Sky dome paints, background stays a dark fallback only.
+  // Sky.scale (60000) exceeds camera.far (80000)? No — 60000 < 80000 keeps
+  // it inside the frustum with depthWrite:false + BackSide, so it wins.
   scene.background = new THREE.Color(0x0e141b);
   scene.fog = null;
 
@@ -105,7 +110,9 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   const portrait = window.innerWidth < window.innerHeight;
   const back = portrait ? 1.35 : 1;
   const [cwx, cwy, cwz] = epsgToWorld(CE.epsgX, CE.epsgY, CE.epsgZ, world);
-  camera.position.set(cwx * back, cwy, cwz * back);
+  // S6: nearer + steeper — only the TRACK anchors + Monte Perdido must fit.
+  // Model corners are allowed (and welcome) out of frame: it hides the cut.
+  camera.position.set(cwx * 0.72 * back, cwy * 0.88, cwz * 0.72 * back);
   // R5: closer, steeper general framing — the canyon axis in depth, not the
   // plateau. Target sits ON the canyon floor mid-valley; the rest (faja,
   // rim, Perdido) falls above it in frame.
@@ -154,9 +161,15 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   scene.add(hemi);
   const sky = new Sky();
   sky.scale.setScalar(60000);
+  sky.frustumCulled = false;
+  sky.renderOrder = -10;
   scene.add(sky);
+  // S9: lone-sky scene for the 64×32 equirect capture (same dome instance
+  // cannot render in two scenes, so the capture renders `scene` with terrain
+  // hidden — simpler than cloning the Sky material; done rarely).
   const skyU = sky.material.uniforms as Record<string, { value: unknown }>;
   const nightBg = new THREE.Color(0x05070f);
+  let skyCap: SkyCapture | null = null;
 
   let hour = boot.t ? Number(boot.t.split(":")[0]) + Number(boot.t.split(":")[1] ?? 0) / 60 : 8.7;
   metrics.time = hhmm(hour);
@@ -187,11 +200,17 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     (skyU["mieCoefficient"] as { value: number }).value = L.mieCoefficient;
     (skyU["mieDirectionalG"] as { value: number }).value = L.mieDirectionalG;
     (skyU["sunPosition"] as { value: THREE.Vector3 }).value.copy(dir);
+    // S2.1: the dome IS the background by day — null the clear colour so no
+    // flat fill can wash the Preetham gradient. Night keeps its own colour.
     sky.visible = L.nightMix < 1;
-    (scene.background as THREE.Color).copy(nightBg).lerp(new THREE.Color(0x0e141b), 1 - L.nightMix);
-    if (L.nightMix >= 1) scene.background = nightBg;
+    if (L.nightMix >= 1) {
+      scene.background = nightBg;
+    } else {
+      scene.background = null;
+    }
     renderer.toneMappingExposure = L.exposure;
-    // fog uniforms: sky-tinted haze colour sampled coarsely from sun height
+    // fog uniforms: uSkyColor stays as the no-capture fallback; S9 capture
+    // (below) overrides per view-ray whenever the sun moves.
     const warm = Math.max(0, 1 - Math.abs(sp.elevationDeg - 12) / 25);
     fogUniforms.uFogTop.value = L.fogTopM;
     fogUniforms.uFogDensity.value = 0.25 + L.fogDensity * 0.75;
@@ -204,6 +223,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     routeDim = 1 - L.nightMix * 0.3;
     sunDirV.copy(dir);
     cloudDensity = L.cloudDensity;
+    skyCap?.refresh();
   }
 
   // --- gate + progress (R0: global 45 s watchdog — never wait forever) ---
@@ -382,13 +402,13 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
   // R1 selective triplanar: steep faces sample the rock tile laterally
   // (world XZ/Y in metres, tile ≈ 60 m repeat, mirrored to hide seams).
   vec3 wn2 = normalize(vWNormal2);
-  float steep = pow(clamp((1.0 - wn2.y - uTriStart) * uTriScale * 60.0, 0.0, 1.0), 4.0) * uHasRock;
+  float steep = pow(clamp((1.0 - wn2.y - uTriStart) * uTriScale * 60.0, 0.0, 1.0), 6.0) * uHasRock;
   if (steep > 0.001) {
     float rep = 60.0;
     vec2 ruvX = vec2(vWPos2.z / rep, vWPos2.y / rep);
     vec2 ruvZ = vec2(vWPos2.x / rep, vWPos2.y / rep);
-    float wx = pow(abs(wn2.x), 4.0);
-    float wz = pow(abs(wn2.z), 4.0);
+    float wx = pow(abs(wn2.x), 6.0);
+    float wz = pow(abs(wn2.z), 6.0);
     float wsum = wx + wz;
     vec3 rock = vec3(0.0);
     if (wx > 0.001) rock += texture2D(uRock, ruvX).rgb * (wx / max(wsum, 1e-4));
@@ -420,7 +440,7 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
   const normalStrength = { value: 1.0 };
   // R1: selective triplanar — rock tile projected laterally on steep faces.
   const rockUniform = { value: null as THREE.Texture | null };
-  const triStart = { value: 1 - Math.cos((40 * Math.PI) / 180) };
+  const triStart = { value: 1 - Math.cos((30 * Math.PI) / 180) };
   const triScale = { value: 1 / 120 };
   const hasCorr = { value: 0 };
   const hasNormal = { value: 0 };
@@ -428,8 +448,28 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
 
   rebuildTerrain();
   gate.setProgress(0.62, 1);
+  // route needed before the line group exists; load it here so the S9 hide
+  // list below can reference it. (Order change only — same assets.)
+  let route: RouteData;
+  try {
+    route = await loadRouteData();
+  } catch (e) {
+    gate.fail(`no se ha podido cargar la senda: ${e instanceof Error ? e.message : e}`);
+    throw e;
+  }
+  const res2 = new THREE.Vector2(
+    renderer.domElement.width,
+    renderer.domElement.height,
+  );
+  const line = buildRouteLine2(route, world, elev, meta, res2);
+  group.add(line.group);
   applyLighting(hour);
   renderer.compile(scene, camera);
+  // S9 capture needs the compiled sky; create lazily here (renderer exists).
+  // Capture renders the scene with terrain+clouds+line hidden — the dome
+  // alone on a 64×32 target, ~2k px, only on sun moves.
+  skyCap = createSkyCapture(renderer, scene, camera);
+  skyCap.refresh();
   renderer.shadowMap.needsUpdate = true;
   shadowNeedsUpdate = false;
   await nextFrame();
@@ -446,22 +486,11 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
   }
   gate.setProgress(0.68, 1);
   gate.ready();
+  // S9: refresh the 64×32 sky capture with clouds present (they were added
+  // after the first capture) — still only on boot, not per frame.
+  skyCap?.refresh();
   await nextFrame();
 
-  // route (arrays-parallel) + Line2
-  let route: RouteData;
-  try {
-    route = await loadRouteData();
-  } catch (e) {
-    gate.fail(`no se ha podido cargar la senda: ${e instanceof Error ? e.message : e}`);
-    throw e;
-  }
-  const res2 = new THREE.Vector2(
-    renderer.domElement.width,
-    renderer.domElement.height,
-  );
-  const line = buildRouteLine2(route, world, elev, meta, res2);
-  group.add(line.group);
   gate.setProgress(0.72, 4);
   await nextFrame();
 
@@ -490,8 +519,8 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
     }).catch(() => undefined);
   }
 
-  // clouds
-  const clouds = buildClouds(meta, `/${meta.assets?.["clouds-atlas"] ?? "assets/clouds-atlas.webp"}`);
+  // clouds (S1: terrain-relative placement needs the decoded heightmap)
+  const clouds = buildClouds(meta, elev, `/${meta.assets?.["clouds-atlas"] ?? "assets/clouds-atlas.webp"}`);
   scene.add(clouds.group);
   gate.setProgress(0.8, 5);
   await nextFrame();
@@ -562,13 +591,15 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
     normalStrength.value = Number(nIn.value);
   });
   // R1 calibration: slope threshold where lateral rock projection kicks in
-  const tLab = el("div", "hud-label", "pared desde 40°");
+  // (S5: walls above 60° are the max-effect zone, but stretch already shows
+  // on 35-45° ledges — default 30°, blend exponent 6 stays narrow)
+  const tLab = el("div", "hud-label", "pared desde 30°");
   const tIn = document.createElement("input");
   tIn.type = "range";
   tIn.min = "20";
   tIn.max = "60";
   tIn.step = "1";
-  tIn.value = "40";
+  tIn.value = "30";
   tIn.setAttribute("aria-label", "umbral de pendiente de proyección lateral");
   tIn.addEventListener("input", () => {
     const deg = Number(tIn.value);
@@ -611,9 +642,14 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
   });
 
   const clock = new THREE.Clock();
+  const tickFrame = frameClock(metrics);
+  const gpu = createGpuTimer(renderer);
+  const gpuTerr = { v: -1 };
+  const gpuNub = { v: -1 };
 
   let frames = 0;
   renderer.setAnimationLoop(() => {
+    tickFrame(); // S3: real rAF-delta frame clock
     const t0 = performance.now();
     controls.update();
     // s from camera (phase 2)
@@ -622,12 +658,22 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
     const sp = sunPosition(hour);
     driveTelemetry(cells, lastTele, t, hhmm(hour), sp.elevationDeg);
     clouds.setDensity(cloudDensity, sunDirV);
-    clouds.update(clock.elapsedTime, camera);
+    clouds.update(clock.elapsedTime, camera, renderer.domElement.width, renderer.domElement.height);
+    metrics.cloudCoverage = clouds.getCoverage();
+    // S1e hard cap: clouds never cover more than ~25% of the screen.
+    clouds.setCap(clouds.getCoverage() > 0.25);
     line.setDim(routeDim);
     const t1 = performance.now();
     if (shadowNeedsUpdate) {
       renderer.shadowMap.needsUpdate = true;
       shadowNeedsUpdate = false;
+    }
+    // S3: GPU split — terrain pass vs clouds pass (poll lands 2-4 frames late)
+    if (gpu.available) {
+      gpu.poll(gpuTerr, gpuNub);
+      metrics.msTerrain = gpuTerr.v;
+      metrics.msClouds = gpuNub.v;
+      gpu.begin("terrain");
     }
     renderer.render(scene, camera);
     const t2 = performance.now();
@@ -648,11 +694,10 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
     }
     updateLabels(labelRts, camera, window.innerWidth, window.innerHeight, 30000);
     const t3 = performance.now();
-    metrics.msTerrain = Math.max(0, t2 - t1);
-    metrics.msClouds = 0; // clouds render inside the main pass; isolated in ?debug via draw-call note
+    // S3: JS slices stay JS; GPU numbers come only from the timer query.
+    metrics.jsTerrain = Math.max(0, t2 - t1);
+    metrics.jsLabels = Math.max(0, t3 - t2);
     metrics.msPost = 0;
-    metrics.msLabels = Math.max(0, t3 - t2);
-    metrics.msFrame = Math.max(0, t3 - t0);
     frames++;
   });
 }

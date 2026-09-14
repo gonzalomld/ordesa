@@ -1,8 +1,8 @@
-// 11-measure-shadow.ts — MEASURE BEFORE BUILDING (D2).
-// Grid-searches the flight sun (az 90-240 × alt 33-70, step 5°) for the pair
-// that MINIMISES correlation(albedo, illumination). Reports the raw number
-// so we know whether full de-shadowing is worth it (>0.5), soft (0.2-0.5)
-// or light (<0.2). Result saved into data/source/ortho.json.
+// 11-measure-shadow.ts — MEASURE BEFORE BUILDING (D2/B6).
+// Grid-searches the flight sun (B6: az 60-260 × alt 25-75, step 5°) for the
+// pair that MINIMISES correlation(albedo, illumination). Reports the raw
+// number so we know whether full de-shadowing is worth it (>0.5),
+// soft (0.2-0.5) or light (<0.2). Result saved into data/source/ortho.json.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import sharp from "sharp";
 import {
@@ -42,10 +42,12 @@ function luminanceAt(x: number, y: number): number {
 const STEP = 6;
 const xs: number[] = [];
 const ys: number[] = [];
-for (let r = 0; r < dem.height; r += STEP)
-  for (let c = 0; c < dem.width; c += STEP)
-    xs.push(dem.minx + (c + 0.5) * dem.resX),
-      ys.push(dem.maxy - (r + 0.5) * dem.resY);
+for (let r = 0; r < dem.height; r += STEP) {
+  for (let c = 0; c < dem.width; c += STEP) {
+    xs.push(dem.minx + (c + 0.5) * dem.resX);
+    ys.push(dem.maxy - (r + 0.5) * dem.resY);
+  }
+}
 const N = xs.length;
 console.log(`grid: ${N} points`);
 
@@ -69,8 +71,11 @@ function sunDir(azDeg: number, altDeg: number): [number, number, number] {
 }
 
 // --- horizon-angle maps: for each azimuth, max terrain elevation angle ---
+// B6: widened grid (was 90-240/33-70) — the old fit landed on the az edge.
 const AZS: number[] = [];
-for (let a = 90; a <= 240; a += 5) AZS.push(a);
+for (let a = 60; a <= 260; a += 5) AZS.push(a);
+const ALTS: number[] = [];
+for (let a = 25; a <= 75; a += 5) ALTS.push(a);
 const horizon = new Map<number, Float32Array>();
 {
   const RAY_STEP = 20;
@@ -131,7 +136,7 @@ const AMBIENT = 0.35;
 let best = { az: 0, alt: 0, corr: 1, rawCorr: 0, illumMean: 0 };
 const illum = new Float64Array(N);
 const albedo = new Float64Array(N);
-for (let alt = 33; alt <= 70; alt += 5) {
+for (const alt of ALTS) {
   for (const az of AZS) {
     const [sx, sy, sz] = sunDir(az, alt);
     const hz = horizon.get(az) as Float32Array;

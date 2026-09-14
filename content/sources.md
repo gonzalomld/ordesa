@@ -51,9 +51,10 @@ Huecos visibles y anotados — nada de relleno.
   consultados (Pradera, Calcilarruego, Cola de Caballo, Monte Perdido y dos
   esquinas) vía GetFeatureInfo a `OI.MosaicElement` — ver
   `scripts/10-fetch-flight-date.ts` y `data/source/ortho.json`. Sol del vuelo
-  ajustado por mínima correlación albedo↔iluminación: az 90° / alt 68°
-  (coherente con mediodía solar de julio), correlación residual −0,092,
-  máscara de sombra profunda 0,15 % — `scripts/11-measure-shadow.ts`.
+  ajustado por mínima correlación albedo↔iluminación sobre rejilla ampliada
+  (B6: az 60–260° × alt 25–75°): az 65° / alt 75° (óptimo interior, ya no en
+  el borde 90/68), correlación residual −0,081, máscara de sombra profunda
+  0,04 % — `scripts/11-measure-shadow.ts`.
 - Cotas de referencia (fase 2, MDT propio + GPX):
   Pradera 1.321 m (inicio del GPX 741218,4726062) · puente de los Cazadores
   1.318 m (waypoint GPX 741372,4725929) · mirador de Calcilarruego 1.960 m
@@ -63,15 +64,11 @@ Huecos visibles y anotados — nada de relleno.
   9,67 = pie publicado ~1.760 m; el waypoint del GPX da 1.816 m porque está
   por encima del salto) · Monte Perdido 3.347 m (máximo del MDT
   748638,4729252 = 42,67556 N / 0,03442 E; oficial 3.348 m).
-- Desnivel acumulado (R6): se calcula en `scripts/05-build-route.ts` sobre el
-  trazado remuestreado a 5 m y drapeado sobre el MDT de 5 m, con histéresis de
-  5 m (un tramo de subida solo cuenta cuando el ascenso desde el último valle
-  supera 5 m; se cierra tras una bajada de 5 m desde la cima). Difiere de los
-  800-900 m que citan las guías porque la ruta es circular (18,1 km: la vuelta
-  por el fondo del valle suma sus propias vaguadas) y porque el remuestreo a
-  5 m suma cada vaguada que la faja contornea. Cifra de la pieza (umbral 5 m):
-  por regenerar con `npm run data`. Con umbral 3 m salía +1.527,8 m; el
-  método es el mismo, solo cambia el umbral.
+- Desnivel acumulado (S7): calculado en `scripts/05-build-route.ts` sobre la
+  cota del MDT suavizada a 100 m (±20 puntos) con umbral de 5 m: +815,1 m
+  sobre 18,13 km. Coincide con las cifras publicadas para la ruta (800-900 m).
+  Un sendero real contornea las vaguadas que un trazado drapeado sobre un MDT
+  de 5 m sube y baja; sin suavizar, el mismo método da +1.465 m.
 - Etiquetas de cumbres (fase 2): solo Monte Perdido y Mondarruego (2.845 m,
   ladera del avistamiento de cabra montés de noviembre de 2022) tienen nombre
   confirmado. Los 13 picos restantes van con posición y cota del MDT pero SIN

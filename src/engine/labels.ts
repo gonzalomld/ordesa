@@ -95,7 +95,7 @@ export function rayBlocked(
   return false;
 }
 
-const _v = new THREE.Vector3();
+const _ndc = new THREE.Vector3();
 
 export function updateLabels(
   rts: LabelRuntime[],
@@ -104,14 +104,18 @@ export function updateLabels(
   h: number,
   maxDist: number,
 ): void {
-  // project all
+  // project all (S4: NDC and world position need SEPARATE vectors — the old
+  // code overwrote _v with the world pos and read .x/.y as if they were NDC,
+  // sending every label to absurd coordinates)
   const placed: { x: number; y: number; w: number; h: number }[] = [];
+  const wp = new THREE.Vector3();
   const order = rts
     .map((rt) => {
-      _v.set(rt.wx, rt.wy, rt.wz).project(camera);
-      const behind = _v.z > 1;
-      const dist = camera.position.distanceTo(_v.set(rt.wx, rt.wy, rt.wz));
-      return { rt, behind, dist, nx: _v.x, ny: _v.y };
+      _ndc.set(rt.wx, rt.wy, rt.wz).project(camera);
+      wp.set(rt.wx, rt.wy, rt.wz).applyMatrix4(camera.matrixWorldInverse);
+      const behind = wp.z > -1;
+      const dist = Math.hypot(rt.wx - camera.position.x, rt.wy - camera.position.y, rt.wz - camera.position.z);
+      return { rt, behind, dist, nx: _ndc.x, ny: _ndc.y };
     })
     .sort((a, b) => a.dist - b.dist);
   for (const o of order) {

@@ -8,6 +8,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import {
   BBOX,
+  CLIMB_SMOOTH_RADIUS_M,
   CLIMB_THRESHOLD_M,
   DEM_FILE,
   GPX_FILE,
@@ -100,11 +101,24 @@ const smoothed = resampled.map((p, i) => {
 // Drape on the MDT.
 const dem = await readDem(DEM_FILE);
 const round1 = (v: number): number => Math.round(v * 10) / 10;
-// Accumulated climb, watch-style: only count a rise once the ascent from
-// the last local minimum exceeds CLIMB_THRESHOLD_M. Computed over the
-// smoothed drape series (zMdt, no offset) so GPS/MDT micro-noise at 5 m
-// steps does not inflate the figure (naive sum gave +1667 m on this track).
+// Accumulated climb, watch-style: hysteresis of CLIMB_THRESHOLD_M over the
+// Z series SMOOTHED at CLIMB_SMOOTH_RADIUS_M (S7: 100 m ≈ ±20 pts — a real
+// footpath rounds the dips a 5 m drape over a 5 m DTM climbs up and down).
+// Drawing Z stays the raw drape; only the climb accumulation is smoothed.
 const zS = smoothed.map((p) => dem.sampleBilinear(p.x, p.y));
+const zC = zS.map((_, i) => {
+  const w = Math.round(CLIMB_SMOOTH_RADIUS_M / ROUTE_STEP_M);
+  let s = 0;
+  let c = 0;
+  for (let k = -w; k <= w; k++) {
+    const v = zS[i + k];
+    if (v !== undefined) {
+      s += v;
+      c++;
+    }
+  }
+  return s / c;
+});
 const TH = CLIMB_THRESHOLD_M;
 const cumClimb: number[] = new Array(zS.length);
 let finalClimb = 0;
@@ -114,12 +128,12 @@ let finalClimb = 0;
   // Micro-oscillations below TH never open a segment, so they add nothing.
   // (declared here so the d-field below can use arc length `total`)
   let total = 0;
-  let anchor = zS[0] as number; // base of the open uphill segment
-  let peak = zS[0] as number;
-  let valley = zS[0] as number;
+  let anchor = zC[0] as number; // base of the open uphill segment
+  let peak = zC[0] as number;
+  let valley = zC[0] as number;
   let up = false;
-  for (let i = 0; i < zS.length; i++) {
-    const z = zS[i] as number;
+  for (let i = 0; i < zC.length; i++) {
+    const z = zC[i] as number;
     if (!up) {
       if (z < valley) valley = z;
       if (z - valley >= TH) {
@@ -138,7 +152,9 @@ let finalClimb = 0;
     cumClimb[i] = Math.round((total + (up ? peak - anchor : 0)) * 10) / 10;
   }
   finalClimb = total + (up ? peak - anchor : 0);
-  console.log(`accumulated climb (threshold ${TH} m): ${finalClimb.toFixed(1)} m`);
+  console.log(
+    `accumulated climb (Z smoothed ±${CLIMB_SMOOTH_RADIUS_M} m, threshold ${TH} m): ${finalClimb.toFixed(1)} m`,
+  );
 }
 const out = smoothed.map((p, i) => {
   const zMdt = zS[i] as number;
@@ -167,6 +183,7 @@ writeFileSync(
     offsetM: ROUTE_OFFSET_M,
     lengthM: round1(total),
     climbThresholdM: TH,
+    climbSmoothM: CLIMB_SMOOTH_RADIUS_M,
     totalClimbM: Math.round(finalClimb * 10) / 10,
     x: out.map((p) => p.x),
     y: out.map((p) => p.y),
