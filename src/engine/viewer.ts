@@ -258,7 +258,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       metrics.zenithHex = `#${zr.toString(16).padStart(2, "0")}${zg.toString(16).padStart(2, "0")}${zb.toString(16).padStart(2, "0")}`;
       const dfog = fogUniforms.uFogDensity.value as number;
       const x10 = 10000 / 9000;
-      const df10 = 1 - Math.exp(-x10 * x10 * x10 * x10 * 2.2);
+      const df10 = 1 - Math.exp(-x10 * x10 * x10 * x10 * 3.4);
       metrics.fog10km = Math.min(1, Math.max(0, df10 * (0.35 + 0.55 * dfog)));
     }
     skyCap?.refresh();
@@ -414,6 +414,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uRock"] = rockUniform;
         s.uniforms["uTriStart"] = triStart;
         s.uniforms["uTriScale"] = triScale;
+        s.uniforms["uRockWeight"] = rockWeight;
         s.uniforms["uHasCorr"] = hasCorr;
         s.uniforms["uHasNormal"] = hasNormal;
         s.uniforms["uHasRock"] = hasRock;
@@ -426,9 +427,10 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
             "#include <common>",
             `#include <common>
 uniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNormalStrength; varying vec3 vUv2c;
-uniform sampler2D uRock; uniform float uTriStart; uniform float uTriScale;
+uniform sampler2D uRock; uniform float uTriStart; uniform float uTriScale; uniform float uRockWeight;
 uniform float uHasCorr; uniform float uHasNormal; uniform float uHasRock;
-varying vec3 vWPos2; varying vec3 vWNormal2;`,
+varying vec3 vWPos2; varying vec3 vWNormal2;
+float gSteep = 0.0; // V1: lateral weight shared with the normal-map block below`,
           )
           .replace(
             "#include <map_fragment>",
@@ -437,12 +439,15 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
   vec4 corr = texture2D(uCorridor, vUv2c.xy);
   float wcorr = vUv2c.z * uHasCorr;
   vec3 alb = mix(diffuseColor.rgb, corr.rgb, wcorr);
-  // R1 selective triplanar: steep faces sample the rock tile laterally
-  // (world XZ/Y in metres, tile ≈ 60 m repeat, mirrored to hide seams).
+  // V1 selective triplanar: steep faces sample the rock tile laterally
+  // (world XZ/Y in metres, tile 38 m repeat, mirrored to hide seams).
+  // V1.2: uTriScale preset so the blend is ~1.0 on >60° faces; uRockWeight
+  // (HUD) scales it 0..1 for separate calibration.
   vec3 wn2 = normalize(vWNormal2);
-  float steep = pow(clamp((1.0 - wn2.y - uTriStart) * uTriScale * 60.0, 0.0, 1.0), 6.0) * uHasRock;
+  float steep = pow(clamp((1.0 - wn2.y - uTriStart) * uTriScale, 0.0, 1.0), 6.0) * uHasRock * uRockWeight;
+  gSteep = steep;
   if (steep > 0.001) {
-    float rep = 60.0;
+    float rep = 38.0;
     vec2 ruvX = vec2(vWPos2.z / rep, vWPos2.y / rep);
     vec2 ruvZ = vec2(vWPos2.x / rep, vWPos2.y / rep);
     float wx = pow(abs(wn2.x), 6.0);
@@ -460,9 +465,15 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
             "#include <normal_fragment_maps>",
             `#include <normal_fragment_maps>
 {
+  // V1.3: the microrelief normal follows the same projection — lateral on
+  // steep faces (rock tile luminance as height), zenithal on flats.
   vec3 nt2 = texture2D(uNormalMap2, vMapUv).rgb * 2.0 - 1.0;
-  nt2.xy *= uNormalStrength * uHasNormal;
-  normal = normalize(normal + vec3(nt2.x, nt2.y, 0.0) * 0.35);
+  vec3 rockH = texture2D(uRock, vec2(vWPos2.x / 38.0, vWPos2.y / 38.0)).rgb +
+               texture2D(uRock, vec2(vWPos2.z / 38.0, vWPos2.y / 38.0)).rgb;
+  vec2 latN = (rockH.rg * 2.0 - 1.0) * uHasRock;
+  vec2 mixN = mix(nt2.xy, latN, clamp(gSteep, 0.0, 1.0));
+  mixN *= uNormalStrength * max(uHasNormal, uHasRock * clamp(gSteep, 0.0, 1.0));
+  normal = normalize(normal + vec3(mixN.x, mixN.y, 0.0) * 0.35);
 }`,
           );
       };
@@ -478,8 +489,11 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
   const normalStrength = { value: 1.0 };
   // R1: selective triplanar — rock tile projected laterally on steep faces.
   const rockUniform = { value: null as THREE.Texture | null };
+  // V1.2: full lateral weight reached at ~60° faces (was 1/120 → ~0.3 at 70°,
+  // which left the stretched zenithal ortho in charge).
   const triStart = { value: 1 - Math.cos((30 * Math.PI) / 180) };
-  const triScale = { value: 1 / 120 };
+  const triScale = { value: 1 / 26 };
+  const rockWeight = { value: 1.0 };
   const hasCorr = { value: 0 };
   const hasNormal = { value: 0 };
   const hasRock = { value: 0 };
@@ -658,6 +672,21 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
     tLab.textContent = `pared desde ${deg}°`;
     triStart.value = 1 - Math.cos((deg * Math.PI) / 180);
   });
+  // V1.5: separate rock-weight control (0..1) — threshold and weight
+  // calibrate independently instead of blind.
+  const wLab = el("div", "hud-label", "peso roca 100 %");
+  const wIn = document.createElement("input");
+  wIn.type = "range";
+  wIn.min = "0";
+  wIn.max = "1";
+  wIn.step = "0.05";
+  wIn.value = "1";
+  wIn.setAttribute("aria-label", "peso de la roca lateral");
+  wIn.addEventListener("input", () => {
+    const w = Number(wIn.value);
+    wLab.textContent = `peso roca ${Math.round(w * 100)} %`;
+    rockWeight.value = w;
+  });
   const lodRow = el("div", "hud-row");
   for (const st of [1, 2, 4]) {
     const b = document.createElement("button");
@@ -674,7 +703,7 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
     });
     lodRow.appendChild(b);
   }
-  hud.append(timeLab, time, cloudLab, cloudIn, nLab, nIn, tLab, tIn, lodRow);
+  hud.append(timeLab, time, cloudLab, cloudIn, nLab, nIn, tLab, tIn, wLab, wIn, lodRow);
   document.body.appendChild(hud);
 
   gate.setProgress(1, 5);
@@ -719,8 +748,8 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
       clouds.setDensity(effCloud, sunDirV);
       clouds.update(clock.elapsedTime, camera, renderer.domElement.width, renderer.domElement.height);
       metrics.cloudCoverage = clouds.getCoverage();
-      // S1e hard cap: clouds never cover more than ~25% of the screen.
-      clouds.setCap(clouds.getCoverage() > 0.25);
+      // V3: cap on the ALPHA-WEIGHTED veil at 20% of the screen.
+      clouds.setCap(clouds.getCoverage() > 0.2);
     }
     line.setDim(routeDim);
     const t1 = performance.now();

@@ -168,10 +168,16 @@ export function buildClouds(
     uniforms.uMap.value = t;
   });
 
-  // S1e: projected screen coverage, recomputed every 6th frame
+  // V3: alpha-weighted coverage, recomputed every 6th frame.
+  // Old metric summed full quad discs (alpha 0.05 counted like 1.0 → 100%).
+  // Now each disc contributes its mean fragment alpha, so the number tracks
+  // what is actually seen and the 20% cap makes sense.
   let coverage = 0;
   let tick = 0;
   const pv = new THREE.Vector3();
+  // mean fragment alpha per instance ≈ seed alpha × current uniforms
+  const seedAlpha: number[] = [];
+  for (let i = 0; i < COUNT; i++) seedAlpha.push(data[i * 4 + 3] as number);
   return {
     group,
     setDensity(d, sunDir) {
@@ -179,6 +185,8 @@ export function buildClouds(
       uniforms.uSunDir.value.copy(sunDir);
     },
     setCap(on) {
+      // V3: with the alpha-weighted metric the 20% cap is a real control:
+      // halve the global alpha while the visible veil exceeds it.
       uniforms.uCap.value = on ? 0.45 : 1;
     },
     update(time, camera, vw, vh) {
@@ -187,6 +195,7 @@ export function buildClouds(
       if ((tick++ % 6) !== 0 || vw <= 0 || vh <= 0) return;
       const persp = camera as THREE.PerspectiveCamera;
       const tanHalf = Math.tan(((persp.fov ?? 50) * Math.PI) / 180 / 2);
+      const dens = (uniforms.uDensity.value as number) * (uniforms.uCap.value as number);
       let area = 0;
       for (let i = 0; i < COUNT; i++) {
         pv.copy(centers[i] as THREE.Vector3).project(camera);
@@ -194,7 +203,9 @@ export function buildClouds(
         const dist = camera.position.distanceTo(centers[i] as THREE.Vector3);
         if (dist <= 0) continue;
         const rPx = (((scales[i] as number) * 0.5) / dist) * (vh / (2 * tanHalf));
-        area += Math.PI * rPx * rPx;
+        // V3: weight by the instance's effective alpha (seed × density × cap
+        // × mean puff texel ≈ seed × density × cap × 0.45)
+        area += Math.PI * rPx * rPx * (seedAlpha[i] as number) * dens * 0.45;
       }
       coverage = Math.min(1, area / (vw * vh));
     },
