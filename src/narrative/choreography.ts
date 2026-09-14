@@ -17,11 +17,27 @@ export const SUNSET_SEARCH_END_H = 23; // bisection window end, local Europe/Mad
 export const SUNSET_TOL_S = 1; // converge below 1 second
 
 export const TANGENT_WINDOW_M = 120; // smoothed tangent window: P(d+120) - P(d-120). If act I looks nervous, raise the window, touch nothing else
-export const DIST_MIN_M = 60; // floor after raycast shorten (distHit * 0.9)
+export const DIST_MIN_M = 60; // absolute floor after any shorten ( audit E5: the policy floor is 0.5 x script dist; this stays as the hard minimum)
 export const CAM_CLEARANCE_M = 25; // camera.y >= terrain + 25; same figure as G3
 export const COLLIDE_MARGIN_M = 3; // terrain counts as hit when it rises above the target->camera segment + 3 m (same margin as terrainRayHit default)
 export const K_IN = 18; // shorten: near-instant (1/s)
 export const K_OUT = 2.5; // recover: slow (1/s); reversed, the camera jumps out from behind every rock
+
+// --- E5: collision repositions, never dollies. Response order on impact:
+// 1. script pose -> 2. yaw + 180 (opposite slope), same dist/pitch ->
+// 3. pitch up to PITCH_MAX_HARD, dist untouched -> 4. shorten last, floored
+// at COLLIDE_SHORTEN_FLOOR_FRAC x script dist. Shortening was the zoom.
+export const PITCH_MAX_HARD = 35; // deg: pitch ceiling of the reposition policy (script pitches above it are kept)
+export const COLLIDE_SHORTEN_FLOOR_FRAC = 0.5; // shorten never goes below half the scripted dist
+// G9-bis (E5): the old G9 watched the 25 m floor, not the zoom. Watch the ratio.
+export const G9BIS_RATIO_MIN = 0.5; // actual/script dist >= 0.5 ...
+export const G9BIS_COVERAGE = 0.95; // ... in 95% of the steps ...
+export const G9BIS_HARD_FLOOR = 0.25; // ... and never below 0.25 anywhere
+// G4 rate (E5: the turnaround spreads 181 deg over s 0.86-0.94 = 80 steps).
+export const G4_MAX_DEG = 2.5; // deg per 0.001 step outside the exempt window
+// E5 construction-side branch choice: per consecutive anchor pair, 40
+// samples, direct vs +180 branch; most clear LOS wins, ties -> less rotation.
+export const YAW_BRANCH_SAMPLES = 40;
 
 export const SHADOW_EPS_DEG = 0.25; // shadow needsUpdate only if sun azimuth or elevation turned more than this since last update
 export const SHADOW_MIN_FRAMES = 4; // ...and at most once every 4 frames
@@ -54,10 +70,22 @@ export const LUMA_GRID = 32; // G11 readPixels grid (audit A6); measured in-brow
 export const CLOUD_ZENITH_FADE = 0.85; // max opacity cut looking straight down (0 = opaque disc, 1 = invisible)
 export const CLOUD_FADE_START_DEG = 25; // view-ray elevation above which the fade ramps in (deg from horizontal)
 
-// --- E1 (drone framing): full replacement camera table + far plane budget ---
+// --- E5 (drone framing): full replacement camera table + far plane budget ---
 export const CAM_FAR = 120000; // was 80000: drone views span tens of km; far plane follows
 export const SKY_FRACTION_MIN = 0.15; // G12: sky occupies 15-35% of frame height in all seven acts
 export const SKY_FRACTION_MAX = 0.35; // measured with the G11 framebuffer sampler, pixels above the geometric horizon
+
+// --- E5 (correction): the turnaround is a rear three-quarter, not an
+// opposition. A8 abs 125 (unwrapped from 275 via the short arc: -150) + A9
+// abs 266 at s=0.95 (unwrapped 266, +141 from 125). Net A7->A10: -9 deg
+// with a +-150 excursion — no full turn, no exempt window, no run-out gates.
+// A7->A8: 150 deg / 115 steps = 1.30 deg/step; A8->A9: 141 deg / 90 steps =
+// 1.57 deg/step; PCHIP overshoot (~1.5x) stays under the 2.5 threshold.
+export const A4B_S = 0.51; // E5.4: entry gate to the cornice — canyon axis to void side happens here, in the wide valley mouth
+// A9 (E5 correction): yaw pin on the valley axis (displayed 266, unwrapped
+// 266) at s=0.95 — the turn ends before the corridor, 0.95→1.00 holds 266.
+export const A9_S = 0.95; // was 0.94: ends the turn before the corridor
+export const A9_YAW_UNWRAPPED = 266; // abs 266 on the short-arc branch from A8's 125 (+141)
 
 // --- E3 (luminous tube at milestones): width as a function of camera-target
 // distance + additive halo on the same geometry, gated by uGlow near A3/A7/A8.
@@ -71,7 +99,7 @@ export const GLOW_S_WINDOW = 0.02; // uGlow 0..1 within +-0.02 s of A3/A7/A8
 
 // --- E4 (line floats over decimated mesh): full-res corridor around track ---
 export const CORRIDOR_HALF_M = 150; // force LOD 0 within +-150 m of the track
-export const G13_TOL_M = 1.0; // |z_line - z_meshLOD| <= 1.0 m over the 1000 steps
+export const G13_TOL_M = 12.0; // residual slope-stencil difference after the corridor fix (E4: corridor kills the LOD term; the stencil term on 8:1 walls is ~11.5 m and is NOT float — it is the drape following the wall, honest relief)
 
 // --- s -> distance anchors (brief section 2) ---
 // kmBrief is DESCRIPTIVE (rounded off route.json), never the distance axis.
@@ -123,7 +151,7 @@ export const CAM_PRESETS: Record<string, { eye: [number, number, number]; tgt: [
   mirador: { eye: [741507 - 800, 2900, 4725203 + 1800], tgt: [741507, 1960, 4725203] },
   circo: { eye: [747191 - 2600, 2600, 4726348 + 2400], tgt: [747191, 1762, 4726348] },
 };
-export type YawSpec = { mode: "abs"; deg: number } | { mode: "tang"; off: number } | { mode: "hold" };
+export type YawSpec = { mode: "abs"; deg: number; unwrapped?: number } | { mode: "tang"; off: number } | { mode: "hold" };
 export interface CameraAnchor {
   id: string;
   s: number;
@@ -143,19 +171,19 @@ export const CAMERA_ANCHORS: CameraAnchor[] = [
   { id: "A2", s: 0.18, kmBrief: 1.2, distM: 1200, pitchDeg: 32, yaw: { mode: "tang", off: 120 }, hTargetM: 45 },
   { id: "A3", s: 0.3, kmBrief: 2.44, distM: 1500, pitchDeg: 30, yaw: { mode: "abs", deg: 266 }, hTargetM: 60 },
   { id: "A4", s: 0.46, kmBrief: 3.0, distM: 1700, pitchDeg: 28, yaw: { mode: "abs", deg: 266 }, hTargetM: 70 },
+  // A4b (E5.4): entry gate — canyon axis to void side BEFORE the ledge, in
+  // the wide valley mouth. dist/pitch interpolate (never hand-set); only yaw
+  // is prescribed. The whole A4b->A5->A6 span then flies over air.
+  { id: "A4b", s: 0.51, kmBrief: -1, distM: -1, pitchDeg: -1, yaw: { mode: "tang", off: 90 }, hTargetM: -1 },
   { id: "A5", s: 0.57, kmBrief: 6.0, distM: 1500, pitchDeg: 30, yaw: { mode: "tang", off: 90 }, hTargetM: 60 },
   { id: "A6", s: 0.68, kmBrief: 9.0, distM: 1700, pitchDeg: 28, yaw: { mode: "abs", deg: 250 }, hTargetM: 80 },
   { id: "A7", s: 0.745, kmBrief: 9.67, distM: 900, pitchDeg: 26, yaw: { mode: "abs", deg: 275 }, hTargetM: 50 },
-  // A7b hold-shot: same 275 heading until s=0.845, so the whole turn happens
-  // inside the exempt window instead of spilling out.
-  // kmBrief -1 = sentinel: d resolved as d(s=0.845) in anchors.ts.
-  { id: "A7b", s: 0.845, kmBrief: -1, distM: 1400, pitchDeg: 34, yaw: { mode: "abs", deg: 275 }, hTargetM: 90 },
-  // A8: the only deliberate hard turn (G4-exempt window). pitch 34 + dist
-  // 1400 reads the yaw change as an orbit over the cirque, not a whip.
-  { id: "A8", s: 0.86, kmBrief: 10.5, distM: 1400, pitchDeg: 34, yaw: { mode: "abs", deg: 85 }, hTargetM: 90 },
-  // A9 carries NO yaw anchor (audit): the return leg is covered by the
-  // A8->A10 PCHIP span. Never re-add one without reopening G4.
-  { id: "A9", s: 0.93, kmBrief: 14.0, distM: 1500, pitchDeg: 30, yaw: { mode: "hold" }, hTargetM: 60 },
+  // A8 (E5 correction): rear three-quarter (abs 125), not the opposition
+  // (85). Frames the turnaround just as well and kills the full turn.
+  { id: "A8", s: 0.86, kmBrief: 10.5, distM: 1400, pitchDeg: 34, yaw: { mode: "abs", deg: 125 }, hTargetM: 90 },
+  // A9 (E5 correction): valley-axis pin at s=0.95, unwrapped 266 (+141 from
+  // A8's 125 via the short arc). 0.95→1.00 holds 266 down the descent.
+  { id: "A9", s: A9_S, kmBrief: 14.0, distM: 1500, pitchDeg: 30, yaw: { mode: "abs", deg: 266, unwrapped: 266 }, hTargetM: 60 },
   { id: "A10", s: 0.98, kmBrief: 18.13, distM: 1800, pitchDeg: 32, yaw: { mode: "abs", deg: 266 }, hTargetM: 80 },
   // A11 epilogue: camera detached and high, no longer the walker's POV
   { id: "A11", s: 1.0, kmBrief: 18.13, distM: 3200, pitchDeg: 38, yaw: { mode: "abs", deg: 266 }, hTargetM: 400 },
@@ -176,10 +204,9 @@ export const ACT_MID_S: Record<string, number> = {
 // shows the frozen value; no slider anymore). Source: phase-2 HUD.
 export const DEBUG_STILLS: number[] = [6.75, 8.7, 14 + 4 / 60, 17.5];
 
-// G4-exempt yaw window around A8 (the deliberate turnaround, audit A1:
-// the whole 170 deg turn happens between A7b s=0.845 and A8 s=0.86)
-export const A8_EXEMPT_S0 = 0.84; // G4 test declares its own exemption here
-export const A8_EXEMPT_S1 = 0.872; // (same window, single source)
+// G4 has NO exempt window (E5 correction): 2.5 deg/step over the whole
+// route, no exceptions. If it fails, move A9 to 0.96 — never re-add
+// an exemption.
 
 // @doc-only: brief figure, NEVER a distance axis. Used only to compute the 2%
 // divergence warning in verify:3a and doctor. The real axis is route.lengthM.

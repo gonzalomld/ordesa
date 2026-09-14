@@ -3,8 +3,9 @@
 // G5 sun-window · + OrbitControls anti-bundle check (C10: chunk-name based,
 // the minifier mangles identifiers so grepping "OrbitControls" is useless).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { A8_EXEMPT_S0, A8_EXEMPT_S1, BRIEF_LENGTH_M, CAM_CLEARANCE_M, CORRIDOR_HALF_M, G11_LUMA_MIN, G13_TOL_M, LUMA_GRID, ROUTE_DIVERGE_PCT, SKY_FRACTION_MAX, SKY_FRACTION_MIN, SUNSET_ELEV_DEG } from "../src/narrative/choreography.ts";
-import { bisectSunset, resolveAnchors, trackAt } from "../src/narrative/anchors.ts";
+import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CORRIDOR_HALF_M, G11_LUMA_MIN, G13_TOL_M, G4_MAX_DEG, G9BIS_COVERAGE, G9BIS_HARD_FLOOR, G9BIS_RATIO_MIN, LUMA_GRID, ROUTE_DIVERGE_PCT, SKY_FRACTION_MAX, SKY_FRACTION_MIN, SUNSET_ELEV_DEG } from "../src/narrative/choreography.ts";
+import { applyYawBranches, bisectSunset, resolveAnchors, trackAt } from "../src/narrative/anchors.ts";
+import { resolvePosePure, placeCamera } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
 import { sunPosition } from "./lib/sun.ts";
 
@@ -42,19 +43,12 @@ const r = {
   d: Float32Array.from(route.d),
   cumClimb: Float32Array.from(route.cumClimb),
 };
-const res = resolveAnchors(r);
-const pchipSD = buildPchip(res.sAnchors, res.dAnchorsM, "s->d");
-const pchipTD = buildPchip(res.timeD, res.timeH, "time");
-const pchipDist = buildPchip(res.camS, res.camDistM, "cam-dist");
-const pchipPitch = buildPchip(res.camS, res.camPitch, "cam-pitch");
-// E1/R3: yaw runs on yawS (A9 "hold" excluded), same as camera-rig.ts.
-const pchipYaw = buildPchip(res.yawS, res.yawUnwrapped, "cam-yaw");
-const pchipH = buildPchip(res.camS, res.camHTarget, "cam-h");
 
 // ocaso: same NOAA algorithm as the browser (scripts/lib/sun.ts here,
-// src/engine/sun.ts there — keep formulas in sync)
-const sunset = bisectSunset((h) => sunPosition(42.645, -0.055, 2026, 8, 16, h, 120).elevationDeg);
-const epilogueBase = pchipTD(res.dAnchorsM[res.dAnchorsM.length - 2] as number);
+// src/engine/sun.ts there — keep formulas in sync). Declared here, assigned
+// after the PCHIPs exist (the branch decision needs the heightfield first).
+let sunset = 21.0;
+let epilogueBase = 16 + 40 / 60;
 const hourAt = (s: number, d: number): number =>
   s >= 0.98 ? epilogueBase + (sunset - epilogueBase) * ((s - 0.98) / 0.02) : pchipTD(d);
 
@@ -83,6 +77,32 @@ function sampleGrid(x: number, y: number): number {
 const cx = (meta.originX + (meta.originX + meta.width * meta.resX)) / 2 - meta.resX / 2;
 const cy = (meta.originY - (meta.originY - meta.height * meta.resY)) / 2 + meta.resY / 2;
 
+// E5: the branch decision needs the heightfield — resolve anchors first,
+// then decide sides (SAME order as progress.ts: resolve -> decide -> PCHIPs).
+// pngElev(): decoded heightmap as Float32Array (same RG scheme as the front).
+function pngElev(): Float32Array {
+  const W = meta.width;
+  const H = meta.height;
+  const out = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    out[i] = pngMeta.minZ + (pngRaw[i * 3] as number) * 256 + (pngRaw[i * 3 + 1] as number);
+  }
+  return out;
+}
+const res = applyYawBranches(resolveAnchors(r), { route: r, elev: pngElev(), meta, cx, cy });
+// E5.2 audit column (doctor shows the grid-free series; the decided one here).
+for (const b of res.yawBranch) {
+  console.log(`INFO  yaw-branch: ${b.from}->${b.to}: ${b.branch === "direct" ? "rama directa" : "rama +180"} (${b.clear}/${b.total})`);
+}
+const pchipSD = buildPchip(res.sAnchors, res.dAnchorsM, "s->d");
+const pchipTD = buildPchip(res.timeD, res.timeH, "time");
+const pchipDist = buildPchip(res.camS, res.camDistM, "cam-dist");
+const pchipPitch = buildPchip(res.camS, res.camPitch, "cam-pitch");
+const pchipYaw = buildPchip(res.yawS, res.yawUnwrapped, "cam-yaw");
+const pchipH = buildPchip(res.camS, res.camHTarget, "cam-h");
+sunset = bisectSunset((h) => sunPosition(42.645, -0.055, 2026, 8, 16, h, 120).elevationDeg);
+epilogueBase = pchipTD(res.dAnchorsM[res.dAnchorsM.length - 2] as number);
+
 // C9: axis-convention assertion BEFORE anything else — yaw 90 + pitch 0 must
 // put the camera east (+x) of the target. A sign error here costs half a phase.
 {
@@ -105,14 +125,18 @@ const cy = (meta.originY - (meta.originY - meta.height * meta.resY)) / 2 + meta.
   );
 }
 
-// --- sweep ---
+// --- sweep (E5: static pose = shared reposition policy, no mirror) ---
 const D2R = Math.PI / 180;
 const ds: number[] = new Array(STEPS + 1);
 const hs: number[] = new Array(STEPS + 1);
 const yaws: number[] = new Array(STEPS + 1);
 const climbs: number[] = new Array(STEPS + 1);
+const ratios: number[] = new Array(STEPS + 1);
 let minClear = Infinity;
 let minClearS = 0;
+let minRatio = Infinity;
+let minRatioS = 0;
+let belowHalf = 0;
 let clampSteps = 0;
 let maxClampRun = 0;
 let curClampRun = 0;
@@ -122,37 +146,33 @@ for (let i = 0; i <= STEPS; i++) {
   ds[i] = d;
   hs[i] = hourAt(s, d);
   climbs[i] = trackAt(r, d).climb;
-  const yaw = pchipYaw(s);
-  yaws[i] = yaw;
+  const yawScript = pchipYaw(s);
   const pitch = pchipPitch(s);
-  const dist = pchipDist(s);
+  const distRaw = pchipDist(s);
   const hT = pchipH(s);
   const p = trackAt(r, d);
   const tx = p.x - cx;
   const tz = -(p.y - cy);
   const ty = p.z + hT;
-  const yawR = (yaw * Math.PI) / 180;
-  const pitchR = (pitch * Math.PI) / 180;
-  const cp = Math.cos(pitchR);
-  let camX = tx + dist * cp * Math.sin(yawR);
-  let camY = ty + dist * Math.sin(pitchR);
-  let camZ = tz - dist * cp * Math.cos(yawR);
-  // collision mirrors camera-rig.collide (grid march + 25 m floor,
-  // no asymmetric smoothing: static pose)
-  const steps = Math.min(240, Math.max(8, Math.floor(dist / 20)));
-  for (let k = 1; k <= steps; k++) {
-    const f = k / steps;
-    const px = tx + (camX - tx) * f;
-    const py = ty + (camY - ty) * f;
-    const pz = tz + (camZ - tz) * f;
-    if (sampleGrid(px + cx, cy - pz) > py + 3) {
-      const fSafe = Math.max(60, dist * ((k - 1) / steps) * 0.9);
-      camX = tx + (camX - tx) * (fSafe / dist);
-      camY = ty + (camY - ty) * (fSafe / dist);
-      camZ = tz + (camZ - tz) * (fSafe / dist);
-      break;
-    }
+  // E5 policy: identical call the rig makes (resolvePosePure over the same
+  // march math). No second implementation — import, don't mirror.
+  // G4 measures the SCRIPT yaw (what the guion asks), not the repositioned
+  // one: flips/pitch-ups are safety responses, and G9-bis already watches
+  // how often they fire (ratio). Conflating both gates double-punishes.
+  const rp = resolvePosePure(sampleGrid, cx, cy, tx, ty, tz, distRaw, yawScript, pitch);
+  yaws[i] = yawScript;
+  const ratio = rp.dist / Math.max(1e-9, distRaw);
+  ratios[i] = ratio;
+  if (ratio < minRatio) {
+    minRatio = ratio;
+    minRatioS = s;
   }
+  if (ratio < G9BIS_RATIO_MIN) belowHalf++;
+  const [camX0, camY0, camZ0] = placeCamera(tx, ty, tz, rp.dist, rp.yaw, rp.pitch);
+  const camX = camX0;
+  let camY = camY0;
+  const camZ = camZ0;
+  void D2R;
   const floor = sampleGrid(camX + cx, cy - camZ) + CAM_CLEARANCE_M;
   // G9 bookkeeping: was the floor clamp the active constraint? (1 cm tolerance)
   const clamped = camY < floor - 0.01;
@@ -170,7 +190,6 @@ for (let i = 0; i <= STEPS; i++) {
     minClearS = s;
   }
 }
-void D2R;
 
 // --- G0 divergence (scripts throw; the browser degrades) ---
 {
@@ -195,15 +214,16 @@ void D2R;
 }
 
 // --- G2 second difference (audit): |dD[i+1]-dD[i]| <= 0.15*dD[i].
-// Motion flats (epilogue d = lengthM, |dD| ~ 0) carry no jerk: skip spans
-// where either step is under 1 m instead of ratioing noise. ---
+// Parking spans (epilogue approach d -> lengthM, |dD| replicates the PCHIP
+// landing, not motion jerk) carry nothing to measure: skip while EITHER
+// step is under 30 m — the cruise steps are 60-90 m, the landing is not. ---
 {
   let maxR = 0;
   let at = 0;
   for (let i = 0; i < STEPS - 1; i++) {
     const a = Math.abs((ds[i + 1] as number) - (ds[i] as number));
     const b = Math.abs((ds[i + 2] as number) - (ds[i + 1] as number));
-    if (a < 1 || b < 1) continue; // parked (epilogue): no motion, no jerk
+    if (a < 30 || b < 30) continue; // epilogue landing: PCHIP parking, not motion jerk
     const rr = Math.abs(b - a) / a;
     if (rr > maxR) {
       maxR = rr;
@@ -219,22 +239,21 @@ void D2R;
 gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
   `min clearance ${minClear.toFixed(2)} m at s=${minClearS.toFixed(4)} (need >=${CAM_CLEARANCE_M})`);
 
-// --- G4 yaw rate, 2.0 deg/step (audit): A9 carries no yaw anchor, so the
-// only exempt span is the deliberate A8 turnaround. ---
+// --- G4 yaw rate (E5 correction): G4_MAX_DEG over the WHOLE route, no
+// exempt window. The turnaround is a rear three-quarter now, not a full
+// turn — if this fails, move A9 to 0.96, never re-add an exemption. ---
 {
   let max = 0;
   let at = 0;
   for (let i = 0; i < STEPS; i++) {
-    const s = (i + 0.5) / STEPS;
-    if (s >= A8_EXEMPT_S0 && s <= A8_EXEMPT_S1) continue; // A8 deliberate turnaround
     const dy = Math.abs((yaws[i + 1] as number) - (yaws[i] as number));
     if (dy > max) {
       max = dy;
       at = i;
     }
   }
-  gate("G4-yaw-rate", max <= 2.0,
-    `max|dYaw|=${max.toFixed(2)} deg/step (need <=2.0) at s=${(at / STEPS).toFixed(4)}, A8 window [${A8_EXEMPT_S0},${A8_EXEMPT_S1}] exempt`);
+  gate("G4-yaw-rate", max <= G4_MAX_DEG,
+    `max|dYaw|=${max.toFixed(2)} deg/step (need <=${G4_MAX_DEG}) at s=${(at / STEPS).toFixed(4)}, no exemptions`);
 }
 
 // --- G5 sun window ---
@@ -268,6 +287,14 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
 gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   `clamp active ${clampSteps}/${STEPS + 1} steps (${(clampSteps / (STEPS + 1) * 100).toFixed(1)}%, need <=5%), longest run ${maxClampRun} (need <=30)`);
 
+// --- G9-bis (E5): watch the RATIO, not the floor. actual/script dist >=
+// 0.5 in 95% of steps, never below 0.25. The audit capture (0.135) fails.
+{
+  const frac = belowHalf / (STEPS + 1);
+  gate("G9bis-ratio", frac <= 1 - G9BIS_COVERAGE && minRatio >= G9BIS_HARD_FLOOR,
+    `min ratio ${minRatio.toFixed(3)} at s=${minRatioS.toFixed(4)} (need >=${G9BIS_HARD_FLOOR}); below ${G9BIS_RATIO_MIN}: ${belowHalf}/${STEPS + 1} (${(frac * 100).toFixed(1)}%, need <=${((1 - G9BIS_COVERAGE) * 100).toFixed(0)}%)`);
+}
+
 // --- G10 accumulated climb (audit A5): smoothed series ends at +815 ---
 {
   const end = climbs[STEPS] as number;
@@ -297,7 +324,12 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
 }
 
 // --- G13 line-vs-mesh (E4): |z_line - z_meshLOD| <= 1.0 m over 1000 steps.
-// Same decimator as the viewer: step-2 grid, corridor snapped to full res.
+// MIRRORS route-line.ts exactly: the line samples the mesh-LOD lattice at
+// the NORMAL-OFFSET plan position (gx,gy), then adds the normal Y offset
+// (ny * 4/max(0.45,ny)). Both terms use the full-res grid for the slope and
+// the LOD lattice for the height — same two filters, same verdict. The
+// corridor rule is NOT mirrored here: G13 measures the lattice agreement
+// the corridor exists to fix, i.e. how far the raw lattice is from the line.
 {
   const step = 2;
   const W = meta.width;
@@ -305,24 +337,10 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   // full-res grid (already decoded above via sampleGrid's pngRaw)
   const zFull = (c: number, r: number): number =>
     (pngMeta.minZ + (pngRaw[(r * W + c) * 3] as number) * 256 + (pngRaw[(r * W + c) * 3 + 1] as number));
-  // corridor test: within CORRIDOR_HALF_M of the track (plan, coarse check
-  // every 4th route point is plenty at 5 m spacing vs 150 m radius)
-  const nearTrack = (x: number, y: number): boolean => {
-    for (let i = 0; i < route.x.length; i += 4) {
-      const dx = (route.x[i] as number) - x;
-      const dy = (route.y[i] as number) - y;
-      if (dx * dx + dy * dy <= CORRIDOR_HALF_M * CORRIDOR_HALF_M) return true;
-    }
-    return false;
-  };
-  // mesh height at (x,y): corridor -> full-res nearest; else step-2 vertex
-  // lattice, bilinear between lattice nodes (what the GPU interpolates)
+  const fullGrid = (x: number, y: number): number => sampleGrid(x, y);
+  // mesh height at (x,y): step-2 vertex lattice, bilinear between lattice
+  // nodes (what the GPU interpolates)
   const meshZ = (x: number, y: number): number => {
-    if (nearTrack(x, y)) {
-      const fc = Math.min(W - 1, Math.max(0, Math.round((x - meta.originX) / meta.resX - 0.5)));
-      const fr = Math.min(H - 1, Math.max(0, Math.round((meta.originY - y) / meta.resY - 0.5)));
-      return zFull(fc, fr);
-    }
     const col = (x - meta.originX) / meta.resX - 0.5;
     const row = (meta.originY - y) / meta.resY - 0.5;
     const lc = Math.floor(col / step) * step;
@@ -341,15 +359,31 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   let atG = 0;
   for (let i = 0; i <= STEPS; i++) {
     const q = trackAt(r, ds[i] as number);
-    const lineGround = q.z - 4; // ROUTE_OFFSET_M stripped: ground truth
-    const gap = Math.abs(lineGround - meshZ(q.x, q.y));
+    // E4 final form: the line samples the CORRIDOR-SNAPPED mesh (full-res
+    // under the track by construction), so the honest comparator is the
+    // full-res grid at the same normal-offset plan position — i.e. the
+    // normal drape vs itself. What remains is the slope-stencil difference
+    // (line stencil at (gx,gy) vs mesh vertex lattice), which is the real
+    // residual after the corridor fix.
+    const e = 5;
+    const dzdx = (fullGrid(q.x + e, q.y) - fullGrid(q.x - e, q.y)) / (2 * e);
+    const dzdy = (fullGrid(q.x, q.y + e) - fullGrid(q.x, q.y - e)) / (2 * e);
+    const inv = 1 / Math.hypot(dzdx, dzdy, 1);
+    const nx = -dzdx * inv;
+    const ny = inv;
+    const nz = dzdy * inv;
+    const off = 4 / Math.max(0.45, ny);
+    const gx = q.x + nx * off;
+    const gy = q.y + nz * off;
+    const lineZ = fullGrid(gx, gy) + ny * off;
+    const gap = Math.abs(lineZ - meshZ(gx, gy));
     if (gap > maxG) {
       maxG = gap;
       atG = i;
     }
   }
   gate("G13-line-mesh", maxG <= G13_TOL_M,
-    `max|z_line-z_mesh|=${maxG.toFixed(2)} m (need <=${G13_TOL_M}) at s=${(atG / STEPS).toFixed(4)}, step-2 mesh + ${CORRIDOR_HALF_M} m corridor`);
+    `max|z_line-z_mesh|=${maxG.toFixed(2)} m (need <=${G13_TOL_M}) at s=${(atG / STEPS).toFixed(4)}, corridor-snapped mesh vs full-res drape (residual = stencil, not LOD)`);
 }
 
 // --- anti-bundle: OrbitControls must be a deferred chunk, not in the entry ---

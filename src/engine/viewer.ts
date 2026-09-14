@@ -11,7 +11,6 @@ import {
   CLOUD_FADE_START_DEG,
   CLOUD_ZENITH_FADE,
   CORRIDOR_HALF_M,
-  EPILOGUE_S,
   G11_LUMA_MIN,
   GLOW_S_WINDOW,
   HEMI_DAY,
@@ -552,7 +551,9 @@ float wgrain(vec2 lp){
   scroll.stop(); // B7: locked until the gate opens
   let progress: ProgressHandle;
   try {
-    progress = initProgress(route, scroll);
+    // E5.2: branch choice runs inside initProgress, once, with the live
+    // heightfield — the rig consumes the identical decided series.
+    progress = initProgress(route, scroll, { elev, meta, cx: world.centerX, cy: world.centerY });
   } catch (e) {
     gate.fail(`no se pudo resolver el recorrido: ${e instanceof Error ? e.message : e}`);
     throw e;
@@ -853,12 +854,6 @@ float wgrain(vec2 lp){
     const st = progress.getState();
     const hour = st.hourDec;
     applyLighting(hour);
-    // E2: the epilogue draws the whole loop — uProgressDist rises to lengthM
-    // over s in [EPILOGUE_S, 1]; before that it ends at the walker.
-    {
-      const e = route.lengthM;
-      line.setProgressDist(st.s >= EPILOGUE_S ? e : Math.min(st.d, e));
-    }
     // E3: line width from camera-target distance; halo glow near A3/A7/A8.
     {
       const dg0 = rig.getDiag();

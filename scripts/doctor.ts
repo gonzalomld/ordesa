@@ -63,6 +63,10 @@ console.log(
 );
 
 // --- G8: phase-3A resolved anchor tables (runtime truth, brief wins) ---
+// NOTE: doctor prints the GRID-FREE series (resolveAnchors only). The live
+// yaw series includes the E5.2 construction-side branch choice (needs the
+// heightfield — see verify:3a / progress.ts via applyYawBranches) and is
+// printed by verify:3a, not here. If the two ever disagree, the brief wins.
 {
   const { resolveAnchors, trackAt, bisectSunset } = await import("../src/narrative/anchors.ts");
   const { buildPchip } = await import("../src/narrative/curve.ts");
@@ -115,11 +119,18 @@ console.log(
   console.log("  camera:");
   CAMERA_ANCHORS.forEach((c, i) => {
     const yawV = res.camYawUnwrapped[i] as number;
-    const yawTxt = c.yaw.mode === "hold" ? "hold (no anchor: A8->A10 span)" : `${yawV.toFixed(1)} (unwrapped)`;
+    // A4b is a yaw gate: dist/pitch/hT interpolate (sentinel -1).
+    const shape = c.distM < 0 ? "interp" : `dist=${c.distM} pitch=${c.pitchDeg} hT=${c.hTargetM}`;
     console.log(
-      `    ${c.id} s=${c.s.toFixed(3)} d=${((res.camDById[c.id] as number)).toFixed(1)} m dist=${c.distM} pitch=${c.pitchDeg} yaw=${yawTxt} hT=${c.hTargetM}`,
+      `    ${c.id} s=${c.s.toFixed(3)} d=${((res.camDById[c.id] as number)).toFixed(1)} m ${shape} yaw=${yawV.toFixed(1)} (unwrapped)`,
     );
   });
+  if (res.yawBranch.length > 0) {
+    console.log("  yaw branches (E5.2: most clear-LOS wins, ties -> less rotation):");
+    for (const b of res.yawBranch) {
+      console.log(`    ${b.from}->${b.to}: ${b.branch === "direct" ? "rama directa" : "rama +180"} (${b.clear}/${b.total})`);
+    }
+  }
   const sunset = bisectSunset((h) => nodeSun(42.645, -0.055, 2026, 8, 16, h, 120).elevationDeg);
   const e = nodeSun(42.645, -0.055, 2026, 8, 16, sunset, 120).elevationDeg;
   console.log(`  sunset: ${hhmmss(sunset)} local, elev(sunset)=${e.toFixed(3)} deg (need -0.833 +/-0.005)`);

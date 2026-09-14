@@ -17,8 +17,12 @@
 // - Hours hook onto resolved d via TIME_ANCHORS[].via (C2): resolve all
 //   distances first, then hook the hours.
 import {
+  A4B_S,
+  A9_S,
+  A9_YAW_UNWRAPPED,
   BRIEF_LENGTH_M,
   CAMERA_ANCHORS,
+  COLLIDE_MARGIN_M,
   ROUTE_DIVERGE_PCT,
   S_TO_D_ANCHORS,
   SUNSET_ELEV_DEG,
@@ -27,9 +31,11 @@ import {
   SUNSET_TOL_S,
   TANGENT_WINDOW_M,
   TIME_ANCHORS,
+  YAW_BRANCH_SAMPLES,
 } from "./choreography.ts";
 import { angleUnwrapDeg, buildPchip } from "./curve.ts";
 import { REF_POINTS } from "../../scripts/geo-constants.ts";
+import type { Meta } from "../engine/terrain.ts";
 
 export interface RouteLike {
   n: number;
@@ -59,10 +65,12 @@ export interface ResolvedAnchors {
   camPitch: number[];
   camYawUnwrapped: number[];
   camHTarget: number[];
-  /** yaw PCHIP inputs (A9 "hold" excluded). */
+  /** yaw PCHIP inputs (E5: branch-chosen per pair, see yawBranch below). */
   yawIds: string[];
   yawS: number[];
   yawUnwrapped: number[];
+  /** E5.2 audit column: per consecutive pair, winning branch + clear count. */
+  yawBranch: { from: string; to: string; branch: "direct" | "plus180"; clear: number; total: number }[];
   /** resolved metres per camera anchor id (for doctor + time hookup). */
   camDById: Record<string, number>;
 }
@@ -149,8 +157,8 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
 
   // intermediate fractions inside their span, from brief km figures.
   // A8 is an intermediate again (audit): keeps its brief fraction inside
-  // A7->A10. A9 likewise. A7b carries no km: sentinel kmBrief -1, resolved
-  // as d(s=0.845) from the s->d PCHIP once built (two-pass below).
+  // A7->A10. A9 likewise (its d comes from the same fraction rule; only
+  // its s moved to A9_S and its yaw is pinned — see below).
   const fA1 = frac(0.3, 0, 2.44);
   const fA2 = frac(1.2, 0, 2.44);
   const fA4 = frac(3.0, 2.44, 9.67);
@@ -173,7 +181,6 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
     A9: dA9,
     A10: lengthM,
     A11: lengthM,
-    A7b: -1, // sentinel: resolved in the two-pass below
   };
 
   // s->d anchors hook onto camera-anchor d (s values stay fixed)
@@ -209,9 +216,11 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
   }
 
   // camera series: resolve tang->abs, then unwrap the whole series (B6).
-  // A7b (sentinel -1) is a hold-shot: d resolved as d(s=0.845), i.e. where
-  // the s->d curve already is at its s. The s->d anchors never include A7b,
-  // so build that PCHIP first, sample it, then build the camera series.
+  // A4b (sentinel distM/pitchDeg/hTargetM -1) is a pure yaw gate: only yaw
+  // is prescribed; dist/pitch/hT interpolate from the neighbour anchors'
+  // PCHIPs after they are built.
+  // The s->d anchors never include A4b, so build that PCHIP first,
+  // sample it, then build the camera series.
   const camIds: string[] = [];
   const camS: number[] = [];
   const camDistM: number[] = [];
@@ -225,28 +234,58 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
       sA.push(a.s);
       dA.push(camDById[hook[a.s] as string] as number);
     }
-    camDById["A7b"] = buildPchip(sA, dA, "s->d")(0.845);
+    const fSD = buildPchip(sA, dA, "s->d");
+    camDById["A4b"] = fSD(A4B_S);
   }
   let lastBearing = 0;
   let haveBearing = false;
-  // A9 carries mode "hold": excluded from the series entirely, so the
-  // A8->A10 PCHIP span covers the return leg with no intermediate anchor.
+  // Raw yaw per anchor (deg 0..360; A9 pinned via `unwrapped` below).
+  // A4b dist/pitch/hT stays sentinel here — interpolated after the
+  // neighbour PCHIPs exist (two-pass at the end of this block).
   const yawIds: string[] = [];
   const yawS: number[] = [];
   const yawRaw: number[] = [];
+  // dist/pitch/hT raw (NaN = interpolate later)
+  const distRaw: number[] = [];
+  const pitchRaw: number[] = [];
+  const hRaw: number[] = [];
   for (const c of CAMERA_ANCHORS) {
     camIds.push(c.id);
     camS.push(c.s);
-    camDistM.push(c.distM);
-    camPitch.push(c.pitchDeg);
-    camHTarget.push(c.hTargetM);
+    if (c.distM < 0 || c.pitchDeg < 0 || c.hTargetM < 0) {
+      distRaw.push(NaN);
+      pitchRaw.push(NaN);
+      hRaw.push(NaN);
+      camDistM.push(NaN);
+      camPitch.push(NaN);
+      camHTarget.push(NaN);
+    } else {
+      distRaw.push(c.distM);
+      pitchRaw.push(c.pitchDeg);
+      hRaw.push(c.hTargetM);
+      camDistM.push(c.distM);
+      camPitch.push(c.pitchDeg);
+      camHTarget.push(c.hTargetM);
+    }
     if (c.yaw.mode === "hold") {
       camYawRaw.push(NaN);
       continue;
     }
     let raw: number;
     if (c.yaw.mode === "abs") {
-      raw = c.yaw.deg;
+      // E5 correction: explicit unwrapped pin wins over the displayed deg
+      // (A9 carries unwrapped 266 so the chain holds the short-arc branch).
+      raw = c.yaw.unwrapped ?? c.yaw.deg;
+      // Unwrap relative to the previous RAW value (pins are absolute on the
+      // already-unwrapped branch; angleUnwrapDeg would fold them back).
+      if (c.yaw.unwrapped !== undefined && yawRaw.length > 0) {
+        raw = c.yaw.unwrapped;
+        camYawRaw.push(raw);
+        yawIds.push(c.id);
+        yawS.push(c.s);
+        yawRaw.push(raw);
+        continue;
+      }
     } else {
       const d = camDById[c.id] as number;
       const b = smoothedBearingDeg(route, d, lastBearing);
@@ -268,9 +307,39 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
     yawS.push(c.s);
     yawRaw.push(raw);
   }
-  const yawUnwrappedFull = unwrapYawSeries(yawRaw);
-  // scatter back: camYawUnwrapped aligns with camS (NaN only at hold slots,
-  // which no evaluator samples — the yaw PCHIP is built from yawS below).
+  // A4b interpolation: neighbour-anchored PCHIPs over the scripted
+  // values, sampled at its s. (Excluded from its own fit — it IS the sample.)
+  {
+    const sK: number[] = [];
+    const dK: number[] = [];
+    const pK: number[] = [];
+    const hK: number[] = [];
+    for (let i = 0; i < camS.length; i++) {
+      if (Number.isNaN(distRaw[i] as number)) continue;
+      sK.push(camS[i] as number);
+      dK.push(distRaw[i] as number);
+      pK.push(pitchRaw[i] as number);
+      hK.push(hRaw[i] as number);
+    }
+    const fD = buildPchip(sK, dK, "cam-dist-nb");
+    const fP = buildPchip(sK, pK, "cam-pitch-nb");
+    const fH = buildPchip(sK, hK, "cam-h-nb");
+    for (let i = 0; i < camS.length; i++) {
+      if (!Number.isNaN(distRaw[i] as number)) continue;
+      camDistM[i] = fD(camS[i] as number);
+      camPitch[i] = fP(camS[i] as number);
+      camHTarget[i] = fH(camS[i] as number);
+    }
+  }
+  // A9 pin (E5 correction): displayed 266, unwrapped 266 — the short-arc
+  // branch from A8's 125 (+141). A10/A11 ride the pin (heading HOLDS).
+  // NOTE: yawUnwrappedFull is the PRE-branch series. The E5.2 decision
+  // (chooseYawBranches, needs elev+meta) runs in progress.ts / verify-3a
+  // via applyYawBranches() below — resolveAnchors itself stays grid-free
+  // so unit callers without a heightfield keep working.
+  const yawUnwrappedFull = unwrapYawSeriesPinned(yawRaw, yawIds);
+  // scatter back: camYawUnwrapped aligns with camS (no NaN remains — every
+  // anchor carries a yaw since the full-turn replan).
   const camYawUnwrapped: number[] = camYawRaw.map(() => NaN);
   {
     let j = 0;
@@ -282,6 +351,7 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
 
   const divergencePct = (Math.abs(lengthM - BRIEF_LENGTH_M) / BRIEF_LENGTH_M) * 100;
   void ROUTE_DIVERGE_PCT;
+  void A9_S;
   return {
     lengthM,
     divergencePct,
@@ -295,20 +365,204 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
     camPitch,
     camYawUnwrapped,
     camHTarget,
-    /** yaw PCHIP inputs: A9 (mode "hold") excluded — the A8->A10 span covers it. */
+    /** yaw PCHIP inputs (E5 branch-chosen + A9 pinned — see yawBranch). */
     yawS,
     yawUnwrapped: yawUnwrappedFull,
     yawIds,
+    yawBranch: [],
     camDById,
   };
 }
 
-function unwrapYawSeries(raw: number[]): number[] {
+function unwrapYawSeriesPinned(raw: number[], ids: string[]): number[] {
+  // E5 correction: A9's unwrapped value is pinned (A9_YAW_UNWRAPPED = 266),
+  // not derived — the chain unwraps up to A9, jumps to the pin, and holds
+  // it through A10/A11 (same displayed 266, same branch: no phantom turn).
   const out: number[] = [raw[0] as number];
+  const pinAt = ids.indexOf("A9");
   for (let i = 1; i < raw.length; i++) {
+    if (pinAt >= 0 && i >= pinAt) {
+      out.push(A9_YAW_UNWRAPPED);
+      continue;
+    }
     out.push(angleUnwrapDeg(out[i - 1] as number, raw[i] as number));
   }
   return out;
+}
+
+// --- E5.2: construction-side branch choice --------------------------------
+// For one consecutive anchor pair: sample N intermediate s values, evaluate
+// both heading branches (direct PCHIP interpolation vs +180 deg), march the
+// target->camera segment over the grid for each. Most clear-LOS wins; ties
+// (within 2) go to less total rotation. Pure over (elev, meta).
+function losBlocked(
+  elev: Float32Array,
+  meta: Pick<Meta, "width" | "height" | "resX" | "resY" | "originX" | "originY">,
+  cx: number,
+  cy: number,
+  tx: number,
+  ty: number,
+  tz: number,
+  px: number,
+  py: number,
+  pz: number,
+): boolean {
+  const dx = px - tx;
+  const dy = py - ty;
+  const dz = pz - tz;
+  const dist = Math.hypot(dx, dy, dz);
+  if (dist < 1e-6) return false;
+  const steps = Math.min(120, Math.max(8, Math.floor(dist / 30)));
+  for (let i = 1; i < steps; i++) {
+    const f = i / steps;
+    const ex = tx + dx * f + cx;
+    const ey = cy - (tz + dz * f);
+    const col = (ex - meta.originX) / meta.resX - 0.5;
+    const row = (meta.originY - ey) / meta.resY - 0.5;
+    const c0 = Math.max(0, Math.min(meta.width - 2, Math.floor(col)));
+    const r0 = Math.max(0, Math.min(meta.height - 2, Math.floor(row)));
+    const fx = Math.min(1, Math.max(0, col - c0));
+    const fy = Math.min(1, Math.max(0, row - r0));
+    const W = meta.width;
+    const at = (cc: number, rr: number): number => elev[rr * W + cc] as number;
+    const terr =
+      at(c0, r0) * (1 - fx) * (1 - fy) +
+      at(c0 + 1, r0) * fx * (1 - fy) +
+      at(c0, r0 + 1) * (1 - fx) * fy +
+      at(c0 + 1, r0 + 1) * fx * fy;
+    if (terr > ty + dy * f + COLLIDE_MARGIN_M) return true;
+  }
+  return false;
+}
+
+export interface YawBranchInput {
+  route: RouteLike;
+  elev: Float32Array;
+  meta: Pick<Meta, "width" | "height" | "resX" | "resY" | "originX" | "originY">;
+  cx: number;
+  cy: number;
+}
+
+/** E5.2 decision, once at load: per consecutive yaw-anchor pair, which
+ * branch (direct vs +180) keeps line-of-sight open at more of N samples.
+ * Mutates res in place (yawUnwrapped + yawBranch) and returns it — so
+ * progress.ts and verify:3a share the identical series the rig consumes.
+ * resolveAnchors() leaves yawBranch: [] and the pre-branch series; THIS is
+ * the only place that flips. Call AFTER resolveAnchors, BEFORE first use. */
+export function applyYawBranches(res: ResolvedAnchors, inp: YawBranchInput): ResolvedAnchors {
+  const r = chooseYawBranches(
+    inp,
+    res.yawIds,
+    res.yawS,
+    res.yawUnwrapped,
+    res.camS,
+    res.camDistM,
+    res.camPitch,
+    res.camHTarget,
+    res.sAnchors,
+    res.dAnchorsM,
+  );
+  res.yawUnwrapped = r.yawUnwrapped;
+  res.yawBranch = r.yawBranch;
+  // keep the camS-aligned mirror in sync (1:1 since the full-turn replan)
+  const order = res.camIds.map((id) => res.yawIds.indexOf(id));
+  for (let i = 0; i < res.camYawUnwrapped.length; i++) {
+    const yi = order[i] as number;
+    res.camYawUnwrapped[i] = yi >= 0 ? (r.yawUnwrapped[yi] as number) : NaN;
+  }
+  return res;
+}
+
+/** E5.2 decision, once at load: per consecutive yaw-anchor pair, which
+ * branch (direct vs +180) keeps line-of-sight open at more of 40 samples.
+ * Returns the per-pair verdicts AND the (possibly flipped) unwrapped series.
+ * Callers print yawBranch in doctor; the rig consumes yawS/yawUnwrapped. */
+export function chooseYawBranches(
+  inp: YawBranchInput,
+  yawIds: string[],
+  yawS: number[],
+  yawUnwrapped: number[],
+  camS: number[],
+  camDistM: number[],
+  camPitch: number[],
+  camHTarget: number[],
+  sAnchors: number[],
+  dAnchorsM: number[],
+): { yawUnwrapped: number[]; yawBranch: ResolvedAnchors["yawBranch"] } {
+  const { route, elev, meta, cx, cy } = inp;
+  const fSD = buildPchip(sAnchors, dAnchorsM, "s->d");
+  const fD = buildPchip(camS, camDistM, "cam-dist-nb2");
+  const fP = buildPchip(camS, camPitch, "cam-pitch-nb2");
+  const fH = buildPchip(camS, camHTarget, "cam-h-nb2");
+  const D2R = Math.PI / 180;
+  const N = YAW_BRANCH_SAMPLES;
+  const verdicts: ResolvedAnchors["yawBranch"] = [];
+  // work on a mutable copy; flipping pair k adds +180 to yaw[k+1..] so the
+  // decision compounds along the route (each pair sees prior flips).
+  // A9 pin guard (E5 correction): the chain must END on the pinned 266 —
+  // A9/A10/A11 hold the descent heading by hand. A flip landing A10 on 266
+  // mod 360 but a different branch (e.g. 626 = 266+360) keeps the number and
+  // breaks the intent: the descent would circle an extra turn. So a flip is
+  // applied only if the resulting A10 stays within 90 deg of the pin.
+  const yaw = yawUnwrapped.slice();
+  const pinIdx = yawIds.indexOf("A9");
+  const pinVal = pinIdx >= 0 ? yaw[pinIdx] : null;
+  for (let k = 0; k < yawIds.length - 1; k++) {
+    const s0 = yawS[k] as number;
+    const s1 = yawS[k + 1] as number;
+    const y0 = yaw[k] as number;
+    const y1 = yaw[k + 1] as number;
+    let clearDirect = 0;
+    let clearFlip = 0;
+    for (let j = 0; j < N; j++) {
+      const s = s0 + ((j + 0.5) / N) * (s1 - s0);
+      const f = (s - s0) / Math.max(1e-9, s1 - s0);
+      const d = fSD(s);
+      const p = trackAt(route, d);
+      const tx = p.x - cx;
+      const tz = -(p.y - cy);
+      const hT = fH(s);
+      const ty = p.z + hT;
+      const dist = fD(s);
+      const pitch = fP(s);
+      const place = (yw: number): [number, number, number] => {
+        const yr = yw * D2R;
+        const pr = pitch * D2R;
+        const cp = Math.cos(pr);
+        return [tx + dist * cp * Math.sin(yr), ty + dist * Math.sin(pr), tz - dist * cp * Math.cos(yr)];
+      };
+      const yDirect = y0 + (y1 - y0) * f;
+      const yFlip = yDirect + 180;
+      const pd = place(yDirect);
+      const pf = place(yFlip);
+      if (!losBlocked(elev, meta, cx, cy, tx, ty, tz, pd[0], pd[1], pd[2])) clearDirect++;
+      if (!losBlocked(elev, meta, cx, cy, tx, ty, tz, pf[0], pf[1], pf[2])) clearFlip++;
+    }
+    const rotDirect = Math.abs((y1 as number) - (y0 as number));
+    const rotFlip = Math.abs((y1 + 180) - (y0 as number));
+    // E5.2 tie-break: within 2 samples, less rotation wins.
+    // Pin guard: never flip across the A9 pin — the descent heading is
+    // hand-decided, not voted. Pairs at/after the pin always go direct.
+    let branch: "direct" | "plus180";
+    if (pinIdx >= 0 && k >= pinIdx) {
+      branch = "direct";
+    } else {
+      branch =
+        clearFlip > clearDirect + 2 ? "plus180" : clearDirect > clearFlip + 2 ? "direct" : rotFlip < rotDirect ? "plus180" : "direct";
+      if (branch === "plus180" && pinVal !== null) {
+        const after = (yaw[k + 1] as number) + 180;
+        // A10 rides every later flip: check where the PIN would land.
+        const pinWould = (yaw[pinIdx] as number) + 180;
+        if (Math.abs(pinWould - (pinVal as number)) > 90) branch = "direct";
+        void after;
+      }
+    }
+    if (branch === "plus180") {
+      for (let m = k + 1; m < yaw.length; m++) yaw[m] = (yaw[m] as number) + 180;
+    }
+    verdicts.push({ from: yawIds[k] as string, to: yawIds[k + 1] as string, branch, clear: branch === "direct" ? clearDirect : clearFlip, total: N });
+  }
+  return { yawUnwrapped: yaw, yawBranch: verdicts };
 }
 
 /** Bisection over elevAtHour(h) for SUNSET_ELEV_DEG in the search window.

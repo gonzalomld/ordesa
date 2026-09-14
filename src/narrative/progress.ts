@@ -1,10 +1,11 @@
 // progress.ts — SINGLE source of journey state: s, d, z, hour, slope, climb.
 // No module recomputes travelled distance. Everything reads getState().
 // Anchor tables come from anchors.ts (pure); PCHIP from curve.ts.
-import { bisectSunset, resolveAnchors, trackAt, type ResolvedAnchors, type RouteLike } from "./anchors.ts";
+import { applyYawBranches, bisectSunset, resolveAnchors, trackAt, type ResolvedAnchors, type RouteLike } from "./anchors.ts";
 import { EPILOGUE_S } from "./choreography.ts";
 import { buildPchip, type PchipFn } from "./curve.ts";
 import { actForDistance, sunPosition } from "../engine/sun.ts";
+import type { Meta } from "../engine/terrain.ts";
 import type { ScrollHandle } from "./scroll.ts";
 
 export interface ProgressState {
@@ -43,8 +44,19 @@ export function parseHourParam(raw: string | null): number | null {
   return Number.isFinite(v) ? v : null;
 }
 
-export function initProgress(route: RouteLike, scroll: ScrollHandle): ProgressHandle {
+export function initProgress(
+  route: RouteLike,
+  scroll: ScrollHandle,
+  /** E5.2 branch choice needs the heightfield — passed once at load from
+   * viewer.ts (elev + meta + world centre, all already in memory there). */
+  grid?: { elev: Float32Array; meta: Meta; cx: number; cy: number },
+): ProgressHandle {
   const res = resolveAnchors(route);
+  if (grid) {
+    // E5.2: the side decision runs ONCE here, before any PCHIP is built —
+    // the rig below consumes the identical branch-chosen series.
+    applyYawBranches(res, { route, elev: grid.elev, meta: grid.meta, cx: grid.cx, cy: grid.cy });
+  }
   const pchipSD: PchipFn = buildPchip(res.sAnchors, res.dAnchorsM, "s->d");
   const pchipTD: PchipFn = buildPchip(res.timeD, res.timeH, "time");
   const sunsetHourDec = bisectSunset((h) => sunPosition(h).elevationDeg);

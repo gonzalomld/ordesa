@@ -4,9 +4,9 @@
 import * as THREE from "three";
 import { trackAt, type RouteLike } from "./anchors.ts";
 import { buildPchip } from "./curve.ts";
+import { resolvePosePure } from "./collision.ts";
 import {
   CAM_CLEARANCE_M,
-  COLLIDE_MARGIN_M,
   DIST_MIN_M,
   K_IN,
   K_OUT,
@@ -56,13 +56,18 @@ export function createRig(deps: RigDeps): {
   const res = progress.resolved();
   const pchipDist = buildPchip(res.camS, res.camDistM, "cam-dist");
   const pchipPitch = buildPchip(res.camS, res.camPitch, "cam-pitch");
-  // E1/R3: yaw PCHIP runs on yawS (A9 "hold" excluded) — the return leg is
-  // one A8->A10 span. Sampling camSNaN slots would poison the curve.
+  // Yaw PCHIP runs on the branch-decided series (E5.2 + A9 pin) — the same
+  // arrays verify:3a builds.
   const pchipYaw = buildPchip(res.yawS, res.yawUnwrapped, "cam-yaw");
   const pchipH = buildPchip(res.camS, res.camHTarget, "cam-h");
   const D2R = Math.PI / 180;
 
-  let corrSm = 0; // smoothed COLLISION CORRECTION only (A3) — the choreographed dist is followed exactly
+  // E5: smoothing damps POSE CORRECTIONS (dist +yaw/pitch repositioning),
+  // not the script. All three share the same asymmetric rates: fast in
+  // (K_IN), slow out (K_OUT).
+  let corrDistSm = 0;
+  let corrYawSm = 0;
+  let corrPitchSm = 0;
   let lastYaw = res.yawUnwrapped[0] as number;
   let lastPitch = pchipPitch(0);
   let lastTarget: [number, number, number] = [0, 0, 0];
@@ -104,29 +109,19 @@ export function createRig(deps: RigDeps): {
     ];
   }
 
-  /** March target->candidate over the grid; returns the largest safe
-   * distance, or distRaw when nothing blocks. */
-  function collide(target: [number, number, number], distRaw: number, yaw: number, pitch: number): number {
-    const [tx, ty, tz] = target;
-    // full-length candidate
-    const [cx, cy, cz] = spherical(target, distRaw, pitch, yaw);
-    const dx = cx - tx;
-    const dy = cy - ty;
-    const dz = cz - tz;
-    const dist = Math.hypot(dx, dy, dz);
-    if (dist < 1e-6) return distRaw;
-    const steps = Math.min(240, Math.max(8, Math.floor(dist / 20)));
-    for (let i = 1; i <= steps; i++) {
-      const f = i / steps;
-      const px = tx + dx * f;
-      const py = ty + dy * f;
-      const pz = tz + dz * f;
-      const [ex, ey] = worldToEpsg(px, pz, world);
-      if (sampleGrid(elev, meta, ex, ey) > py + COLLIDE_MARGIN_M) {
-        return Math.max(DIST_MIN_M, dist * ((i - 1) / steps) * 0.9);
-      }
-    }
-    return distRaw;
+  /** E5: the pose is a SCRIPT decision (branch-chosen yaw) plus the shared
+   * reposition policy — no per-frame shorten-first zoom, no duplicated
+   * march code (collision.ts owns it; verify:3a imports the same). */
+  function resolveStatic(
+    target: [number, number, number],
+    distRaw: number,
+    yaw: number,
+    pitch: number,
+  ): { dist: number; yaw: number; pitch: number } {
+    const sample = (x: number, y: number): number => sampleGrid(elev, meta, x, y);
+    const r = resolvePosePure(sample, world.centerX, world.centerY,
+      target[0], target[1], target[2], distRaw, yaw, pitch);
+    return { dist: r.dist, yaw: r.yaw, pitch: r.pitch };
   }
 
   function floorClearance(pos: [number, number, number]): number {
@@ -137,47 +132,57 @@ export function createRig(deps: RigDeps): {
   function poseAt(s: number): RigPose {
     const sc = Math.min(1, Math.max(0, s));
     const r = rawPose(sc);
-    // static pose: collision applied WITHOUT the asymmetric smoothing
-    // (smoothing is a temporal concern, poseAt is a pure function of s)
-    let dist = collide(r.target, r.distRaw, r.yaw, r.pitch);
-    let pos = spherical(r.target, dist, r.pitch, r.yaw);
+    // static pose: reposition policy, NO temporal smoothing (poseAt is a
+    // pure function of s; update() below owns the frame-to-frame damping).
+    const rp = resolveStatic(r.target, r.distRaw, r.yaw, r.pitch);
+    let dist = rp.dist;
+    let pos = spherical(r.target, dist, rp.pitch, rp.yaw);
     const floor = floorClearance(pos);
     if (pos[1] < floor) {
       pos = [pos[0], floor, pos[2]];
       // re-derive dist from the lifted position for honest diagnostics
       dist = Math.hypot(pos[0] - r.target[0], pos[1] - r.target[1], pos[2] - r.target[2]);
     }
-    return { pos, target: r.target, yaw: r.yaw, pitch: r.pitch, dist };
+    return { pos, target: r.target, yaw: rp.yaw, pitch: rp.pitch, dist };
   }
 
+  // E5: smoothing damps POSE CORRECTIONS (dist +yaw/pitch repositioning),
+  // not the script. corrSm was dist-only; yaw/pitch snapped instantly. All
+  // three share the same asymmetric rates: fast in (K_IN), slow out (K_OUT).
   function update(dt: number): void {
     const st = progress.getState();
     const s = Math.min(1, Math.max(0, st.s));
     const r = rawPose(s);
-    // A3: choreography is followed EXACTLY; only the collision correction
-    // is smoothed (K_IN shorten fast, K_OUT recover slow). The camera can
-    // never lag behind its own script, and the 25 m floor is NOT smoothed
-    // (instant lift — burying the lens for even one frame is worse than a pop).
-    const safe = collide(r.target, r.distRaw, r.yaw, r.pitch);
-    const corr = Math.max(0, r.distRaw - safe);
+    const want = resolveStatic(r.target, r.distRaw, r.yaw, r.pitch);
+    const wantCorrDist = Math.max(0, r.distRaw - want.dist);
+    const wantCorrYaw = want.yaw - r.yaw;
+    const wantCorrPitch = want.pitch - r.pitch;
     if (dt > 0 && Number.isFinite(dt)) {
-      const k = corr > corrSm ? K_IN : K_OUT;
-      corrSm += (corr - corrSm) * (1 - Math.exp(-k * dt));
+      const kD = wantCorrDist > corrDistSm ? K_IN : K_OUT;
+      const kY = Math.abs(wantCorrYaw) > Math.abs(corrYawSm) ? K_IN : K_OUT;
+      const kP = Math.abs(wantCorrPitch) > Math.abs(corrPitchSm) ? K_IN : K_OUT;
+      corrDistSm += (wantCorrDist - corrDistSm) * (1 - Math.exp(-kD * dt));
+      corrYawSm += (wantCorrYaw - corrYawSm) * (1 - Math.exp(-kY * dt));
+      corrPitchSm += (wantCorrPitch - corrPitchSm) * (1 - Math.exp(-kP * dt));
     } else {
-      corrSm = corr;
+      corrDistSm = wantCorrDist;
+      corrYawSm = wantCorrYaw;
+      corrPitchSm = wantCorrPitch;
     }
-    const dist = Math.max(DIST_MIN_M, r.distRaw - corrSm);
-    let pos = spherical(r.target, dist, r.pitch, r.yaw);
+    const dist = Math.max(DIST_MIN_M, r.distRaw - corrDistSm);
+    const yaw = r.yaw + corrYawSm;
+    const pitch = r.pitch + corrPitchSm;
+    let pos = spherical(r.target, dist, pitch, yaw);
     const floor = floorClearance(pos);
     if (pos[1] < floor) pos = [pos[0], floor, pos[2]];
     deps.camera.position.set(pos[0], pos[1], pos[2]);
     deps.camera.lookAt(r.target[0], r.target[1], r.target[2]);
-    lastYaw = r.yaw;
-    lastPitch = r.pitch;
+    lastYaw = yaw;
+    lastPitch = pitch;
     lastTarget = r.target;
     const [ex, ey] = worldToEpsg(pos[0], pos[2], world);
-    diag.yaw = r.yaw;
-    diag.pitch = r.pitch;
+    diag.yaw = yaw;
+    diag.pitch = pitch;
     diag.dist = dist;
     diag.holgura = pos[1] - sampleGrid(elev, meta, ex, ey);
   }
