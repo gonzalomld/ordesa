@@ -126,7 +126,7 @@ export function updateLabels(
     }
     // overlap cull vs already-placed nearer labels
     if (!hidden) {
-      const bw = 150;
+      const bw = rt.def.tipo === "cumbre" ? 170 : 220;
       const bh = 34;
       for (const p of placed) {
         if (Math.abs(px - p.x) < (bw + p.w) / 2 && Math.abs(py - p.y) < (bh + p.h) / 2) {

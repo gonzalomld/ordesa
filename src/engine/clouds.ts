@@ -69,13 +69,15 @@ export function buildClouds(meta: Meta, atlasUrl: string): Clouds {
       void main(){
         float a = texture2D(uMap, vUv).r * vAlpha;
         if (a < 0.004) discard;
-        vec3 col = vec3(1.02, 0.99, 0.95) * vShade;
+        vec3 col = vec3(1.04, 1.0, 0.96) * vShade;
         gl_FragColor = vec4(col * a, a);
       }`,
   });
   const mesh = new THREE.InstancedMesh(geo, mat, COUNT);
   mesh.frustumCulled = false;
   mesh.renderOrder = 10;
+  // R4: clouds sit over the rim but must read against the sky from the
+  // high general view — fewer, larger, brighter than the first pass.
   const dummy = new THREE.Object3D();
   const data = new Float32Array(COUNT * 4);
   const spanX = meta.bbox.maxx - meta.bbox.minx;
@@ -85,14 +87,14 @@ export function buildClouds(meta: Meta, atlasUrl: string): Clouds {
     const x = meta.bbox.minx + rnd() * spanX;
     // band along the rim: favour east half + edges, leave gaps
     const y = meta.bbox.miny + (0.35 + rnd() * 0.65) * (meta.bbox.maxy - meta.bbox.miny);
-    const z = 2200 + rnd() * 600;
+    const z = 2400 + rnd() * 700;
     dummy.position.set(x - cx, z, -(y - cy));
     dummy.updateMatrix();
     mesh.setMatrixAt(i, dummy.matrix);
     data[i * 4] = Math.floor(rnd() * 4);
     data[i * 4 + 1] = rnd() * Math.PI * 2;
-    data[i * 4 + 2] = 500 + rnd() * 900;
-    data[i * 4 + 3] = 0.25 + rnd() * 0.55;
+    data[i * 4 + 2] = 700 + rnd() * 1100;
+    data[i * 4 + 3] = 0.4 + rnd() * 0.6;
   }
   geo.setAttribute("aData", new THREE.InstancedBufferAttribute(data, 4));
   group.add(mesh);

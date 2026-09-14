@@ -62,7 +62,36 @@ export async function loadElevations(meta: Meta, url?: string): Promise<Float32A
   const res = await fetch(src);
   if (!res.ok) throw new Error(`heightmap: HTTP ${res.status}`);
   const blob = await res.blob();
-  const bitmap = await createImageBitmap(blob, { colorSpaceConversion: "none" });
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(blob, { colorSpaceConversion: "none" });
+  } catch {
+    // fallback for browsers without colorSpaceConversion support
+    const objUrl = URL.createObjectURL(blob);
+    try {
+      const img = document.createElement("img");
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("img decode failed"));
+        img.src = objUrl;
+      });
+      const canvas = document.createElement("canvas");
+      canvas.width = meta.width;
+      canvas.height = meta.height;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) throw new Error("2d context unavailable");
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, meta.width, meta.height).data;
+      const n = meta.width * meta.height;
+      const elev = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        elev[i] = meta.minZ + (d[i * 4] as number) * 256 + (d[i * 4 + 1] as number);
+      }
+      return elev;
+    } finally {
+      URL.revokeObjectURL(objUrl);
+    }
+  }
   const canvas = document.createElement("canvas");
   canvas.width = meta.width;
   canvas.height = meta.height;

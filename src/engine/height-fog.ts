@@ -31,7 +31,7 @@ export function patchTerrainMaterial(mat: THREE.Material): void {
     s.uniforms.uTime = fogUniforms.uTime;
     s.vertexShader = s.vertexShader
       .replace("#include <common>", "#include <common>\nvarying vec3 vWPos;")
-      .replace("#include <worldpos_vertex>", "#include <worldpos_vertex>\nvWPos = (modelMatrix * vec4(transformed,1.0)).xyz;");
+      .replace("#include <fog_vertex>", "#include <fog_vertex>\nvWPos = (modelMatrix * vec4(transformed,1.0)).xyz;");
     s.fragmentShader = s.fragmentShader
       .replace(
         "#include <common>",
@@ -50,8 +50,11 @@ float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
   float hfrac = clamp(1.0 - (vWPos.y - (uFogTop - 500.0)) / 500.0, 0.0, 1.0);
   float camd = length(vWPos - cameraPosition);
   float hf = hfrac * hfrac * uFogDensity;
+  // R3b: D8 condition — ≥80% attenuation at 10.8 km (model edge behind
+  // Monte Perdido) without eating the valley at 4 km. Gaussian shoulder:
+  // 4 km → ~0.24, 8 km → ~0.62, 10.8 km → ~0.84.
   float df = 1.0 - exp(-pow(camd / 9000.0, 2.0));
-  float f = clamp(hf * 0.85 + df * (0.35 + 0.65 * uFogDensity), 0.0, 1.0);
+  float f = clamp(hf * 0.85 + df * (0.2 + 0.55 * uFogDensity), 0.0, 1.0);
   float shade = 1.0 - uCloudShade * (0.5 + 0.5 * vnoise(vWPos.xz * 0.00035 + uTime * 0.004)) * 0.35;
   gl_FragColor.rgb *= shade;
   gl_FragColor.rgb = mix(gl_FragColor.rgb, uSkyColor, f);

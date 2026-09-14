@@ -61,7 +61,7 @@ async function fetchWithProgress(
     onBytes(got);
     void total;
   }
-  return new Blob(chunks);
+  return new Blob(chunks, { type: res.headers.get("content-type") ?? "" });
 }
 
 function hhmm(h: number): string {
@@ -85,6 +85,10 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  // R2: shadows ON, static map refreshed only when the sun moves.
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   (window as unknown as { __renderer?: THREE.WebGLRenderer }).__renderer = renderer;
   const maxTex = renderer.capabilities.maxTextureSize;
   metrics.maxTextureSize = maxTex;
@@ -102,9 +106,14 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   const back = portrait ? 1.35 : 1;
   const [cwx, cwy, cwz] = epsgToWorld(CE.epsgX, CE.epsgY, CE.epsgZ, world);
   camera.position.set(cwx * back, cwy, cwz * back);
-  // look toward the valley axis (Pradera→Perdido midpoint), set after terrain
+  // R5: closer, steeper general framing — the canyon axis in depth, not the
+  // plateau. Target sits ON the canyon floor mid-valley; the rest (faja,
+  // rim, Perdido) falls above it in frame.
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(2500, 1600, -2600);
+  {
+    const [tx, ty, tz] = epsgToWorld(743600, 4725600, 1650, world);
+    controls.target.set(tx, ty, tz);
+  }
   controls.enableDamping = true;
   if (boot.cam === "pradera") {
     const [px, py, pz] = epsgToWorld(741218, 4726062, 1321, world);
@@ -114,24 +123,33 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     const [px, py, pz] = epsgToWorld(741507, 4725203, 1960, world);
     camera.position.set(px - 800, 2900, pz + 1800);
     controls.target.set(px, py, pz);
+  } else if (boot.cam === "circo") {
+    // R5 reference framing: low inside the circo, Cola + strata readable.
+    const [px, py, pz] = epsgToWorld(747191, 4726348, 1762, world);
+    camera.position.set(px - 2600, 2600, pz + 2400);
+    controls.target.set(px, py, pz);
   }
   controls.update();
 
-  // --- sun + sky ---
+  // --- sun + sky (R2: static 2048 shadow map over the whole frame) ---
   const sun = new THREE.DirectionalLight(0xfff3e2, 2.4);
   sun.castShadow = true;
   {
-    const s = 8000;
+    // 10.8 × 8.2 km frame → ±5.500 half-extent; near/far span the
+    // 1.107–3.347 m relief seen from the sun position (r = 22000).
+    const s = 5500;
     sun.shadow.camera.left = -s;
     sun.shadow.camera.right = s;
     sun.shadow.camera.top = s;
     sun.shadow.camera.bottom = -s;
-    sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 50000;
+    sun.shadow.camera.near = 5000;
+    sun.shadow.camera.far = 40000;
     sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.bias = -0.0004;
+    sun.shadow.bias = -0.0002;
+    sun.shadow.normalBias = 3;
   }
   scene.add(sun, sun.target);
+  let shadowNeedsUpdate = true;
   const hemi = new THREE.HemisphereLight(0xbdd3e6, 0x5c5648, 0.5);
   scene.add(hemi);
   const sky = new Sky();
@@ -162,6 +180,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     sun.position.copy(dir.clone().multiplyScalar(r));
     sun.color.setHex(L.sunColor);
     sun.intensity = L.sunIntensity;
+    shadowNeedsUpdate = true;
     // sky: Preetham by day, fade to night below horizon
     (skyU["turbidity"] as { value: number }).value = L.turbidity;
     (skyU["rayleigh"] as { value: number }).value = L.rayleigh;
@@ -187,8 +206,12 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     cloudDensity = L.cloudDensity;
   }
 
-  // --- gate + progress ---
+  // --- gate + progress (R0: global 45 s watchdog — never wait forever) ---
   const gate = buildGate(() => undefined);
+  const watchdog = window.setTimeout(() => {
+    gate.fail("la carga está tardando demasiado; comprueba tu conexión y recarga");
+  }, 45000);
+  const clearWatchdog = (): void => window.clearTimeout(watchdog);
   const totalBytes =
     (sizes["terrain-base-2048"] ?? 700_000) +
     (meta.width * meta.height * 0.4) +
@@ -218,22 +241,80 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     throw e;
   });
   await nextFrame();
-  // decode blob directly
-  const elev: Float32Array = await (async () => {
-    const bitmap = await createImageBitmap(blobH, { colorSpaceConversion: "none" });
-    const cv = document.createElement("canvas");
-    cv.width = meta.width;
-    cv.height = meta.height;
-    const cx2 = cv.getContext("2d", { willReadFrequently: true });
-    if (!cx2) throw new Error("2d context unavailable");
-    cx2.drawImage(bitmap, 0, 0);
-    bitmap.close();
-    const img = cx2.getImageData(0, 0, meta.width, meta.height);
-    const dd = img.data;
-    const out = new Float32Array(meta.width * meta.height);
-    for (let i = 0; i < out.length; i++) out[i] = meta.minZ + (dd[i * 4] as number) * 256 + (dd[i * 4 + 1] as number);
-    return out;
-  })();
+  // R0: decode with try/catch + <img> fallback after 10 s. A silent stall
+  // here is exactly what a user on a browser without
+  // colorSpaceConversion:"none" would see.
+  async function decodeHeightmap(blob: Blob): Promise<Float32Array> {
+    const decode = async (bmp: ImageBitmap): Promise<Float32Array> => {
+      const cv = document.createElement("canvas");
+      cv.width = meta.width;
+      cv.height = meta.height;
+      const cx2 = cv.getContext("2d", { willReadFrequently: true });
+      if (!cx2) throw new Error("2d context unavailable");
+      cx2.drawImage(bmp, 0, 0);
+      bmp.close();
+      const img = cx2.getImageData(0, 0, meta.width, meta.height);
+      const dd = img.data;
+      const out = new Float32Array(meta.width * meta.height);
+      for (let i = 0; i < out.length; i++) out[i] = meta.minZ + (dd[i * 4] as number) * 256 + (dd[i * 4 + 1] as number);
+      return out;
+    };
+    const viaBitmap = async (): Promise<Float32Array> =>
+      decode(await createImageBitmap(blob, { colorSpaceConversion: "none" }));
+    const viaImg = async (): Promise<Float32Array> => {
+      const url = URL.createObjectURL(blob);
+      try {
+        const img = document.createElement("img");
+        img.decoding = "sync";
+        await new Promise<void>((resolve, reject) => {
+          const t = window.setTimeout(() => reject(new Error("img decode timeout")), 20000);
+          img.onload = () => {
+            window.clearTimeout(t);
+            resolve();
+          };
+          img.onerror = () => {
+            window.clearTimeout(t);
+            reject(new Error("img decode failed"));
+          };
+          img.src = url;
+        });
+        const cv = document.createElement("canvas");
+        cv.width = meta.width;
+        cv.height = meta.height;
+        const cx2 = cv.getContext("2d", { willReadFrequently: true });
+        if (!cx2) throw new Error("2d context unavailable");
+        cx2.drawImage(img, 0, 0);
+        const d = cx2.getImageData(0, 0, meta.width, meta.height).data;
+        const out = new Float32Array(meta.width * meta.height);
+        for (let i = 0; i < out.length; i++) out[i] = meta.minZ + (d[i * 4] as number) * 256 + (d[i * 4 + 1] as number);
+        return out;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    };
+    try {
+      return await Promise.race([
+        viaBitmap(),
+        new Promise<never>((_, reject) =>
+          window.setTimeout(() => reject(new Error("bitmap-timeout")), 10000),
+        ),
+      ]);
+    } catch (e1) {
+      try {
+        return await viaImg();
+      } catch (e2) {
+        const msg = `no se pudo decodificar el relieve (${e1 instanceof Error ? e1.message : e1} / ${e2 instanceof Error ? e2.message : e2})`;
+        gate.fail(msg);
+        throw new Error(msg);
+      }
+    }
+  }
+  let elev: Float32Array;
+  try {
+    elev = await decodeHeightmap(blobH);
+  } catch {
+    return; // gate.fail already shows the message
+  }
   void loadElevations;
   gate.setProgress(0.5, 0);
   await nextFrame();
@@ -272,21 +353,49 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uCorridor"] = corridorUniform;
         s.uniforms["uNormalMap2"] = normalUniform;
         s.uniforms["uNormalStrength"] = normalStrength;
+        s.uniforms["uRock"] = rockUniform;
+        s.uniforms["uTriStart"] = triStart;
+        s.uniforms["uTriScale"] = triScale;
+        s.uniforms["uHasCorr"] = hasCorr;
+        s.uniforms["uHasNormal"] = hasNormal;
+        s.uniforms["uHasRock"] = hasRock;
         s.vertexShader = s.vertexShader
-          .replace("#include <common>", "#include <common>\nattribute vec3 uv2c; varying vec3 vUv2c;")
-          .replace("#include <uv_vertex>", "#include <uv_vertex>\nvUv2c = uv2c;");
+          .replace("#include <common>", "#include <common>\nattribute vec3 uv2c; varying vec3 vUv2c; varying vec3 vWPos2; varying vec3 vWNormal2;")
+          .replace("#include <uv_vertex>", "#include <uv_vertex>\nvUv2c = uv2c;")
+          .replace("#include <fog_vertex>", "#include <fog_vertex>\nvWPos2 = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvWNormal2 = normalize(mat3(modelMatrix) * objectNormal);");
         s.fragmentShader = s.fragmentShader
           .replace(
             "#include <common>",
-            "#include <common>\nuniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNormalStrength; varying vec3 vUv2c;",
+            `#include <common>
+uniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNormalStrength; varying vec3 vUv2c;
+uniform sampler2D uRock; uniform float uTriStart; uniform float uTriScale;
+uniform float uHasCorr; uniform float uHasNormal; uniform float uHasRock;
+varying vec3 vWPos2; varying vec3 vWNormal2;`,
           )
           .replace(
             "#include <map_fragment>",
             `#include <map_fragment>
 #ifdef USE_MAP
   vec4 corr = texture2D(uCorridor, vUv2c.xy);
-  float hasCorr = float(vUv2c.z > 0.001);
-  diffuseColor.rgb = mix(diffuseColor.rgb, corr.rgb, vUv2c.z * hasCorr);
+  float wcorr = vUv2c.z * uHasCorr;
+  vec3 alb = mix(diffuseColor.rgb, corr.rgb, wcorr);
+  // R1 selective triplanar: steep faces sample the rock tile laterally
+  // (world XZ/Y in metres, tile ≈ 60 m repeat, mirrored to hide seams).
+  vec3 wn2 = normalize(vWNormal2);
+  float steep = pow(clamp((1.0 - wn2.y - uTriStart) * uTriScale * 60.0, 0.0, 1.0), 4.0) * uHasRock;
+  if (steep > 0.001) {
+    float rep = 60.0;
+    vec2 ruvX = vec2(vWPos2.z / rep, vWPos2.y / rep);
+    vec2 ruvZ = vec2(vWPos2.x / rep, vWPos2.y / rep);
+    float wx = pow(abs(wn2.x), 4.0);
+    float wz = pow(abs(wn2.z), 4.0);
+    float wsum = wx + wz;
+    vec3 rock = vec3(0.0);
+    if (wx > 0.001) rock += texture2D(uRock, ruvX).rgb * (wx / max(wsum, 1e-4));
+    if (wz > 0.001) rock += texture2D(uRock, ruvZ).rgb * (wz / max(wsum, 1e-4));
+    alb = mix(alb, rock, steep * (wsum > 0.001 ? 1.0 : 0.0));
+  }
+  diffuseColor.rgb = alb;
 #endif`,
           )
           .replace(
@@ -294,7 +403,8 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
             `#include <normal_fragment_maps>
 {
   vec3 nt2 = texture2D(uNormalMap2, vMapUv).rgb * 2.0 - 1.0;
-  normal = normalize(normal + vec3(nt2.x, nt2.y, 0.0) * (uNormalStrength * 0.35));
+  nt2.xy *= uNormalStrength * uHasNormal;
+  normal = normalize(normal + vec3(nt2.x, nt2.y, 0.0) * 0.35);
 }`,
           );
       };
@@ -302,16 +412,26 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     }
     terrain = new THREE.Mesh(geo, terrainMat);
     terrain.receiveShadow = true;
+    terrain.castShadow = true;
     group.add(terrain);
   }
   const corridorUniform = { value: null as THREE.Texture | null };
   const normalUniform = { value: null as THREE.Texture | null };
   const normalStrength = { value: 1.0 };
+  // R1: selective triplanar — rock tile projected laterally on steep faces.
+  const rockUniform = { value: null as THREE.Texture | null };
+  const triStart = { value: 1 - Math.cos((40 * Math.PI) / 180) };
+  const triScale = { value: 1 / 120 };
+  const hasCorr = { value: 0 };
+  const hasNormal = { value: 0 };
+  const hasRock = { value: 0 };
 
   rebuildTerrain();
   gate.setProgress(0.62, 1);
   applyLighting(hour);
   renderer.compile(scene, camera);
+  renderer.shadowMap.needsUpdate = true;
+  shadowNeedsUpdate = false;
   await nextFrame();
 
   // base texture
@@ -345,16 +465,27 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   gate.setProgress(0.72, 4);
   await nextFrame();
 
-  // corridor + normal behind (never block first paint)
+  // corridor + normal + rock behind (never block first paint)
   if (corrAsset) {
     loadTex(`/${corrAsset}`, true).then((t) => {
       corridorUniform.value = t;
+      hasCorr.value = 1;
       if (terrainMat) terrainMat.needsUpdate = true;
     }).catch(() => undefined);
   }
   if (meta.assets?.["terrain-normal"] && texLevel !== "lite") {
     loadTex(`/${meta.assets["terrain-normal"]}`, false).then((t) => {
       normalUniform.value = t;
+      hasNormal.value = 1;
+      if (terrainMat) terrainMat.needsUpdate = true;
+    }).catch(() => undefined);
+  }
+  if (meta.assets?.["terrain-rock"]) {
+    loadTex(`/${meta.assets["terrain-rock"]}`, true).then((t) => {
+      t.wrapS = THREE.MirroredRepeatWrapping;
+      t.wrapT = THREE.MirroredRepeatWrapping;
+      rockUniform.value = t;
+      hasRock.value = 1;
       if (terrainMat) terrainMat.needsUpdate = true;
     }).catch(() => undefined);
   }
@@ -430,6 +561,20 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   nIn.addEventListener("input", () => {
     normalStrength.value = Number(nIn.value);
   });
+  // R1 calibration: slope threshold where lateral rock projection kicks in
+  const tLab = el("div", "hud-label", "pared desde 40°");
+  const tIn = document.createElement("input");
+  tIn.type = "range";
+  tIn.min = "20";
+  tIn.max = "60";
+  tIn.step = "1";
+  tIn.value = "40";
+  tIn.setAttribute("aria-label", "umbral de pendiente de proyección lateral");
+  tIn.addEventListener("input", () => {
+    const deg = Number(tIn.value);
+    tLab.textContent = `pared desde ${deg}°`;
+    triStart.value = 1 - Math.cos((deg * Math.PI) / 180);
+  });
   const lodRow = el("div", "hud-row");
   for (const st of [1, 2, 4]) {
     const b = document.createElement("button");
@@ -446,10 +591,11 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     });
     lodRow.appendChild(b);
   }
-  hud.append(timeLab, time, nLab, nIn, lodRow);
+  hud.append(timeLab, time, nLab, nIn, tLab, tIn, lodRow);
   document.body.appendChild(hud);
 
   gate.setProgress(1, 5);
+  clearWatchdog();
   await nextFrame();
   applyLighting(hour);
 
@@ -479,6 +625,10 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     clouds.update(clock.elapsedTime, camera);
     line.setDim(routeDim);
     const t1 = performance.now();
+    if (shadowNeedsUpdate) {
+      renderer.shadowMap.needsUpdate = true;
+      shadowNeedsUpdate = false;
+    }
     renderer.render(scene, camera);
     const t2 = performance.now();
     // labels every frame (project cheap), occlusion every ~6th frame

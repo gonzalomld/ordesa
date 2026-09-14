@@ -74,14 +74,16 @@ export function lightingAt(t: string | number): Lighting {
   const fogTopM = lerp(1750, 1400, Math.min(1, Math.max(0, (h - 7) / 3.5)));
   // convection: grows 11:00 → 16:00
   const cloudDensity = Math.min(1, Math.max(0, (h - 11) / 5)) * 0.85 + (h >= 11 ? 0.15 : 0);
-  const exposure = e <= 0 ? 1.35 : lerp(1.25, 0.85, Math.min(1, e / 60));
+  // R3c: exposure carries contrast at low sun, not a veil.
+  // 16° → ~1.0; noon → 0.85; twilight stays bright enough to read (1.25).
+  const exposure = e <= 0 ? 1.25 : lerp(1.05, 0.85, Math.min(1, Math.max(0, (e - 12) / 48)));
   return {
     sunAzimuth: azimuthDeg,
     sunElevation: elevationDeg,
     sunColor: warmColor(e),
     sunIntensity: e <= 0 ? 0.12 : lerp(1.2, 2.8, Math.min(1, e / 60)),
-    turbidity: 3,
-    rayleigh: e > 10 ? 1.2 : 2.2,
+    turbidity: 2.2,
+    rayleigh: e > 10 ? 0.9 : 1.8,
     mieCoefficient: 0.004,
     mieDirectionalG: 0.85,
     fogDensity: Math.min(1, fogDensity),

@@ -36,7 +36,8 @@
     "terrain-corridor": "assets/terrain-corridor.c851c4fc.webp",
     "terrain-corridor-4k": "assets/terrain-corridor-4k.10d11c64.webp",
     "terrain-normal": "assets/terrain-normal.1c34820c.webp",
-    "clouds-atlas": "assets/clouds-atlas.4086cf57.webp"
+    "clouds-atlas": "assets/clouds-atlas.4086cf57.webp",
+    "terrain-rock": "assets/terrain-rock.14d481f0.webp"
   },
   "sizesBytes": {
     "terrain-base": 1701032,
@@ -44,7 +45,8 @@
     "terrain-corridor": 1405838,
     "terrain-corridor-4k": 592850,
     "terrain-normal": 544238,
-    "clouds-atlas": 26268
+    "clouds-atlas": 26268,
+    "terrain-rock": 20220
   },
   "corridorMarginM": 400,
   "flight": {
@@ -61,5 +63,11 @@
     "residualCorrelation": -0.092,
     "deepMaskFraction": 0.0015,
     "file": "data/build/albedo.png"
+  },
+  "rockWindow": {
+    "left": 160,
+    "top": 576,
+    "epsgX": 739043,
+    "epsgY": 4727998
   }
 }
