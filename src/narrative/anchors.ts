@@ -38,10 +38,9 @@ export interface RouteLike {
   y: ArrayLike<number>;
   z: ArrayLike<number>;
   d: ArrayLike<number>;
+  /** SINGLE climb series (R2): smoothed-Z accumulation, the published +815 m.
+   * route.json writes it as cumClimb; the raw drape never had its own. */
   cumClimb: ArrayLike<number>;
-  /** Smoothed-Z climb series (S7: 100 m radius, 5 m threshold, sources.md).
-   * Present in route.json as cumClimb; absent in old/test fixtures. */
-  cumClimbSm?: ArrayLike<number>;
 }
 
 export interface ResolvedAnchors {
@@ -60,6 +59,10 @@ export interface ResolvedAnchors {
   camPitch: number[];
   camYawUnwrapped: number[];
   camHTarget: number[];
+  /** yaw PCHIP inputs (A9 "hold" excluded). */
+  yawIds: string[];
+  yawS: number[];
+  yawUnwrapped: number[];
   /** resolved metres per camera anchor id (for doctor + time hookup). */
   camDById: Record<string, number>;
 }
@@ -69,13 +72,13 @@ function num(a: ArrayLike<number>, i: number): number {
 }
 
 /** Linear track sample at distance d (route.json is already ~5 m: plenty).
- * climb comes from the SMOOTHED series (A5: the published +815 m); Z stays
- * the raw drape everywhere else. */
+ * climb comes from the SINGLE smoothed series (R2: the published +815 m);
+ * Z stays the raw drape everywhere else. */
 export function trackAt(
   route: RouteLike,
   d: number,
 ): { x: number; y: number; z: number; climb: number } {
-  const climbArr = route.cumClimbSm ?? route.cumClimb;
+  const climbArr = route.cumClimb;
   const n = route.n;
   const dd = route.d;
   if (d <= (num(dd, 0) as number)) {
@@ -226,14 +229,24 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
   }
   let lastBearing = 0;
   let haveBearing = false;
+  // A9 carries mode "hold": excluded from the series entirely, so the
+  // A8->A10 PCHIP span covers the return leg with no intermediate anchor.
+  const yawIds: string[] = [];
+  const yawS: number[] = [];
+  const yawRaw: number[] = [];
   for (const c of CAMERA_ANCHORS) {
     camIds.push(c.id);
     camS.push(c.s);
     camDistM.push(c.distM);
     camPitch.push(c.pitchDeg);
     camHTarget.push(c.hTargetM);
+    if (c.yaw.mode === "hold") {
+      camYawRaw.push(NaN);
+      continue;
+    }
+    let raw: number;
     if (c.yaw.mode === "abs") {
-      camYawRaw.push(c.yaw.deg);
+      raw = c.yaw.deg;
     } else {
       const d = camDById[c.id] as number;
       const b = smoothedBearingDeg(route, d, lastBearing);
@@ -248,12 +261,23 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
         lastBearing = b;
         haveBearing = true;
       }
-      camYawRaw.push((lastBearing + c.yaw.off + 360) % 360);
+      raw = (lastBearing + c.yaw.off + 360) % 360;
     }
+    camYawRaw.push(raw);
+    yawIds.push(c.id);
+    yawS.push(c.s);
+    yawRaw.push(raw);
   }
-  const camYawUnwrapped: number[] = [camYawRaw[0] as number];
-  for (let i = 1; i < camYawRaw.length; i++) {
-    camYawUnwrapped.push(angleUnwrapDeg(camYawUnwrapped[i - 1] as number, camYawRaw[i] as number));
+  const yawUnwrappedFull = unwrapYawSeries(yawRaw);
+  // scatter back: camYawUnwrapped aligns with camS (NaN only at hold slots,
+  // which no evaluator samples — the yaw PCHIP is built from yawS below).
+  const camYawUnwrapped: number[] = camYawRaw.map(() => NaN);
+  {
+    let j = 0;
+    for (let i = 0; i < camYawRaw.length; i++) {
+      if (Number.isNaN(camYawRaw[i] as number)) continue;
+      camYawUnwrapped[i] = yawUnwrappedFull[j++] as number;
+    }
   }
 
   const divergencePct = (Math.abs(lengthM - BRIEF_LENGTH_M) / BRIEF_LENGTH_M) * 100;
@@ -271,8 +295,20 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
     camPitch,
     camYawUnwrapped,
     camHTarget,
+    /** yaw PCHIP inputs: A9 (mode "hold") excluded — the A8->A10 span covers it. */
+    yawS,
+    yawUnwrapped: yawUnwrappedFull,
+    yawIds,
     camDById,
   };
+}
+
+function unwrapYawSeries(raw: number[]): number[] {
+  const out: number[] = [raw[0] as number];
+  for (let i = 1; i < raw.length; i++) {
+    out.push(angleUnwrapDeg(out[i - 1] as number, raw[i] as number));
+  }
+  return out;
 }
 
 /** Bisection over elevAtHour(h) for SUNSET_ELEV_DEG in the search window.

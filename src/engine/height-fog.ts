@@ -1,6 +1,13 @@
 // height-fog.ts — valley-height fog + sky-tinted distance haze + cheap
-// cloud-light modulation, injected via onBeforeCompile into the terrain's
-// MeshStandardMaterial (keeps shadows, tonemapping, colorspace).
+// cloud-light modulation + sky-ambient valley fill (R1b), injected via
+// onBeforeCompile into the terrain's MeshStandardMaterial (keeps shadows,
+// tonemapping, colorspace).
+//
+// R1b: the scene holds NO three Light for the ambient — a HemisphereLight
+// cannot work because nothing reads it. The fill enters as a uniform:
+// dome colour (uHemiSky, linear) x daylight factor (uHemiDay 0..1) added to
+// the outgoing fragment. Intensity NEVER scales with sin(solar altitude):
+// at 07:24 with the sun at 2.1 deg the valley still needs full sky light.
 import type * as THREE from "three";
 
 export interface FogParams {
@@ -9,6 +16,8 @@ export interface FogParams {
   skyColor: [number, number, number]; // linear-space horizon colour
   cloudShade: number; // 0..1 slow 2D noise dimming of the sun
   time: number; // seconds, for the slow drift
+  hemiSky: [number, number, number]; // R1b: sky dome colour (linear)
+  hemiDay: number; // R1b: daylight factor — 1 sun-up, ~0 after sunset
 }
 
 export const fogUniforms = {
@@ -19,6 +28,8 @@ export const fogUniforms = {
   uHasSkyMap: { value: 0 },
   uCloudShade: { value: 0 },
   uTime: { value: 0 },
+  uHemiSky: { value: [0.42, 0.55, 0.78] as [number, number, number] },
+  uHemiDay: { value: 1 },
 };
 
 export function patchTerrainMaterial(mat: THREE.Material): void {
@@ -33,6 +44,8 @@ export function patchTerrainMaterial(mat: THREE.Material): void {
     s.uniforms.uHasSkyMap = fogUniforms.uHasSkyMap;
     s.uniforms.uCloudShade = fogUniforms.uCloudShade;
     s.uniforms.uTime = fogUniforms.uTime;
+    s.uniforms.uHemiSky = fogUniforms.uHemiSky;
+    s.uniforms.uHemiDay = fogUniforms.uHemiDay;
     s.vertexShader = s.vertexShader
       .replace("#include <common>", "#include <common>\nvarying vec3 vWPos;")
       .replace("#include <fog_vertex>", "#include <fog_vertex>\nvWPos = (modelMatrix * vec4(transformed,1.0)).xyz;");
@@ -44,6 +57,7 @@ varying vec3 vWPos;
 uniform float uFogTop; uniform float uFogDensity; uniform vec3 uSkyColor;
 uniform sampler2D uSkyMap; uniform float uHasSkyMap;
 uniform float uCloudShade; uniform float uTime;
+uniform vec3 uHemiSky; uniform float uHemiDay;
 float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
   return mix(mix(h21(i),h21(i+vec2(1,0)),u.x), mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),u.x), u.y); }`,
@@ -64,6 +78,11 @@ float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
   float f = clamp(hf * 0.85 + df * (0.45 + 0.55 * uFogDensity), 0.0, 1.0);
   float shade = 1.0 - uCloudShade * (0.5 + 0.5 * vnoise(vWPos.xz * 0.00035 + uTime * 0.004)) * 0.35;
   gl_FragColor.rgb *= shade;
+  // R1b: sky-ambient valley fill. A shadowed valley under clear sky is
+  // blue, not black — add dome light directly (no three Light in scene).
+  // uHemiDay is 1 whenever the sun is up (never sin(altitude)), ~0 after
+  // sunset. Reference: Everest 02:27 — night, yet perfectly legible.
+  gl_FragColor.rgb += uHemiSky * uHemiDay * 0.35;
   // S9: fog colour sampled from the 64×32 sky capture along the view ray —
   // the far terrain dissolves into the actual sky, dawn and dusk included.
   vec3 haze = uSkyColor;

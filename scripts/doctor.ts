@@ -114,8 +114,10 @@ console.log(
   }
   console.log("  camera:");
   CAMERA_ANCHORS.forEach((c, i) => {
+    const yawV = res.camYawUnwrapped[i] as number;
+    const yawTxt = c.yaw.mode === "hold" ? "hold (no anchor: A8->A10 span)" : `${yawV.toFixed(1)} (unwrapped)`;
     console.log(
-      `    ${c.id} s=${c.s.toFixed(3)} d=${((res.camDById[c.id] as number)).toFixed(1)} m dist=${c.distM} pitch=${c.pitchDeg} yaw=${(res.camYawUnwrapped[i] as number).toFixed(1)} (unwrapped) hT=${c.hTargetM}`,
+      `    ${c.id} s=${c.s.toFixed(3)} d=${((res.camDById[c.id] as number)).toFixed(1)} m dist=${c.distM} pitch=${c.pitchDeg} yaw=${yawTxt} hT=${c.hTargetM}`,
     );
   });
   const sunset = bisectSunset((h) => nodeSun(42.645, -0.055, 2026, 8, 16, h, 120).elevationDeg);

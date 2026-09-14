@@ -56,12 +56,14 @@ export function createRig(deps: RigDeps): {
   const res = progress.resolved();
   const pchipDist = buildPchip(res.camS, res.camDistM, "cam-dist");
   const pchipPitch = buildPchip(res.camS, res.camPitch, "cam-pitch");
-  const pchipYaw = buildPchip(res.camS, res.camYawUnwrapped, "cam-yaw");
+  // E1/R3: yaw PCHIP runs on yawS (A9 "hold" excluded) — the return leg is
+  // one A8->A10 span. Sampling camSNaN slots would poison the curve.
+  const pchipYaw = buildPchip(res.yawS, res.yawUnwrapped, "cam-yaw");
   const pchipH = buildPchip(res.camS, res.camHTarget, "cam-h");
   const D2R = Math.PI / 180;
 
   let corrSm = 0; // smoothed COLLISION CORRECTION only (A3) — the choreographed dist is followed exactly
-  let lastYaw = res.camYawUnwrapped[0] as number;
+  let lastYaw = res.yawUnwrapped[0] as number;
   let lastPitch = pchipPitch(0);
   let lastTarget: [number, number, number] = [0, 0, 0];
   const diag: RigDiag = { yaw: lastYaw, pitch: lastPitch, dist: pchipDist(0), holgura: Infinity };

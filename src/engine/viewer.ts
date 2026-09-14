@@ -6,10 +6,14 @@ import * as THREE from "three";
 import { Sky } from "three/addons/objects/Sky.js";
 import { createRig } from "../narrative/camera-rig.ts";
 import {
+  CAM_FAR,
   CAM_PRESETS,
   CLOUD_FADE_START_DEG,
   CLOUD_ZENITH_FADE,
+  CORRIDOR_HALF_M,
+  EPILOGUE_S,
   G11_LUMA_MIN,
+  GLOW_S_WINDOW,
   HEMI_DAY,
   HEMI_GROUND_RGB,
   HEMI_NIGHT,
@@ -51,6 +55,7 @@ import {
   epsgToWorld,
   loadElevations,
   loadMeta,
+  meshHeightAtStep2,
   worldFromMeta,
 } from "./terrain.ts";
 
@@ -59,6 +64,11 @@ function el(tag: string, cls: string, text = ""): HTMLElement {
   e.className = cls;
   if (text) e.textContent = text;
   return e;
+}
+
+/** E3 uGlow: 1 at the milestone s, 0 outside +-GLOW_S_WINDOW. */
+function glowNear(s: number, milestoneS: number): number {
+  return Math.min(1, Math.max(0, (GLOW_S_WINDOW - Math.abs(s - milestoneS)) / GLOW_S_WINDOW));
 }
 
 async function fetchWithProgress(
@@ -127,7 +137,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   scene.background = new THREE.Color(0x0e141b);
   scene.fog = null;
 
-  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 5, 80000);
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 5, CAM_FAR);
 
   // --- sun + sky (B4: light follows the rig target, 1800 m box) ---
   const sun = new THREE.DirectionalLight(0xfff3e2, 2.4);
@@ -154,6 +164,10 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   let framesSinceShadow = SHADOW_MIN_FRAMES;
   const hemi = new THREE.HemisphereLight(0xbdd3e6, 0x5c5648, 0.5);
   scene.add(hemi);
+  // R1b: the scene holds no three Light that the terrain shader reads —
+  // the fill travels as uniforms (fogUniforms.uHemiSky/uHemiDay) into the
+  // patched terrain material. The HemisphereLight stays for the route line
+  // and any standard materials; the terrain ignores it by construction.
   const hemiSky = new THREE.Color(0x6b8cc7);
   const hemiGround = new THREE.Color(
     HEMI_GROUND_RGB[0] as number,
@@ -207,11 +221,11 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       ? [0.02, 0.03, 0.07]
       : [0.55 + warm * 0.35, 0.6 + warm * 0.15, 0.72 - warm * 0.2];
     fogUniforms.uSkyColor.value = top;
-    // A6: the valley in shadow is lit by the SKY, not the sun. Dome colour
-    // from the same zenith estimate the overlay prints (bluer with
-    // elevation, paler with rayleigh); floor is limestone in shadow.
-    // Daylight factor stays 1 between sunrise and sunset — low sun still
-    // means a bright sky — and dies only after sunset (epilogue).
+    // A6/R1b: the valley in shadow is lit by the SKY, not the sun. Dome
+    // colour from the same zenith estimate the overlay prints; it travels
+    // as a terrain-shader uniform (no three Light reads it). The daylight
+    // factor is 1 between sunrise and sunset — NEVER sin(altitude): at
+    // 07:24 with the sun at 2.1 deg the valley still needs full sky light.
     {
       const ray = L.rayleigh;
       const elevF = Math.max(0, Math.min(1, sp.elevationDeg / 60));
@@ -223,6 +237,10 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       hemi.groundColor.copy(hemiGround);
       const dayF = sp.elevationDeg > SUNSET_ELEV_DEG ? 1 : 0;
       hemi.intensity = HEMI_DAY * dayF + HEMI_NIGHT * (1 - dayF);
+      (fogUniforms.uHemiSky.value as [number, number, number])[0] = zr * 0.5;
+      (fogUniforms.uHemiSky.value as [number, number, number])[1] = zg * 0.5;
+      (fogUniforms.uHemiSky.value as [number, number, number])[2] = zb * 0.5;
+      (fogUniforms.uHemiDay as { value: number }).value = dayF;
     }
     routeDim = 1 - L.nightMix * 0.3;
     cloudDensity = L.cloudDensity;
@@ -360,6 +378,8 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   metrics.lod = step;
   let terrain: THREE.Mesh | null = null;
   let terrainMat: THREE.MeshStandardMaterial | null = null;
+  // E4: set once route.json arrives (rebuildTerrain reads it for the corridor).
+  let routeReady: RouteData | null = null;
   const texLoader = new THREE.TextureLoader();
   function loadTex(url: string, srgb: boolean): Promise<THREE.Texture> {
     return new Promise((resolve, reject) => {
@@ -376,7 +396,10 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       group.remove(terrain);
       terrain.geometry.dispose();
     }
-    const geo = buildTerrainGeometry(elev, meta, world, step);
+    // E4: corridor around the track snaps to full res (route loaded after
+    // the first build — rebuild once it arrives; no-op before that).
+    const corridor = routeReady ? { x: routeReady.x, y: routeReady.y, halfM: CORRIDOR_HALF_M } : undefined;
+    const geo = buildTerrainGeometry(elev, meta, world, step, corridor);
     if (!terrainMat) {
       terrainMat = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 });
       patchTerrainMaterial(terrainMat);
@@ -518,6 +541,11 @@ float wgrain(vec2 lp){
     gate.fail(`no se ha podido cargar la senda: ${e instanceof Error ? e.message : e}`);
     throw e;
   }
+  // E4: the first mesh built without the corridor (route unknown then) —
+  // rebuild once with the full-res strip along the track.
+  routeReady = route;
+  rebuildTerrain();
+  if (terrainMat?.map) terrainMat.needsUpdate = true;
 
   // --- Phase 3A journey: scroll -> progress (single source) -> rig ---
   scroll = createScroll();
@@ -576,7 +604,7 @@ float wgrain(vec2 lp){
     renderer.domElement.width,
     renderer.domElement.height,
   );
-  const line = buildRouteLine(route, world, elev, meta, res2);
+  const line = buildRouteLine(route, world, elev, meta, res2, (x, y) => meshHeightAtStep2(elev, meta, x, y));
   group.add(line.group);
   applyLighting(progress.getState().hourDec);
   renderer.compile(scene, camera);
@@ -774,7 +802,10 @@ float wgrain(vec2 lp){
   // G11 probe flag (?luma=1 with ?s=0.10): luminance sampling in the loop.
   // The threshold lives in choreography.ts; the loop exposes window.__luma
   // and the HUD line so the audit reads a number, not an impression.
+  // G12 rides the same sampler (?skyfrac=1 -> window.__skyFrac): fraction
+  // of sampled rows above the geometric horizon (sky pixels / total).
   const lumaOn = new URLSearchParams(location.search).has("luma");
+  const skyfracOn = new URLSearchParams(location.search).has("skyfrac");
   void G11_LUMA_MIN;
 
   gate.setProgress(1, 5);
@@ -792,6 +823,10 @@ float wgrain(vec2 lp){
       lm.resolution.copy(res2);
     }
   });
+
+  // E1: far-plane budget watch — drone views pull in more triangles. If
+  // msFrame breaks 24, drop the far LOD before touching the camera.
+  let lodDropped = false;
 
   const clock = new THREE.Clock();
   const tickFrame = frameClock(metrics);
@@ -818,7 +853,20 @@ float wgrain(vec2 lp){
     const st = progress.getState();
     const hour = st.hourDec;
     applyLighting(hour);
-    line.setProgressDist(st.d);
+    // E2: the epilogue draws the whole loop — uProgressDist rises to lengthM
+    // over s in [EPILOGUE_S, 1]; before that it ends at the walker.
+    {
+      const e = route.lengthM;
+      line.setProgressDist(st.s >= EPILOGUE_S ? e : Math.min(st.d, e));
+    }
+    // E3: line width from camera-target distance; halo glow near A3/A7/A8.
+    {
+      const dg0 = rig.getDiag();
+      const gA3 = glowNear(st.s, 0.3);
+      const gA7 = glowNear(st.s, 0.745);
+      const gA8 = glowNear(st.s, 0.86);
+      line.setFraming(dg0.dist, Math.max(gA3, gA7, gA8));
+    }
     // B4: sun station follows the rig target; shadow refresh has TWO
     // triggers (sun turned OR target moved), at most every N frames.
     {
@@ -920,8 +968,11 @@ float wgrain(vec2 lp){
     renderer.render(scene, camera);
     // G11 (audit A6): mean linear luminance over a LUMA_GRID^2 readPixels
     // grid, every 30th frame, only with ?luma=1 (a per-frame readPixels
-    // stall would eat the budget it is meant to protect).
-    if (lumaOn && frames % 30 === 5) {
+    // stall would eat the budget it is meant to protect). R1: sampled AFTER
+    // renderer.render() — the presented frame, never the previous one.
+    // G12 (E1): same pass counts sky rows — pixels whose NDC ray points
+    // above the geometric horizon from the camera position.
+    if ((lumaOn || skyfracOn) && frames % 30 === 5) {
       const g = LUMA_GRID;
       const w = Math.max(1, Math.floor(renderer.domElement.width / 2));
       const h = Math.max(1, Math.floor(renderer.domElement.height / 2));
@@ -946,8 +997,44 @@ float wgrain(vec2 lp){
       }
       (window as unknown as { __luma?: number }).__luma = cnt > 0 ? sum / cnt : 0;
       if (boot.debug) metrics.luma = (window as unknown as { __luma?: number }).__luma ?? -1;
+      // G12: sky fraction — rows whose centre ray clears the horizon.
+      // Horizon test in world space: a level ray from the camera travels
+      // straight; terrain above it means ground, below it means sky. We
+      // approximate per sampled pixel with the camera pitch + NDC offset:
+      // pixel is sky iff its view elevation exceeds the depression of the
+      // farthest visible terrain (~0 for drone framing at 30 deg pitch).
+      if (skyfracOn) {
+        let sky = 0;
+        let tot = 0;
+        const fovV = (camera.fov * Math.PI) / 180;
+        // camera pitch: angle of the forward axis above horizontal
+        const fwd = new THREE.Vector3();
+        camera.getWorldDirection(fwd);
+        const camPitch = Math.asin(Math.min(1, Math.max(-1, fwd.y)));
+        for (let yy = 0; yy < h; yy += sy) {
+          const ndcY = 1 - (2 * (yy + 0.5)) / h;
+          const elev = camPitch + Math.atan(ndcY * Math.tan(fovV / 2));
+          for (let xx = 0; xx < w; xx += sx) {
+            void xx;
+            tot++;
+            // geometric horizon from this altitude: depression ~ sqrt(2h/R)
+            const dep = Math.sqrt((2 * Math.max(1, camera.position.y)) / 6371000);
+            if (elev > -dep) sky++;
+          }
+        }
+        (window as unknown as { __skyFrac?: number }).__skyFrac = tot > 0 ? sky / tot : 0;
+      }
     }
     void t0;
     frames++;
+    // E1 budget: sustained >24 ms frames drop the far LOD one notch (2->4),
+    // once. The camera never pays for the triangle budget.
+    if (!lodDropped && frames > 120 && metrics.msFrame > 24 && step === 2) {
+      lodDropped = true;
+      step = 4;
+      metrics.lod = step;
+      rebuildTerrain();
+      if (terrainMat?.map) terrainMat.needsUpdate = true;
+    }
   });
 }

@@ -114,9 +114,17 @@ export function buildTerrainGeometry(
   meta: Meta,
   world: World,
   step: number,
+  corridor?: { x: Float32Array; y: Float32Array; halfM: number },
 ): THREE.BufferGeometry {
   const nx = Math.floor((meta.width - 1) / step) + 1;
   const ny = Math.floor((meta.height - 1) / step) + 1;
+  // E4: if a corridor is given, grid vertices within halfM of ANY track
+  // point snap to step 1 (no decimation along the path). Implementation:
+  // dense rows/cols around the track bbox at full res, coarse elsewhere is
+  // overkill — instead we densify by choosing per-column/per-row source
+  // indices: full-res indices inside the corridor band, stepped outside.
+  // Simpler and exact: build at step, then overwrite corridor vertices with
+  // the full-res sample (same filter as the vertex would use at LOD 0).
   const positions = new Float32Array(nx * ny * 3);
   const uvs = new Float32Array(nx * ny * 2);
   const uv2 = new Float32Array(nx * ny * 3); // u, v, blend weight
@@ -174,8 +182,105 @@ export function buildTerrainGeometry(
   geo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
   geo.setAttribute("uv2c", new THREE.BufferAttribute(uv2, 3));
   geo.setIndex(new THREE.BufferAttribute(indices, 1));
+  if (corridor) snapCorridorToFullRes(geo, elev, meta, nx, ny, step, corridor);
   geo.computeVertexNormals();
   return geo;
+}
+
+/** E4 step-2 height: what the GPU draws at (x,y) — bilinear over the step-2
+ * vertex lattice. Exported so verify-3a uses the SAME decimator as the
+ * viewer (G13). Inside the snapped corridor the mesh carries full-res
+ * heights instead; G13 mirrors that with its own corridor test. */
+export function meshHeightAtStep2(
+  elev: Float32Array,
+  meta: Meta,
+  x: number,
+  y: number,
+): number {
+  const step = 2;
+  const col = (x - meta.originX) / meta.resX - 0.5;
+  const row = (meta.originY - y) / meta.resY - 0.5;
+  const lc = Math.floor(col / step) * step;
+  const lr = Math.floor(row / step) * step;
+  const fx = Math.min(1, Math.max(0, (col - lc) / step));
+  const fy = Math.min(1, Math.max(0, (row - lr) / step));
+  const W = meta.width;
+  const H = meta.height;
+  const at = (c: number, r: number): number =>
+    elev[Math.min(H - 1, Math.max(0, r)) * W + Math.min(W - 1, Math.max(0, c))] as number;
+  const c0 = Math.min(W - 1 - step, Math.max(0, lc));
+  const r0 = Math.min(H - 1 - step, Math.max(0, lr));
+  const a = at(c0, r0);
+  const b = at(Math.min(W - 1, c0 + step), r0);
+  const c = at(c0, Math.min(H - 1, r0 + step));
+  const d = at(Math.min(W - 1, c0 + step), Math.min(H - 1, r0 + step));
+  return a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy;
+}
+
+/** E4: overwrite mesh vertices near the track with the full-res heightmap
+ * sample — the same filter a LOD-0 vertex would use. Path and ground then
+ * coincide by construction instead of by luck. */
+function snapCorridorToFullRes(
+  geo: THREE.BufferGeometry,
+  elev: Float32Array,
+  meta: Meta,
+  nx: number,
+  ny: number,
+  step: number,
+  corridor: { x: Float32Array; y: Float32Array; halfM: number },
+): void {
+  const pos = geo.getAttribute("position") as THREE.BufferAttribute;
+  // coarse spatial hash over track points (cell = halfM) for O(1) lookup
+  const cell = corridor.halfM;
+  const inv = 1 / cell;
+  const minX = meta.bbox.minx;
+  const minY = meta.bbox.miny;
+  const key = (cx: number, cy: number): number => cx * 4096 + cy;
+  const buckets = new Map<number, number[]>();
+  for (let i = 0; i < corridor.x.length; i++) {
+    const k = key(
+      Math.floor(((corridor.x[i] as number) - minX) * inv),
+      Math.floor(((corridor.y[i] as number) - minY) * inv),
+    );
+    let b = buckets.get(k);
+    if (!b) {
+      b = [];
+      buckets.set(k, b);
+    }
+    b.push(i);
+  }
+  const half2 = corridor.halfM * corridor.halfM;
+  for (let row = 0; row < ny; row++) {
+    const srcRow = row * step;
+    const epsgY = meta.originY - (srcRow + 0.5) * meta.resY;
+    for (let col = 0; col < nx; col++) {
+      const srcCol = col * step;
+      const epsgX = meta.originX + (srcCol + 0.5) * meta.resX;
+      const ccx = Math.floor((epsgX - minX) * inv);
+      const ccy = Math.floor((epsgY - minY) * inv);
+      let near = false;
+      for (let ax = -1; ax <= 1 && !near; ax++) {
+        for (let ay = -1; ay <= 1 && !near; ay++) {
+          const b = buckets.get(key(ccx + ax, ccy + ay));
+          if (!b) continue;
+          for (const i of b) {
+            const dx = (corridor.x[i] as number) - epsgX;
+            const dy = (corridor.y[i] as number) - epsgY;
+            if (dx * dx + dy * dy <= half2) {
+              near = true;
+              break;
+            }
+          }
+        }
+      }
+      if (near) {
+        // full-res sample: nearest grid cell (what a step-1 vertex reads)
+        const fc = Math.min(meta.width - 1, Math.max(0, Math.round((epsgX - meta.originX) / meta.resX - 0.5)));
+        const fr = Math.min(meta.height - 1, Math.max(0, Math.round((meta.originY - epsgY) / meta.resY - 0.5)));
+        pos.setY(row * nx + col, elev[fr * meta.width + fc] as number);
+      }
+    }
+  }
 }
 
 /** Bilinear sample of the decoded grid in EPSG:25830 coords. */

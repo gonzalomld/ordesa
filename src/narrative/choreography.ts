@@ -34,7 +34,9 @@ export const SHADOW_MOVE_EPS_M = 150; // shadow needsUpdate also fires when the 
 export const SKY_EPS_DEG = 0.5; // sky-capture + fog colour refresh only when solar elevation changed more than this
 
 export const TRACK_DIM_PAST = 1.0; // walked stretch opacity (full)
-export const TRACK_DIM_FUTURE = 0.35; // pending stretch opacity
+export const TRACK_DIM_FUTURE = 0.0; // E2: the road ahead does not exist; the line ends at the walker (was 0.35)
+export const TRACK_TIP_FADE_M = 40; // E2: 40 m soft tip before the cut so the head is not a chop
+export const EPILOGUE_S = 0.98; // E2/R3: epilogue transition; the full loop draws over s in [0.98, 1.00]
 
 // --- audit A6: sky-ambient valley fill (a shadowed valley under clear sky
 // is blue, not black). Dome colour comes from the same zenith estimate the
@@ -51,6 +53,25 @@ export const LUMA_GRID = 32; // G11 readPixels grid (audit A6); measured in-brow
 // zenith while keeping its grazing-incidence density.
 export const CLOUD_ZENITH_FADE = 0.85; // max opacity cut looking straight down (0 = opaque disc, 1 = invisible)
 export const CLOUD_FADE_START_DEG = 25; // view-ray elevation above which the fade ramps in (deg from horizontal)
+
+// --- E1 (drone framing): full replacement camera table + far plane budget ---
+export const CAM_FAR = 120000; // was 80000: drone views span tens of km; far plane follows
+export const SKY_FRACTION_MIN = 0.15; // G12: sky occupies 15-35% of frame height in all seven acts
+export const SKY_FRACTION_MAX = 0.35; // measured with the G11 framebuffer sampler, pixels above the geometric horizon
+
+// --- E3 (luminous tube at milestones): width as a function of camera-target
+// distance + additive halo on the same geometry, gated by uGlow near A3/A7/A8.
+export const LINE_W_FAR = 2; // px above LINE_W_D_FAR (sober line)
+export const LINE_W_NEAR = 7; // px below LINE_W_D_NEAR (ribbon near the path)
+export const LINE_W_D_FAR = 1200; // m: smoothstep upper edge
+export const LINE_W_D_NEAR = 400; // m: smoothstep lower edge
+export const GLOW_MULT = 3; // halo pass width x3, drawn first
+export const GLOW_ALPHA = 0.18; // halo opacity (cream, additive)
+export const GLOW_S_WINDOW = 0.02; // uGlow 0..1 within +-0.02 s of A3/A7/A8
+
+// --- E4 (line floats over decimated mesh): full-res corridor around track ---
+export const CORRIDOR_HALF_M = 150; // force LOD 0 within +-150 m of the track
+export const G13_TOL_M = 1.0; // |z_line - z_meshLOD| <= 1.0 m over the 1000 steps
 
 // --- s -> distance anchors (brief section 2) ---
 // kmBrief is DESCRIPTIVE (rounded off route.json), never the distance axis.
@@ -102,7 +123,7 @@ export const CAM_PRESETS: Record<string, { eye: [number, number, number]; tgt: [
   mirador: { eye: [741507 - 800, 2900, 4725203 + 1800], tgt: [741507, 1960, 4725203] },
   circo: { eye: [747191 - 2600, 2600, 4726348 + 2400], tgt: [747191, 1762, 4726348] },
 };
-export type YawSpec = { mode: "abs"; deg: number } | { mode: "tang"; off: number };
+export type YawSpec = { mode: "abs"; deg: number } | { mode: "tang"; off: number } | { mode: "hold" };
 export interface CameraAnchor {
   id: string;
   s: number;
@@ -113,40 +134,31 @@ export interface CameraAnchor {
   hTargetM: number;
 }
 export const CAMERA_ANCHORS: CameraAnchor[] = [
-  { id: "A0", s: 0.0, kmBrief: 0.0, distM: 420, pitchDeg: 12, yaw: { mode: "abs", deg: 266 }, hTargetM: 40 },
-  { id: "A1", s: 0.06, kmBrief: 0.3, distM: 300, pitchDeg: 18, yaw: { mode: "tang", off: 150 }, hTargetM: 25 },
-  { id: "A2", s: 0.18, kmBrief: 1.2, distM: 220, pitchDeg: 26, yaw: { mode: "tang", off: 120 }, hTargetM: 20 },
-  // A3/A4 (audit A4): pitch 8/6 deg buried the camera in Sierra Custodia
-  // (clamp active 18% of the piece). Same D8 gaze ENE toward Monte Perdido,
-  // from above the ridge instead of inside it. Values exactly as audited.
-  { id: "A3", s: 0.3, kmBrief: 2.44, distM: 520, pitchDeg: 26, yaw: { mode: "abs", deg: 266 }, hTargetM: 30 },
-  { id: "A4", s: 0.46, kmBrief: 3.0, distM: 620, pitchDeg: 22, yaw: { mode: "abs", deg: 266 }, hTargetM: 35 },
-  // A5 (audit A2): tang +90 puts the camera south looking north into the
-  // void. Bearing resolves ~92.7 deg, yaw ~182.7. A1/A2 keep their brief
-  // signs: checked against the grid, both already sit over air
-  // (A1 +150 clear ~127 m, A2 +120 clear ~342 m).
-  { id: "A5", s: 0.57, kmBrief: 6.0, distM: 200, pitchDeg: 14, yaw: { mode: "tang", off: 90 }, hTargetM: 20 },
-  { id: "A6", s: 0.68, kmBrief: 9.0, distM: 380, pitchDeg: 10, yaw: { mode: "abs", deg: 250 }, hTargetM: 60 },
-  { id: "A7", s: 0.745, kmBrief: 9.67, distM: 150, pitchDeg: 4, yaw: { mode: "abs", deg: 275 }, hTargetM: 40 },
-  // A7b (audit A1): hold-shot, same 275 heading until s=0.845, so the whole
-  // 170 deg turn happens inside the exempt window instead of spilling out.
+  // E1: drone framing replaces the whole table. Criterion (G12): sky fills
+  // 15-35% of frame height in all seven acts; dist 900-1800 m at ~30 deg
+  // pitch keeps the camera in free air (G9 solves itself) and puts texture
+  // defects below screen pixel at 2.4 m/px.
+  { id: "A0", s: 0.0, kmBrief: 0.0, distM: 1600, pitchDeg: 30, yaw: { mode: "abs", deg: 266 }, hTargetM: 60 },
+  { id: "A1", s: 0.06, kmBrief: 0.3, distM: 1400, pitchDeg: 30, yaw: { mode: "tang", off: 150 }, hTargetM: 50 },
+  { id: "A2", s: 0.18, kmBrief: 1.2, distM: 1200, pitchDeg: 32, yaw: { mode: "tang", off: 120 }, hTargetM: 45 },
+  { id: "A3", s: 0.3, kmBrief: 2.44, distM: 1500, pitchDeg: 30, yaw: { mode: "abs", deg: 266 }, hTargetM: 60 },
+  { id: "A4", s: 0.46, kmBrief: 3.0, distM: 1700, pitchDeg: 28, yaw: { mode: "abs", deg: 266 }, hTargetM: 70 },
+  { id: "A5", s: 0.57, kmBrief: 6.0, distM: 1500, pitchDeg: 30, yaw: { mode: "tang", off: 90 }, hTargetM: 60 },
+  { id: "A6", s: 0.68, kmBrief: 9.0, distM: 1700, pitchDeg: 28, yaw: { mode: "abs", deg: 250 }, hTargetM: 80 },
+  { id: "A7", s: 0.745, kmBrief: 9.67, distM: 900, pitchDeg: 26, yaw: { mode: "abs", deg: 275 }, hTargetM: 50 },
+  // A7b hold-shot: same 275 heading until s=0.845, so the whole turn happens
+  // inside the exempt window instead of spilling out.
   // kmBrief -1 = sentinel: d resolved as d(s=0.845) in anchors.ts.
-  { id: "A7b", s: 0.845, kmBrief: -1, distM: 900, pitchDeg: 38, yaw: { mode: "abs", deg: 275 }, hTargetM: 120 },
-  // A8 (audit A1): pitch 38 + dist 900 reads the yaw change as an orbit over
-  // the cirque, not a whip. The only deliberate hard turn (G4-exempt window).
-  // Audit round 2: A9 tang -60 backtracks against the loop (582 deg) and
-  // forces a second 110 deg swing AFTER the window. Pinned abs 266: after
-  // the turnaround the camera holds WSW and looks down-valley with the
-  // walker — one turn in the whole piece, not two.
-  { id: "A8", s: 0.86, kmBrief: 10.5, distM: 900, pitchDeg: 38, yaw: { mode: "abs", deg: 85 }, hTargetM: 120 },
-  // A9 (audit round 2): the return leg walks WSW, so the brief's tang -60
-  // backtracks against the loop and forces a second swing AFTER the window.
-  // Reverted to the brief value: the audit pass decides A8/A9 framing from
-  // ?debug=path captures, not from the gate number alone.
-  { id: "A9", s: 0.93, kmBrief: 14.0, distM: 300, pitchDeg: 12, yaw: { mode: "tang", off: -60 }, hTargetM: 25 },
-  { id: "A10", s: 0.98, kmBrief: 18.13, distM: 500, pitchDeg: 16, yaw: { mode: "abs", deg: 266 }, hTargetM: 60 },
+  { id: "A7b", s: 0.845, kmBrief: -1, distM: 1400, pitchDeg: 34, yaw: { mode: "abs", deg: 275 }, hTargetM: 90 },
+  // A8: the only deliberate hard turn (G4-exempt window). pitch 34 + dist
+  // 1400 reads the yaw change as an orbit over the cirque, not a whip.
+  { id: "A8", s: 0.86, kmBrief: 10.5, distM: 1400, pitchDeg: 34, yaw: { mode: "abs", deg: 85 }, hTargetM: 90 },
+  // A9 carries NO yaw anchor (audit): the return leg is covered by the
+  // A8->A10 PCHIP span. Never re-add one without reopening G4.
+  { id: "A9", s: 0.93, kmBrief: 14.0, distM: 1500, pitchDeg: 30, yaw: { mode: "hold" }, hTargetM: 60 },
+  { id: "A10", s: 0.98, kmBrief: 18.13, distM: 1800, pitchDeg: 32, yaw: { mode: "abs", deg: 266 }, hTargetM: 80 },
   // A11 epilogue: camera detached and high, no longer the walker's POV
-  { id: "A11", s: 1.0, kmBrief: 18.13, distM: 2600, pitchDeg: 34, yaw: { mode: "abs", deg: 266 }, hTargetM: 400 },
+  { id: "A11", s: 1.0, kmBrief: 18.13, distM: 3200, pitchDeg: 38, yaw: { mode: "abs", deg: 266 }, hTargetM: 400 },
 ];
 
 // ?act= jumps: arithmetic midpoint of each act's s interval (brief s->d table)

@@ -2,6 +2,7 @@
 // No module recomputes travelled distance. Everything reads getState().
 // Anchor tables come from anchors.ts (pure); PCHIP from curve.ts.
 import { bisectSunset, resolveAnchors, trackAt, type ResolvedAnchors, type RouteLike } from "./anchors.ts";
+import { EPILOGUE_S } from "./choreography.ts";
 import { buildPchip, type PchipFn } from "./curve.ts";
 import { actForDistance, sunPosition } from "../engine/sun.ts";
 import type { ScrollHandle } from "./scroll.ts";
@@ -84,8 +85,10 @@ export function initProgress(route: RouteLike, scroll: ScrollHandle): ProgressHa
     let hourDec: number;
     if (frozenHour !== null) {
       hourDec = frozenHour;
-    } else if (s >= 0.98) {
-      const f = (s - 0.98) / 0.02;
+    } else if (s >= EPILOGUE_S) {
+      // R3: the epilogue is decided by s, not d. d is constant over
+      // s in [0.98, 1.00], so a pchipTD(d) lookup would freeze at 16:40.
+      const f = (s - EPILOGUE_S) / (1 - EPILOGUE_S);
       hourDec = epilogueBase + (sunsetHourDec - epilogueBase) * f;
     } else {
       hourDec = pchipTD(d);

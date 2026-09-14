@@ -3,7 +3,7 @@
 // G5 sun-window · + OrbitControls anti-bundle check (C10: chunk-name based,
 // the minifier mangles identifiers so grepping "OrbitControls" is useless).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { A8_EXEMPT_S0, A8_EXEMPT_S1, BRIEF_LENGTH_M, CAM_CLEARANCE_M, G11_LUMA_MIN, LUMA_GRID, ROUTE_DIVERGE_PCT, SUNSET_ELEV_DEG } from "../src/narrative/choreography.ts";
+import { A8_EXEMPT_S0, A8_EXEMPT_S1, BRIEF_LENGTH_M, CAM_CLEARANCE_M, CORRIDOR_HALF_M, G11_LUMA_MIN, G13_TOL_M, LUMA_GRID, ROUTE_DIVERGE_PCT, SKY_FRACTION_MAX, SKY_FRACTION_MIN, SUNSET_ELEV_DEG } from "../src/narrative/choreography.ts";
 import { bisectSunset, resolveAnchors, trackAt } from "../src/narrative/anchors.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
 import { sunPosition } from "./lib/sun.ts";
@@ -47,7 +47,8 @@ const pchipSD = buildPchip(res.sAnchors, res.dAnchorsM, "s->d");
 const pchipTD = buildPchip(res.timeD, res.timeH, "time");
 const pchipDist = buildPchip(res.camS, res.camDistM, "cam-dist");
 const pchipPitch = buildPchip(res.camS, res.camPitch, "cam-pitch");
-const pchipYaw = buildPchip(res.camS, res.camYawUnwrapped, "cam-yaw");
+// E1/R3: yaw runs on yawS (A9 "hold" excluded), same as camera-rig.ts.
+const pchipYaw = buildPchip(res.yawS, res.yawUnwrapped, "cam-yaw");
 const pchipH = buildPchip(res.camS, res.camHTarget, "cam-h");
 
 // ocaso: same NOAA algorithm as the browser (scripts/lib/sun.ts here,
@@ -193,22 +194,24 @@ void D2R;
     badD >= 0 ? `d decreases at s=${(badD / STEPS).toFixed(4)}` : badT >= 0 ? `t decreases at s=${(badT / STEPS).toFixed(4)}` : `d(s),t(s) non-decreasing over ${STEPS} steps`);
 }
 
-// --- G2 continuity ---
+// --- G2 second difference (audit): |dD[i+1]-dD[i]| <= 0.15*dD[i].
+// Motion flats (epilogue d = lengthM, |dD| ~ 0) carry no jerk: skip spans
+// where either step is under 1 m instead of ratioing noise. ---
 {
-  let max = 0;
-  let sum = 0;
+  let maxR = 0;
   let at = 0;
-  for (let i = 0; i < STEPS; i++) {
-    const dd = Math.abs((ds[i + 1] as number) - (ds[i] as number));
-    sum += dd;
-    if (dd > max) {
-      max = dd;
+  for (let i = 0; i < STEPS - 1; i++) {
+    const a = Math.abs((ds[i + 1] as number) - (ds[i] as number));
+    const b = Math.abs((ds[i + 2] as number) - (ds[i + 1] as number));
+    if (a < 1 || b < 1) continue; // parked (epilogue): no motion, no jerk
+    const rr = Math.abs(b - a) / a;
+    if (rr > maxR) {
+      maxR = rr;
       at = i;
     }
   }
-  const mean = sum / STEPS;
-  gate("G2-continuity", max <= 3 * mean,
-    `max|dD|=${max.toFixed(1)} m mean=${mean.toFixed(1)} m ratio=${(max / mean).toFixed(2)} (need <=3) at s=${(at / STEPS).toFixed(3)}`);
+  gate("G2-smoothness", maxR <= 0.15,
+    `max|dD[i+1]-dD[i]|/dD[i]=${maxR.toFixed(3)} (need <=0.15) at s=${(at / STEPS).toFixed(3)}`);
 }
 
 // --- G3 clearance (prints minimum + s, pass or fail) ---
@@ -216,7 +219,8 @@ void D2R;
 gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
   `min clearance ${minClear.toFixed(2)} m at s=${minClearS.toFixed(4)} (need >=${CAM_CLEARANCE_M})`);
 
-// --- G4 yaw rate (A8 window exempt, declared in the test itself) ---
+// --- G4 yaw rate, 2.0 deg/step (audit): A9 carries no yaw anchor, so the
+// only exempt span is the deliberate A8 turnaround. ---
 {
   let max = 0;
   let at = 0;
@@ -229,8 +233,8 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
       at = i;
     }
   }
-  gate("G4-yaw-rate", max <= 1.5,
-    `max|dYaw|=${max.toFixed(2)} deg/step (need <=1.5) at s=${(at / STEPS).toFixed(4)}, A8 window [${A8_EXEMPT_S0},${A8_EXEMPT_S1}] exempt`);
+  gate("G4-yaw-rate", max <= 2.0,
+    `max|dYaw|=${max.toFixed(2)} deg/step (need <=2.0) at s=${(at / STEPS).toFixed(4)}, A8 window [${A8_EXEMPT_S0},${A8_EXEMPT_S1}] exempt`);
 }
 
 // --- G5 sun window ---
@@ -280,6 +284,72 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   const hasProbe = src.includes("__luma") && src.includes('has("luma")');
   gate("G11-luma-probe", hasProbe && G11_LUMA_MIN > 0 && LUMA_GRID >= 16,
     hasProbe ? `probe in viewer (?luma=1 -> window.__luma), threshold ${G11_LUMA_MIN}, grid ${LUMA_GRID}x${LUMA_GRID} — measure at ?s=0.10` : "no __luma probe in viewer.ts");
+}
+
+// --- G12 sky fraction contract (E1): 15-35% of frame height in all acts.
+// Node checks the probe contract (same sampler as G11 + horizon test);
+// the fractions themselves are measured in-browser on the seven captures.
+{
+  const src = readFileSync("src/engine/viewer.ts", "utf8");
+  const hasSky = src.includes("__skyFrac") && src.includes("skyfrac");
+  gate("G12-sky-probe", hasSky && SKY_FRACTION_MIN === 0.15 && SKY_FRACTION_MAX === 0.35,
+    hasSky ? `probe in viewer (?skyfrac=1 -> window.__skyFrac), band [${SKY_FRACTION_MIN}, ${SKY_FRACTION_MAX}] — measure on the seven act captures` : "no __skyFrac probe in viewer.ts");
+}
+
+// --- G13 line-vs-mesh (E4): |z_line - z_meshLOD| <= 1.0 m over 1000 steps.
+// Same decimator as the viewer: step-2 grid, corridor snapped to full res.
+{
+  const step = 2;
+  const W = meta.width;
+  const H = meta.height;
+  // full-res grid (already decoded above via sampleGrid's pngRaw)
+  const zFull = (c: number, r: number): number =>
+    (pngMeta.minZ + (pngRaw[(r * W + c) * 3] as number) * 256 + (pngRaw[(r * W + c) * 3 + 1] as number));
+  // corridor test: within CORRIDOR_HALF_M of the track (plan, coarse check
+  // every 4th route point is plenty at 5 m spacing vs 150 m radius)
+  const nearTrack = (x: number, y: number): boolean => {
+    for (let i = 0; i < route.x.length; i += 4) {
+      const dx = (route.x[i] as number) - x;
+      const dy = (route.y[i] as number) - y;
+      if (dx * dx + dy * dy <= CORRIDOR_HALF_M * CORRIDOR_HALF_M) return true;
+    }
+    return false;
+  };
+  // mesh height at (x,y): corridor -> full-res nearest; else step-2 vertex
+  // lattice, bilinear between lattice nodes (what the GPU interpolates)
+  const meshZ = (x: number, y: number): number => {
+    if (nearTrack(x, y)) {
+      const fc = Math.min(W - 1, Math.max(0, Math.round((x - meta.originX) / meta.resX - 0.5)));
+      const fr = Math.min(H - 1, Math.max(0, Math.round((meta.originY - y) / meta.resY - 0.5)));
+      return zFull(fc, fr);
+    }
+    const col = (x - meta.originX) / meta.resX - 0.5;
+    const row = (meta.originY - y) / meta.resY - 0.5;
+    const lc = Math.floor(col / step) * step;
+    const lr = Math.floor(row / step) * step;
+    const fx = Math.min(1, Math.max(0, (col - lc) / step));
+    const fy = Math.min(1, Math.max(0, (row - lr) / step));
+    const c0 = Math.min(W - 1 - step, Math.max(0, lc));
+    const r0 = Math.min(H - 1 - step, Math.max(0, lr));
+    const a = zFull(c0, r0);
+    const b = zFull(Math.min(W - 1, c0 + step), r0);
+    const c = zFull(c0, Math.min(H - 1, r0 + step));
+    const d = zFull(Math.min(W - 1, c0 + step), Math.min(H - 1, r0 + step));
+    return a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy;
+  };
+  let maxG = 0;
+  let atG = 0;
+  for (let i = 0; i <= STEPS; i++) {
+    const q = trackAt(r, ds[i] as number);
+    const lineGround = q.z - 4; // ROUTE_OFFSET_M stripped: ground truth
+    const gap = Math.abs(lineGround - meshZ(q.x, q.y));
+    if (gap > maxG) {
+      maxG = gap;
+      atG = i;
+    }
+  }
+  gate("G13-line-mesh", maxG <= G13_TOL_M,
+    `max|z_line-z_mesh|=${maxG.toFixed(2)} m (need <=${G13_TOL_M}) at s=${(atG / STEPS).toFixed(4)}, step-2 mesh + ${CORRIDOR_HALF_M} m corridor`);
 }
 
 // --- anti-bundle: OrbitControls must be a deferred chunk, not in the entry ---
