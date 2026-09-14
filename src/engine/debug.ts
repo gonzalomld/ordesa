@@ -20,7 +20,7 @@ export interface Metrics {
   zenithHex: string; // A1: sky-model zenith colour (computed, not read)
   fog10km: number; // A1: fog factor at 10 km with the live formula
   steep: boolean; // steep weight-map mode (?debug=steep)
-  hasRock: number; // rock tile loaded (1) or not (0)
+  hasRock: number; // procedural grain active (1) — kept for overlay compat
   rockWeightShown: number; // live uRockWeight value
   drawCalls: number;
   triangles: number;

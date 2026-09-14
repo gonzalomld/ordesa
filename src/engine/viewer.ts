@@ -414,13 +414,11 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uCorridor"] = corridorUniform;
         s.uniforms["uNormalMap2"] = normalUniform;
         s.uniforms["uNormalStrength"] = normalStrength;
-        s.uniforms["uRock"] = rockUniform;
         s.uniforms["uWallDeg"] = wallDeg;
         s.uniforms["uRockWeight"] = rockWeight;
         s.uniforms["uGrainK"] = grainK;
         s.uniforms["uHasCorr"] = hasCorr;
         s.uniforms["uHasNormal"] = hasNormal;
-        s.uniforms["uHasRock"] = hasRock;
         s.vertexShader = s.vertexShader
           .replace("#include <common>", "#include <common>\nattribute vec3 uv2c; varying vec3 vUv2c; varying vec3 vWPos2; varying vec3 vWNormal2;")
           .replace("#include <uv_vertex>", "#include <uv_vertex>\nvUv2c = uv2c;")
@@ -430,11 +428,26 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
             "#include <common>",
             `#include <common>
 uniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNormalStrength; varying vec3 vUv2c;
-uniform sampler2D uRock; uniform float uWallDeg; uniform float uRockWeight; uniform float uGrainK;
-uniform float uHasCorr; uniform float uHasNormal; uniform float uHasRock;
+uniform float uWallDeg; uniform float uRockWeight; uniform float uGrainK;
+uniform float uHasCorr; uniform float uHasNormal;
 varying vec3 vWPos2; varying vec3 vWNormal2;
 float gSteep = 0.0; // V1: lateral weight shared with the normal-map block below
-float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)`,
+float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
+float gGrain = 0.0; // procedural grain value (shared colour/normal, one evaluation)
+// W-grain: procedural anisotropic value noise, flat by construction.
+// 3 octaves, amplitudes 1 / 0.5 / 0.25, scales x1 / x2.3 / x5.1 (non-integer
+// so octaves never align), stretched 2.5x along world-horizontal —
+// sediment strata grain, not TV static. No photo tile, no motif to repeat.
+float whash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+float wnoise(vec2 p){
+  vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(whash(i), whash(i + vec2(1.0, 0.0)), u.x),
+             mix(whash(i + vec2(0, 1.0)), whash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float wgrain(vec2 lp){
+  vec2 p = vec2(lp.x / 2.5, lp.y);
+  return wnoise(p) * 0.5714 + wnoise(p * 2.3) * 0.2857 + wnoise(p * 5.1) * 0.1429;
+}`,
           )
           .replace(
             "#include <map_fragment>",
@@ -450,28 +463,30 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
   // V2-steep: normalised degree-space blend. smoothstep output is 0..1 BY
   // CONSTRUCTION, so no pow-on-a-tiny-number and no magic scale — stable for
   // ANY slider position 20°..60°. Threshold means what the label says.
-  // T1 grain, not wallpaper: the tile carries NO colour of its own.
-  // Detrended luminance (rockLum − 0.5, centred on 0) multiplies the real
-  // ortho colour, so strata bands and vegetation stains survive — stretched
-  // but intact — with high frequency on top. No motif can repeat because
-  // nothing with a mean is ever repeated. uGrainK is the lever to calibrate.
+  // T1 grain, not wallpaper: procedural high frequency, NO colour of its own.
+  // Detrended (grain − 0.5, centred on 0) multiplies the real ortho colour,
+  // so strata bands and vegetation stains survive with detail on top.
   vec3 wn2 = normalize(vWNormal2);
   float slopeDeg = degrees(acos(clamp(wn2.y, 0.0, 1.0)));
   float rawSteep = smoothstep(uWallDeg, uWallDeg + 15.0, slopeDeg);
   gRaw = rawSteep;
-  float steep = rawSteep * uHasRock * uRockWeight;
+  float steep = rawSteep * uRockWeight;
   gSteep = steep;
   if (steep > 0.001) {
+    // lateral projection, world metres, tile 38 m; same axes mix the two
+    // wall planes so X- and Z-facing walls get continuous grain.
     float rep = 38.0;
-    vec2 ruvX = vec2(vWPos2.z / rep, vWPos2.y / rep);
-    vec2 ruvZ = vec2(vWPos2.x / rep, vWPos2.y / rep);
     float wx = pow(abs(wn2.x), 6.0);
     float wz = pow(abs(wn2.z), 6.0);
     float wsum = wx + wz;
-    float rockLum = 0.0;
-    if (wx > 0.001) rockLum += dot(texture2D(uRock, ruvX).rgb, vec3(0.299, 0.587, 0.114)) * (wx / max(wsum, 1e-4));
-    if (wz > 0.001) rockLum += dot(texture2D(uRock, ruvZ).rgb, vec3(0.299, 0.587, 0.114)) * (wz / max(wsum, 1e-4));
-    float grano = (rockLum - 0.5) * uGrainK * steep * (wsum > 0.001 ? 1.0 : 0.0);
+    float grain = 0.0;
+    if (wsum > 0.001) {
+      float gx = wgrain(vec2(vWPos2.z / rep, vWPos2.y / rep));
+      float gz = wgrain(vec2(vWPos2.x / rep, vWPos2.y / rep));
+      grain = (gx * (wx / wsum) + gz * (wz / wsum)) - 0.5;
+    }
+    gGrain = grain;
+    float grano = grain * uGrainK * steep;
     alb *= (1.0 + grano);
   }
   diffuseColor.rgb = alb;
@@ -481,23 +496,35 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
             "#include <normal_fragment_maps>",
             `#include <normal_fragment_maps>
 {
-  // V1.3: the microrelief normal follows the same projection — lateral on
-  // steep faces (rock tile luminance as height), zenithal on flats.
+  // Same procedural grain drives the microrelief normal — one evaluation
+  // (gGrain), so colour and relief can never disagree or show two motifs.
+  // Finite differences of the grain field, lateral-projected like the colour.
+  float eN = 0.6;
+  vec3 wnN = normalize(vWNormal2);
+  float repN = 38.0;
+  float wxN = pow(abs(wnN.x), 6.0);
+  float wzN = pow(abs(wnN.z), 6.0);
+  float wsumN = wxN + wzN;
+  vec2 latNV = vec2(0.0);
+  if (wsumN > 0.001 && gSteep > 0.001) {
+    vec2 pxX = vec2(vWPos2.z / repN, vWPos2.y / repN);
+    vec2 pxZ = vec2(vWPos2.x / repN, vWPos2.y / repN);
+    float hC = wgrain(pxX) * (wxN / wsumN) + wgrain(pxZ) * (wzN / wsumN);
+    float hX = wgrain(pxX + vec2(eN / repN * 2.5, 0.0)) * (wxN / wsumN) + wgrain(pxZ + vec2(eN / repN * 2.5, 0.0)) * (wzN / wsumN);
+    float hY = wgrain(pxX + vec2(0.0, eN / repN)) * (wxN / wsumN) + wgrain(pxZ + vec2(0.0, eN / repN)) * (wzN / wsumN);
+    latNV = vec2(hX - hC, hY - hC) * (repN / max(eN, 1e-4)) * 0.02;
+  }
   vec3 nt2 = texture2D(uNormalMap2, vMapUv).rgb * 2.0 - 1.0;
-  vec3 rockH = texture2D(uRock, vec2(vWPos2.x / 38.0, vWPos2.y / 38.0)).rgb +
-               texture2D(uRock, vec2(vWPos2.z / 38.0, vWPos2.y / 38.0)).rgb;
-  vec2 latN = (rockH.rg * 2.0 - 1.0) * uHasRock;
-  vec2 mixN = mix(nt2.xy, latN, clamp(gSteep, 0.0, 1.0));
-  mixN *= uNormalStrength * max(uHasNormal, uHasRock * clamp(gSteep, 0.0, 1.0));
+  vec2 mixN = mix(nt2.xy, latNV, clamp(gSteep, 0.0, 1.0));
+  mixN *= uNormalStrength * max(uHasNormal, clamp(gSteep, 0.0, 1.0));
   normal = normalize(normal + vec3(mixN.x, mixN.y, 0.0) * 0.35);
 }`,
           );
         if (boot.steep) {
-          // Steep weight map: R = raw geometry, G = effective, B = rock.
-          // Written at dithering_fragment (LAST chunk in this three version:
-          // opaque → tonemapping → colorspace → fog → dithering), so fog,
-          // tonemapping and colorspace cannot wash the map. Fog stays ON for
-          // the normal pass — it is simply overwritten here.
+          // Steep weight map: R = raw geometry, G = effective, B = grain
+          // centred (0.5 = no modulation). Written at dithering_fragment
+          // (LAST chunk in this three version), so fog/tonemapping cannot
+          // wash the map.
           const prevSteep = terrainMat.onBeforeCompile.bind(terrainMat);
           terrainMat.onBeforeCompile = (s2: {
             uniforms: Record<string, unknown>;
@@ -507,7 +534,7 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
             prevSteep(s2);
             s2.fragmentShader = s2.fragmentShader.replace(
               "#include <dithering_fragment>",
-              `gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), uHasRock, 1.0);
+              `gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), clamp(gGrain + 0.5, 0.0, 1.0), 1.0);
 #include <dithering_fragment>`,
             );
           };
@@ -523,17 +550,13 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
   const corridorUniform = { value: null as THREE.Texture | null };
   const normalUniform = { value: null as THREE.Texture | null };
   const normalStrength = { value: 1.0 };
-  // R1: selective triplanar — rock tile projected laterally on steep faces.
-  const rockUniform = { value: null as THREE.Texture | null };
-  // V2-steep: threshold in literal degrees (matches the HUD label); the old
-  // triStart/triScale pair + pow(…,6) on a pre-scaled value is gone — it
-  // evaluated to ~1e-9 on vertical walls so the branch never ran.
+  // Procedural wall grain (no photo tile — flat by construction).
+  // V2-steep: threshold in literal degrees (matches the HUD label).
   const wallDeg = { value: 30 };
   const rockWeight = { value: 1.0 };
   const grainK = { value: 0.45 };
   const hasCorr = { value: 0 };
   const hasNormal = { value: 0 };
-  const hasRock = { value: 0 };
 
   rebuildTerrain();
   gate.setProgress(0.62, 1);
@@ -595,15 +618,6 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
     loadTex(`/${meta.assets["terrain-normal"]}`, false).then((t) => {
       normalUniform.value = t;
       hasNormal.value = 1;
-      if (terrainMat) terrainMat.needsUpdate = true;
-    }).catch(() => undefined);
-  }
-  if (meta.assets?.["terrain-rock"]) {
-    loadTex(`/${meta.assets["terrain-rock"]}`, true).then((t) => {
-      t.wrapS = THREE.MirroredRepeatWrapping;
-      t.wrapT = THREE.MirroredRepeatWrapping;
-      rockUniform.value = t;
-      hasRock.value = 1;
       if (terrainMat) terrainMat.needsUpdate = true;
     }).catch(() => undefined);
   }
@@ -762,7 +776,7 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
   hud.append(timeLab, time, cloudLab, cloudIn, nLab, nIn, tLab, tIn, wLab, wIn, gLab, gIn, lodRow);
   if (boot.steep) {
     // steep-map legend, kept with the tool (stays in the project).
-    hud.append(el("div", "hud-label", "mapa: R = peso geo · G = efectivo · B = roca"));
+    hud.append(el("div", "hud-label", "mapa: R = peso geo · G = efectivo · B = grano"));
   }
   document.body.appendChild(hud);
 
@@ -828,7 +842,7 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
     renderer.render(scene, camera);
     const t2 = performance.now();
     // steep-map diagnostics (read-only mirror of the live uniforms)
-    metrics.hasRock = hasRock.value;
+    metrics.hasRock = 1; // procedural grain: always present, no tile to load
     metrics.rockWeightShown = rockWeight.value;
     // labels every frame (project cheap), occlusion every ~6th frame
     if (frames % 6 === 0) {
