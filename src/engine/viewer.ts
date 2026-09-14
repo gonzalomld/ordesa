@@ -78,6 +78,9 @@ function hhmm(h: number): string {
 export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   const boot = parseBootQuery();
   const { metrics } = mountDebug();
+  // ?debug=steep: false-colour steep-weight map (R = raw geometric weight,
+  // G = effective weight, B = rock loaded) — ends the blind tuning.
+  metrics.steep = boot.steep;
 
   const meta = await loadMeta();
   const sizes = meta.sizesBytes ?? {};
@@ -430,7 +433,8 @@ uniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNorma
 uniform sampler2D uRock; uniform float uTriStart; uniform float uTriScale; uniform float uRockWeight;
 uniform float uHasCorr; uniform float uHasNormal; uniform float uHasRock;
 varying vec3 vWPos2; varying vec3 vWNormal2;
-float gSteep = 0.0; // V1: lateral weight shared with the normal-map block below`,
+float gSteep = 0.0; // V1: lateral weight shared with the normal-map block below
+float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)`,
           )
           .replace(
             "#include <map_fragment>",
@@ -444,7 +448,9 @@ float gSteep = 0.0; // V1: lateral weight shared with the normal-map block below
   // V1.2: uTriScale preset so the blend is ~1.0 on >60° faces; uRockWeight
   // (HUD) scales it 0..1 for separate calibration.
   vec3 wn2 = normalize(vWNormal2);
-  float steep = pow(clamp((1.0 - wn2.y - uTriStart) * uTriScale, 0.0, 1.0), 6.0) * uHasRock * uRockWeight;
+  float rawSteep = pow(clamp((1.0 - wn2.y - uTriStart) * uTriScale, 0.0, 1.0), 6.0);
+  gRaw = rawSteep;
+  float steep = rawSteep * uHasRock * uRockWeight;
   gSteep = steep;
   if (steep > 0.001) {
     float rep = 38.0;
@@ -476,6 +482,24 @@ float gSteep = 0.0; // V1: lateral weight shared with the normal-map block below
   normal = normalize(normal + vec3(mixN.x, mixN.y, 0.0) * 0.35);
 }`,
           );
+        if (boot.steep) {
+          // Steep weight map: R = raw geometry, G = effective, B = rock.
+          // Appended AFTER every other chunk so nothing downstream can
+          // overwrite it; replaces the final opaque output.
+          const prevSteep = terrainMat.onBeforeCompile.bind(terrainMat);
+          terrainMat.onBeforeCompile = (s2: {
+            uniforms: Record<string, unknown>;
+            fragmentShader: string;
+            vertexShader: string;
+          }) => {
+            prevSteep(s2);
+            s2.fragmentShader = s2.fragmentShader.replace(
+              "#include <opaque_fragment>",
+              `#include <opaque_fragment>
+gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), uHasRock, 1.0);`,
+            );
+          };
+        }
       };
       terrainMat.customProgramCacheKey = () => "ordesa-base+corridor";
     }
@@ -580,6 +604,12 @@ float gSteep = 0.0; // V1: lateral weight shared with the normal-map block below
   // labels
   const labelLayer = el("div", "labels");
   document.body.appendChild(labelLayer);
+  if (boot.steep) {
+    // steep-map mode: clouds, line and labels off — terrain weight only.
+    clouds.group.visible = false;
+    line.group.visible = false;
+    labelLayer.style.display = "none";
+  }
   const labelDefs = (await fetch("/assets/labels.json").then((r) => r.json()).catch(() => ({ labels: [] }))) as {
     labels: LabelDef[];
   };
@@ -739,8 +769,9 @@ float gSteep = 0.0; // V1: lateral weight shared with the normal-map block below
     const sp = sunPosition(hour);
     driveTelemetry(cells, lastTele, t, hhmm(hour), sp.elevationDeg);
     // T1.1: real draw cut, not alpha 0 — group off ⇒ zero cloud cost.
+    // In steep-map mode clouds stay off (hidden at boot, never restored).
     const effCloud = cloudDensity * cloudUser;
-    if (effCloud <= 0.001) {
+    if (boot.steep || effCloud <= 0.001) {
       clouds.group.visible = false;
       metrics.cloudCoverage = 0;
     } else {
@@ -766,6 +797,9 @@ float gSteep = 0.0; // V1: lateral weight shared with the normal-map block below
     }
     renderer.render(scene, camera);
     const t2 = performance.now();
+    // steep-map diagnostics (read-only mirror of the live uniforms)
+    metrics.hasRock = hasRock.value;
+    metrics.rockWeightShown = rockWeight.value;
     // labels every frame (project cheap), occlusion every ~6th frame
     if (frames % 6 === 0) {
       for (const rt of labelRts) {
