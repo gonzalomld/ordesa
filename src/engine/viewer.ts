@@ -417,6 +417,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uRock"] = rockUniform;
         s.uniforms["uWallDeg"] = wallDeg;
         s.uniforms["uRockWeight"] = rockWeight;
+        s.uniforms["uGrainK"] = grainK;
         s.uniforms["uHasCorr"] = hasCorr;
         s.uniforms["uHasNormal"] = hasNormal;
         s.uniforms["uHasRock"] = hasRock;
@@ -429,7 +430,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
             "#include <common>",
             `#include <common>
 uniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNormalStrength; varying vec3 vUv2c;
-uniform sampler2D uRock; uniform float uWallDeg; uniform float uRockWeight;
+uniform sampler2D uRock; uniform float uWallDeg; uniform float uRockWeight; uniform float uGrainK;
 uniform float uHasCorr; uniform float uHasNormal; uniform float uHasRock;
 varying vec3 vWPos2; varying vec3 vWNormal2;
 float gSteep = 0.0; // V1: lateral weight shared with the normal-map block below
@@ -449,6 +450,11 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
   // V2-steep: normalised degree-space blend. smoothstep output is 0..1 BY
   // CONSTRUCTION, so no pow-on-a-tiny-number and no magic scale — stable for
   // ANY slider position 20°..60°. Threshold means what the label says.
+  // T1 grain, not wallpaper: the tile carries NO colour of its own.
+  // Detrended luminance (rockLum − 0.5, centred on 0) multiplies the real
+  // ortho colour, so strata bands and vegetation stains survive — stretched
+  // but intact — with high frequency on top. No motif can repeat because
+  // nothing with a mean is ever repeated. uGrainK is the lever to calibrate.
   vec3 wn2 = normalize(vWNormal2);
   float slopeDeg = degrees(acos(clamp(wn2.y, 0.0, 1.0)));
   float rawSteep = smoothstep(uWallDeg, uWallDeg + 15.0, slopeDeg);
@@ -462,10 +468,11 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
     float wx = pow(abs(wn2.x), 6.0);
     float wz = pow(abs(wn2.z), 6.0);
     float wsum = wx + wz;
-    vec3 rock = vec3(0.0);
-    if (wx > 0.001) rock += texture2D(uRock, ruvX).rgb * (wx / max(wsum, 1e-4));
-    if (wz > 0.001) rock += texture2D(uRock, ruvZ).rgb * (wz / max(wsum, 1e-4));
-    alb = mix(alb, rock, steep * (wsum > 0.001 ? 1.0 : 0.0));
+    float rockLum = 0.0;
+    if (wx > 0.001) rockLum += dot(texture2D(uRock, ruvX).rgb, vec3(0.299, 0.587, 0.114)) * (wx / max(wsum, 1e-4));
+    if (wz > 0.001) rockLum += dot(texture2D(uRock, ruvZ).rgb, vec3(0.299, 0.587, 0.114)) * (wz / max(wsum, 1e-4));
+    float grano = (rockLum - 0.5) * uGrainK * steep * (wsum > 0.001 ? 1.0 : 0.0);
+    alb *= (1.0 + grano);
   }
   diffuseColor.rgb = alb;
 #endif`,
@@ -523,6 +530,7 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
   // evaluated to ~1e-9 on vertical walls so the branch never ran.
   const wallDeg = { value: 30 };
   const rockWeight = { value: 1.0 };
+  const grainK = { value: 0.45 };
   const hasCorr = { value: 0 };
   const hasNormal = { value: 0 };
   const hasRock = { value: 0 };
@@ -720,6 +728,21 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
     wLab.textContent = `peso roca ${Math.round(w * 100)} %`;
     rockWeight.value = w;
   });
+  // T1: grain strength 0.3–0.6 — the lever to calibrate by eye, not the
+  // threshold. Multiplies detrended tile luminance onto the ortho colour.
+  const gLab = el("div", "hud-label", "grano 0,45");
+  const gIn = document.createElement("input");
+  gIn.type = "range";
+  gIn.min = "0";
+  gIn.max = "1";
+  gIn.step = "0.05";
+  gIn.value = "0.45";
+  gIn.setAttribute("aria-label", "intensidad del grano lateral");
+  gIn.addEventListener("input", () => {
+    const k = Number(gIn.value);
+    gLab.textContent = `grano ${k.toFixed(2).replace(".", ",")}`;
+    grainK.value = k;
+  });
   const lodRow = el("div", "hud-row");
   for (const st of [1, 2, 4]) {
     const b = document.createElement("button");
@@ -736,7 +759,7 @@ float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
     });
     lodRow.appendChild(b);
   }
-  hud.append(timeLab, time, cloudLab, cloudIn, nLab, nIn, tLab, tIn, wLab, wIn, lodRow);
+  hud.append(timeLab, time, cloudLab, cloudIn, nLab, nIn, tLab, tIn, wLab, wIn, gLab, gIn, lodRow);
   if (boot.steep) {
     // steep-map legend, kept with the tool (stays in the project).
     hud.append(el("div", "hud-label", "mapa: R = peso geo · G = efectivo · B = roca"));
