@@ -8,6 +8,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import {
   BBOX,
+  CLIMB_THRESHOLD_M,
   DEM_FILE,
   GPX_FILE,
   ROUTE_FILE,
@@ -99,8 +100,48 @@ const smoothed = resampled.map((p, i) => {
 // Drape on the MDT.
 const dem = await readDem(DEM_FILE);
 const round1 = (v: number): number => Math.round(v * 10) / 10;
+// Accumulated climb, watch-style: only count a rise once the ascent from
+// the last local minimum exceeds CLIMB_THRESHOLD_M. Computed over the
+// smoothed drape series (zMdt, no offset) so GPS/MDT micro-noise at 5 m
+// steps does not inflate the figure (naive sum gave +1667 m on this track).
+const zS = smoothed.map((p) => dem.sampleBilinear(p.x, p.y));
+const TH = CLIMB_THRESHOLD_M;
+const cumClimb: number[] = new Array(zS.length);
+let finalClimb = 0;
+{
+  // Watch-style hysteresis: open an uphill segment only after a rise of
+  // TH from the valley, close it only after a drop of TH from the peak.
+  // Micro-oscillations below TH never open a segment, so they add nothing.
+  // (declared here so the d-field below can use arc length `total`)
+  let total = 0;
+  let anchor = zS[0] as number; // base of the open uphill segment
+  let peak = zS[0] as number;
+  let valley = zS[0] as number;
+  let up = false;
+  for (let i = 0; i < zS.length; i++) {
+    const z = zS[i] as number;
+    if (!up) {
+      if (z < valley) valley = z;
+      if (z - valley >= TH) {
+        up = true;
+        anchor = valley;
+        peak = z;
+      }
+    } else {
+      if (z > peak) peak = z;
+      if (peak - z >= TH) {
+        total += peak - anchor;
+        up = false;
+        valley = z;
+      }
+    }
+    cumClimb[i] = Math.round((total + (up ? peak - anchor : 0)) * 10) / 10;
+  }
+  finalClimb = total + (up ? peak - anchor : 0);
+  console.log(`accumulated climb (threshold ${TH} m): ${finalClimb.toFixed(1)} m`);
+}
 const out = smoothed.map((p, i) => {
-  const zMdt = dem.sampleBilinear(p.x, p.y);
+  const zMdt = zS[i] as number;
   return {
     x: round1(p.x),
     y: round1(p.y),
@@ -120,16 +161,19 @@ if (outside.length > 0) {
 
 writeFileSync(
   ROUTE_FILE,
-  JSON.stringify(
-    {
-      crs: "EPSG:25830",
-      stepM: ROUTE_STEP_M,
-      offsetM: ROUTE_OFFSET_M,
-      lengthM: round1(total),
-      points: out,
-    },
-    null,
-    1,
-  ),
+  JSON.stringify({
+    crs: "EPSG:25830",
+    stepM: ROUTE_STEP_M,
+    offsetM: ROUTE_OFFSET_M,
+    lengthM: round1(total),
+    climbThresholdM: TH,
+    totalClimbM: Math.round(finalClimb * 10) / 10,
+    x: out.map((p) => p.x),
+    y: out.map((p) => p.y),
+    z_mdt: out.map((p) => p.z_mdt),
+    z_gpx: out.map((p) => p.z_gpx),
+    d: out.map((p) => p.d),
+    cumClimb,
+  }),
 );
 console.log(`saved: ${ROUTE_FILE} (${out.length} pts, ${(total / 1000).toFixed(2)} km)`);

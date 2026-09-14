@@ -1,0 +1,178 @@
+{
+ "labels": [
+  {
+   "id": "monte-perdido",
+   "tipo": "cumbre",
+   "x": 748633,
+   "y": 4729257,
+   "z": 3346,
+   "nombre": "Monte Perdido",
+   "fuente": "MDT 3347 = oficial 3348 (MITECO)"
+  },
+  {
+   "id": "pico-1",
+   "tipo": "cumbre",
+   "x": 747748,
+   "y": 4730227,
+   "z": 3324,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0178-2 pendiente)"
+  },
+  {
+   "id": "pico-2",
+   "tipo": "cumbre",
+   "x": 747118,
+   "y": 4730883,
+   "z": 3215,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0178-2 pendiente)"
+  },
+  {
+   "id": "pico-3",
+   "tipo": "cumbre",
+   "x": 741337,
+   "y": 4730862,
+   "z": 3098,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0146-4 pendiente)"
+  },
+  {
+   "id": "pico-4",
+   "tipo": "cumbre",
+   "x": 740397,
+   "y": 4731203,
+   "z": 3024,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0146-4 pendiente)"
+  },
+  {
+   "id": "pico-5",
+   "tipo": "cumbre",
+   "x": 744368,
+   "y": 4730238,
+   "z": 3011,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0178-1 pendiente)"
+  },
+  {
+   "id": "pico-6",
+   "tipo": "cumbre",
+   "x": 743578,
+   "y": 4730428,
+   "z": 3008,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0178-1 pendiente)"
+  },
+  {
+   "id": "pico-7",
+   "tipo": "cumbre",
+   "x": 742548,
+   "y": 4730837,
+   "z": 2973,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0146-4 pendiente)"
+  },
+  {
+   "id": "mondarruego",
+   "tipo": "cumbre",
+   "x": 739198,
+   "y": 4729067,
+   "z": 2845,
+   "nombre": "Mondarruego",
+   "fuente": "MDT 2845 = avistamiento cabra 2022 (sources.md)"
+  },
+  {
+   "id": "pico-9",
+   "tipo": "cumbre",
+   "x": 744788,
+   "y": 4726907,
+   "z": 2776,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0178-1 pendiente)"
+  },
+  {
+   "id": "pico-10",
+   "tipo": "cumbre",
+   "x": 738482,
+   "y": 4729158,
+   "z": 2753,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0146-3 pendiente)"
+  },
+  {
+   "id": "pico-11",
+   "tipo": "cumbre",
+   "x": 744083,
+   "y": 4726637,
+   "z": 2749,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0178-1 pendiente)"
+  },
+  {
+   "id": "pico-12",
+   "tipo": "cumbre",
+   "x": 741017,
+   "y": 4728313,
+   "z": 2747,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0146-4 pendiente)"
+  },
+  {
+   "id": "pico-13",
+   "tipo": "cumbre",
+   "x": 743262,
+   "y": 4728953,
+   "z": 2622,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0146-4 pendiente)"
+  },
+  {
+   "id": "pico-14",
+   "tipo": "cumbre",
+   "x": 744712,
+   "y": 4728043,
+   "z": 2620,
+   "nombre": null,
+   "fuente": "sin identificar (MTN25 0178-1 pendiente)"
+  },
+  {
+   "id": "tozal-del-mallo",
+   "tipo": "cumbre",
+   "x": 739155,
+   "y": 4726205,
+   "z": 1348,
+   "nombre": "Tozal del Mallo",
+   "fuente": "radio 150 m (aguja absorbida en 400 m)"
+  },
+  {
+   "id": "pradera",
+   "tipo": "hito",
+   "x": 741219.3,
+   "y": 4726057,
+   "z": 1317,
+   "d": 0,
+   "nombre": "Pradera de Ordesa",
+   "fuente": "GPX inicio, MDT 1318"
+  },
+  {
+   "id": "cota-maxima",
+   "tipo": "hito",
+   "x": 741764.4,
+   "y": 4724974.3,
+   "z": 1995.2,
+   "d": 2440.1,
+   "nombre": "Cota máxima del camino",
+   "fuente": "trazado km 2,44 MDT 1999 (mirador 1952: verificar D6-P5)"
+  },
+  {
+   "id": "cola-caballo",
+   "tipo": "hito",
+   "x": 747190.5,
+   "y": 4726347.6,
+   "z": 1758,
+   "d": 9670.5,
+   "nombre": "Cola de Caballo",
+   "fuente": "trazado km 9,67 MDT 1762 = publicado ~1760"
+  }
+ ]
+}

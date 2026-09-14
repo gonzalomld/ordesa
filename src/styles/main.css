@@ -18,7 +18,7 @@ body {
 }
 
 body {
-  background: #0e141b;
+  background: #000;
   color: var(--color-paper);
   font-family: var(--font-text);
   overflow: hidden;
@@ -38,26 +38,219 @@ body {
   pointer-events: none;
 }
 
-.hud {
+/* --- entry gate (D9) --- */
+.gate {
   position: fixed;
-  left: 12px;
-  bottom: 12px;
+  inset: 0;
+  z-index: 40;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-width: 240px;
-  padding: 12px 14px;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: #000;
+  text-align: center;
+  padding: 24px;
+  transition: opacity 0.8s ease;
+}
+
+.gate-open {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.gate-kicker {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.35em;
+  opacity: 0.6;
+}
+
+.gate-title {
+  font-size: clamp(34px, 6vw, 72px);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.gate-sub {
+  font-size: 14px;
+  opacity: 0.7;
+}
+
+.gate-btn {
+  margin-top: 10px;
+  padding: 12px 34px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.25em;
+  color: #000;
+  background: var(--color-paper);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.gate-btn:disabled {
+  opacity: 0.35;
+  cursor: wait;
+}
+
+.gate-btn:focus-visible,
+.gate-silent:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+}
+
+.gate-sound {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  opacity: 0.55;
+}
+
+.gate-prog {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(420px, 80vw);
+}
+
+.gate-bar {
+  flex: 1;
+  height: 2px;
+  background: rgb(244 241 234 / 20%);
+  overflow: hidden;
+}
+
+.gate-fill {
+  height: 100%;
+  background: var(--color-paper);
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.gate-pct,
+.gate-msg {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.25em;
+}
+
+.gate-msg {
+  opacity: 0.65;
+}
+
+.gate-silent {
+  background: none;
+  border: none;
+  color: var(--color-paper);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+/* --- telemetry bar (D6): 7 cols --- */
+.tele {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  padding: 8px 16px 10px;
+  background: rgb(5 7 10 / 72%);
+  border-top: 1px solid rgb(244 241 234 / 14%);
+  backdrop-filter: blur(8px);
+  font-family: var(--font-mono);
+}
+
+.tele-c {
+  min-width: 0;
+}
+
+.tele-l {
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+.tele-v {
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .tele {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .tele-c:nth-child(n + 4):nth-child(-n + 6),
+  .tele-c:nth-child(7) {
+    display: none;
+  }
+}
+
+/* --- labels (D7) --- */
+.labels {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.lbl {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  background: rgb(5 7 10 / 55%);
+  border: 1px solid rgb(244 241 234 / 22%);
+  border-radius: 4px;
+  will-change: transform;
+}
+
+.lbl-name {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.lbl-z {
+  font-size: 10px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.lbl-hito {
+  border-style: dashed;
+}
+
+/* --- phase-2 tuning hud --- */
+.hud2 {
+  position: fixed;
+  right: 12px;
+  top: 12px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 210px;
+  padding: 10px 12px;
   font-size: 12px;
   background: rgb(10 12 14 / 55%);
   border: 1px solid rgb(244 241 234 / 18%);
   border-radius: 8px;
   backdrop-filter: blur(6px);
-}
-
-.hud-block {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
 }
 
 .hud-label {
@@ -67,13 +260,7 @@ body {
   opacity: 0.7;
 }
 
-.hud-readout {
-  font-family: var(--font-mono);
-  font-size: 22px;
-  font-variant-numeric: tabular-nums;
-}
-
-.hud input[type="range"] {
+.hud2 input[type="range"] {
   width: 100%;
 }
 
@@ -97,15 +284,20 @@ body {
   background: rgb(244 241 234 / 20%);
 }
 
-.hud-status {
+/* --- debug (D10) --- */
+.dbg {
   position: fixed;
+  left: 12px;
   top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
+  z-index: 30;
+  max-width: 70vw;
+  padding: 8px 10px;
   font-family: var(--font-mono);
-  font-size: 12px;
-  padding: 6px 12px;
-  background: rgb(10 12 14 / 60%);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  background: rgb(0 0 0 / 70%);
+  border: 1px solid rgb(244 241 234 / 25%);
   border-radius: 6px;
 }
 

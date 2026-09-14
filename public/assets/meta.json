@@ -22,5 +22,44 @@
     "y": 4729252.5
   },
   "encoding": "v = round(elev - minZ); R = v >> 8; G = v & 255; B = 0",
-  "generatedAt": "2026-09-13T20:44:01.470Z"
+  "generatedAt": "2026-09-13T22:02:36.303Z",
+  "corridorBbox": {
+    "minx": 740819,
+    "miny": 4723818,
+    "maxx": 747644,
+    "maxy": 4726749
+  },
+  "corridorMetersPerPx": 0.833,
+  "assets": {
+    "terrain-base": "assets/terrain-base.c916b1e6.webp",
+    "terrain-base-2048": "assets/terrain-base-2048.0a3f3dc9.webp",
+    "terrain-corridor": "assets/terrain-corridor.c851c4fc.webp",
+    "terrain-corridor-4k": "assets/terrain-corridor-4k.10d11c64.webp",
+    "terrain-normal": "assets/terrain-normal.1c34820c.webp",
+    "clouds-atlas": "assets/clouds-atlas.4086cf57.webp"
+  },
+  "sizesBytes": {
+    "terrain-base": 1701032,
+    "terrain-base-2048": 718714,
+    "terrain-corridor": 1405838,
+    "terrain-corridor-4k": 592850,
+    "terrain-normal": 544238,
+    "clouds-atlas": 26268
+  },
+  "corridorMarginM": 400,
+  "flight": {
+    "fecha": "2024-07",
+    "resolucion": "0.25"
+  },
+  "solar": {
+    "bestAz": 90,
+    "bestAlt": 68
+  },
+  "albedo": {
+    "az": 90,
+    "alt": 68,
+    "residualCorrelation": -0.092,
+    "deepMaskFraction": 0.0015,
+    "file": "data/build/albedo.png"
+  }
 }

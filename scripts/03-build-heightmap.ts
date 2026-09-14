@@ -1,8 +1,10 @@
 // 03-build-heightmap.ts — DEM → public/assets/heightmap.png + data/build/meta.json.
 //
 // Encoding: v = round(elev - MINZ); R = v >> 8; G = v & 255; B = 0.
-// Written from a raw buffer with NO metadata: an attached ICC profile would
-// make the browser color-manage the PNG and silently corrupt the elevation.
+// Written from a raw buffer with NO metadata: never call withMetadata()
+// (in sharp it ADDS metadata instead of removing it). An attached ICC
+// profile would make the browser color-manage the PNG and silently corrupt
+// the elevation. adaptiveFiltering is mandatory (halves the file size).
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import sharp from "sharp";
@@ -35,8 +37,7 @@ for (let i = 0; i < dem.width * dem.height; i++) {
 
 mkdirSync(dirname(HEIGHTMAP_FILE), { recursive: true });
 await sharp(buf, { raw: { width: dem.width, height: dem.height, channels: 3 } })
-  .png({ compressionLevel: 9, palette: false })
-  .withMetadata({})
+  .png({ compressionLevel: 9, adaptiveFiltering: true, palette: false })
   .toFile(HEIGHTMAP_FILE);
 console.log(`saved: ${HEIGHTMAP_FILE}`);
 

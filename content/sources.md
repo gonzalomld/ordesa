@@ -46,3 +46,27 @@ Huecos visibles y anotados — nada de relleno.
   (`https://www.ign.es/wms-inspire/pnoa-ma`, capa `OI.OrthoimageCoverage`).
 - Trazado: `data/source/senda-cazadores.gpx` (GPX propio, descargado de la
   URL facilitada por Gonzalo; el fichero versionado es la fuente primaria).
+- Vuelo de la ortofoto PNOA-MA sobre el encuadre: FECHA='2024-07',
+  RESOLUCION='0.25' (25 cm nativos), vuelo único en los seis puntos
+  consultados (Pradera, Calcilarruego, Cola de Caballo, Monte Perdido y dos
+  esquinas) vía GetFeatureInfo a `OI.MosaicElement` — ver
+  `scripts/10-fetch-flight-date.ts` y `data/source/ortho.json`. Sol del vuelo
+  ajustado por mínima correlación albedo↔iluminación: az 90° / alt 68°
+  (coherente con mediodía solar de julio), correlación residual −0,092,
+  máscara de sombra profunda 0,15 % — `scripts/11-measure-shadow.ts`.
+- Cotas de referencia (fase 2, MDT propio + GPX):
+  Pradera 1.321 m (inicio del GPX 741218,4726062) · puente de los Cazadores
+  1.318 m (waypoint GPX 741372,4725929) · mirador de Calcilarruego 1.960 m
+  (waypoint GPX 741507,4725203; publicado 1.952 m) · cota máxima del camino
+  1.999 m (trazado km 2,44 — el camino sigue por encima del mirador;
+  verificar cuál etiquetar) · Cola de Caballo 1.762 m (punto del trazado km
+  9,67 = pie publicado ~1.760 m; el waypoint del GPX da 1.816 m porque está
+  por encima del salto) · Monte Perdido 3.347 m (máximo del MDT
+  748638,4729252 = 42,67556 N / 0,03442 E; oficial 3.348 m).
+- Etiquetas de cumbres (fase 2): solo Monte Perdido y Mondarruego (2.845 m,
+  ladera del avistamiento de cabra montés de noviembre de 2022) tienen nombre
+  confirmado. Los 13 picos restantes van con posición y cota del MDT pero SIN
+  nombre hasta identificarlos en MTN25 0146-3, 0146-4, 0178-1 y 0178-2 o en la
+  cartografía del parque. Tozal del Mallo (2.254 m): aguja no resuelta por el
+  MDT de 5 m en radio 150 m (máximo local 1.348 m); pendiente de búsqueda
+  específica.

@@ -42,18 +42,16 @@ export const TEXTURE_2K = "public/assets/terrain-2k.webp"; // versioned
 export const TEXTURE_8K = "public/assets/terrain-8k.webp"; // versioned
 export const ROUTE_FILE = "public/assets/route.json"; // versioned
 
-// --- Reference points in EPSG:25830 (approximate anchors; exact elevations come from the MDT) ---
-// NOTE (verified 2026-09-13 against the 5 m MDT + the project's own GPX waypoints):
-// the brief's lon/lat→XY values are mathematically exact (own UTM projection
-// reproduces them to the metre), but the XY do NOT sit on the named features:
-//   brief "Pradera" 739468,4725309 → MDT 1970 m (mid-slope; the real Pradera floor is ~1320 m
-//     at the GPX track start 741218,4726062 / puente 741372,4725929, both MDT ≈1318 m).
-//   brief "Calcilarruego" 740680,4724706 → MDT 2138 m (ridge above the lookout;
-//     the GPX waypoint mirador 741507,4725203 → MDT 1960 m, GPS 1929.6 m).
-//   brief "Cola de Caballo" 744230,4725753 → MDT 2452 m (high on the wall;
-//     the GPX waypoint cascada 747159,4726471 → MDT 1816 m, GPS 1814.6 m).
-// kept verbatim so verify INFO lines stay comparable; fix the anchors (not the
-// georeferencing) in a later pass with the user.
+// --- Reference points in EPSG:25830 (anchors from the project's own GPX;
+// exact elevations come from the MDT). Verified 2026-09-13: XY projected
+// from the GPX waypoint lat/lon with scripts/lib/utm.ts; MDT sampled
+// bilinear from data/source/dem.tif. colaCaballo cota is taken from the
+// nearest ROUTE point (km 9.67, 1762 m = published foot of the falls), not
+// from the GPX waypoint (747159,4726471, MDT 1816 m, above the drop).
+// calcilarruego: GPX waypoint mirador MDT 1960 m (published 1952 m); the
+// track keeps climbing to 1999 m at km 2.44 — verify which is which before
+// labelling (D6-P5). Tozal del Mallo: brief xy absorbed nothing in 150 m
+// (local max 1351 m ≠ 2254 m); dropped until a 150 m search is sourced.
 export interface RefPoint {
   x: number;
   y: number;
@@ -63,11 +61,12 @@ export interface RefPoint {
 }
 
 export const REF_POINTS: Record<string, RefPoint> = {
-  pradera: { x: 739468, y: 4725309, lon: -0.079, lat: 42.643, expectedZ: 1320 },
-  tozalMallo: { x: 739040, y: 4726295, lon: -0.0838, lat: 42.652, expectedZ: 0 },
-  calcilarruego: { x: 740680, y: 4724706, lon: -0.0645, lat: 42.6372, expectedZ: 1952 },
-  colaCaballo: { x: 744230, y: 4725753, lon: -0.0208, lat: 42.6455, expectedZ: 1760 },
-  montePerdido: { x: 748647, y: 4729168, lon: 0.0345, lat: 42.6748, expectedZ: 3348 },
+  pradera: { x: 741218, y: 4726062, lon: -0.05737, lat: 42.64923, expectedZ: 1321 },
+  puente: { x: 741372, y: 4725929, lon: -0.05555, lat: 42.64798, expectedZ: 1318 },
+  calcilarruego: { x: 741507, y: 4725203, lon: -0.05421, lat: 42.64141, expectedZ: 1960 },
+  routeMax: { x: 741764, y: 4724974, lon: -0.05116, lat: 42.6394, expectedZ: 1999 },
+  colaCaballo: { x: 747191, y: 4726348, lon: 0.01561, lat: 42.64989, expectedZ: 1762 },
+  montePerdido: { x: 748638, y: 4729252, lon: 0.03442, lat: 42.67556, expectedZ: 3347 },
 };
 
 // --- Quality gate (Monte Perdido, official 3348 m) ---
@@ -78,6 +77,23 @@ export const EXPECTED_MAX_TOL = 3;
 export const EXPECTED_MAX_LAT = 42.67558;
 export const EXPECTED_MAX_LON = 0.03439;
 export const GEO_TOL_M = 100;
+
+// --- Narrative: route date (Europe/Madrid) + act limits as DISTANCES (m) ---
+// Distances, never point indices: a resample change must not break the acts.
+export const ROUTE_DATE = "2026-08-16";
+export const ACTS = [
+  { act: 0, name: "La Pradera", startM: 0, endM: 300 },
+  { act: 1, name: "La subida", startM: 300, endM: 2440 },
+  { act: 2, name: "El mirador", startM: 2440, endM: 3000 },
+  { act: 3, name: "La cornisa", startM: 3000, endM: 9000 },
+  { act: 4, name: "El circo y la cascada", startM: 9000, endM: 10500 },
+  { act: 5, name: "El regreso", startM: 10500, endM: 1e9 },
+] as const;
+
+// --- Corridor texture (phase 2): track bbox + margin, blend edge ---
+export const CORRIDOR_MARGIN_M = 400;
+export const CORRIDOR_BLEND_M = 150;
+export const CLIMB_THRESHOLD_M = 3; // watch-style accumulated-climb gate
 
 // --- Pipeline tuning ---
 export const ORTHO_TILE_PX = 2048; // max WMS request size

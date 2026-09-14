@@ -1,6 +1,5 @@
-// terrain.ts — mesh builder parametrised by step. Never assumes a single
-// geometry for the whole extent (MDT02 2 m will need a quadtree with
-// per-tile LOD; keep this builder pure so tiles can reuse it).
+// terrain.ts — mesh builder parametrised by step + corridor UV2 blend +
+// CPU ray-march over the decoded grid (shared by D7 labels and D2 fit).
 import * as THREE from "three";
 
 export interface Meta {
@@ -10,10 +9,13 @@ export interface Meta {
   height: number;
   resX: number;
   resY: number;
-  originX: number; // west edge (tiepoint)
-  originY: number; // north edge (tiepoint)
+  originX: number;
+  originY: number;
   minZ: number;
   maxZ: number;
+  corridorBbox?: { minx: number; miny: number; maxx: number; maxy: number };
+  assets?: Record<string, string>;
+  sizesBytes?: Record<string, number>;
 }
 
 export interface World {
@@ -45,15 +47,20 @@ export function epsgToWorld(
 }
 
 export async function loadMeta(): Promise<Meta> {
+  (window as unknown as { __META?: Meta }).__META =
+    (window as unknown as { __META?: Meta }).__META;
   const res = await fetch("/assets/meta.json");
   if (!res.ok) throw new Error(`meta.json: HTTP ${res.status}`);
-  return (await res.json()) as Meta;
+  const m = (await res.json()) as Meta;
+  (window as unknown as { __META?: Meta }).__META = m;
+  return m;
 }
 
 /** Decode the RG heightmap PNG in CPU (exact, no GPU filtering tricks). */
-export async function loadElevations(meta: Meta): Promise<Float32Array> {
-  const res = await fetch("/assets/heightmap.png");
-  if (!res.ok) throw new Error(`heightmap.png: HTTP ${res.status}`);
+export async function loadElevations(meta: Meta, url?: string): Promise<Float32Array> {
+  const src = url ?? `/${meta.assets?.heightmap ?? "assets/heightmap.png"}`;
+  const res = await fetch(src);
+  if (!res.ok) throw new Error(`heightmap: HTTP ${res.status}`);
   const blob = await res.blob();
   const bitmap = await createImageBitmap(blob, { colorSpaceConversion: "none" });
   const canvas = document.createElement("canvas");
@@ -83,8 +90,11 @@ export function buildTerrainGeometry(
   const ny = Math.floor((meta.height - 1) / step) + 1;
   const positions = new Float32Array(nx * ny * 3);
   const uvs = new Float32Array(nx * ny * 2);
+  const uv2 = new Float32Array(nx * ny * 3); // u, v, blend weight
+  const cb = meta.corridorBbox;
   let p = 0;
   let q = 0;
+  let r2 = 0;
   for (let row = 0; row < ny; row++) {
     const srcRow = row * step;
     const epsgY = meta.originY - (srcRow + 0.5) * meta.resY;
@@ -97,6 +107,21 @@ export function buildTerrainGeometry(
       positions[p++] = -(epsgY - world.centerY);
       uvs[q++] = col / (nx - 1);
       uvs[q++] = 1 - row / (ny - 1);
+      if (cb) {
+        const u = (epsgX - cb.minx) / (cb.maxx - cb.minx);
+        const v = (epsgY - cb.miny) / (cb.maxy - cb.miny);
+        const edge = 150; // CORRIDOR_BLEND_M
+        const dxm = Math.min(epsgX - cb.minx, cb.maxx - epsgX);
+        const dym = Math.min(epsgY - cb.miny, cb.maxy - epsgY);
+        const wgt = Math.min(1, Math.min(dxm, dym) / edge);
+        uv2[r2++] = u;
+        uv2[r2++] = v;
+        uv2[r2++] = Math.max(0, Math.min(1, wgt));
+      } else {
+        uv2[r2++] = 0;
+        uv2[r2++] = 0;
+        uv2[r2++] = 0;
+      }
     }
   }
   const indices = new Uint32Array((nx - 1) * (ny - 1) * 6);
@@ -118,12 +143,13 @@ export function buildTerrainGeometry(
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  geo.setAttribute("uv2c", new THREE.BufferAttribute(uv2, 3));
   geo.setIndex(new THREE.BufferAttribute(indices, 1));
   geo.computeVertexNormals();
   return geo;
 }
 
-/** Bilinear sample of the decoded grid in EPSG:25830 coords (for HUD readout fallback). */
+/** Bilinear sample of the decoded grid in EPSG:25830 coords. */
 export function sampleGrid(
   elev: Float32Array,
   meta: Meta,
@@ -141,4 +167,27 @@ export function sampleGrid(
   const c = elev[(r0 + 1) * meta.width + c0] as number;
   const d = elev[(r0 + 1) * meta.width + c0 + 1] as number;
   return a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy;
+}
+
+/** March a segment over the grid; true if terrain rises above it (+margin). */
+export function terrainRayHit(
+  elev: Float32Array,
+  meta: Meta,
+  ox: number,
+  oy: number,
+  oz: number,
+  tx: number,
+  ty: number,
+  tz: number,
+  margin = 3,
+): boolean {
+  const dist = Math.hypot(tx - ox, ty - oy);
+  const steps = Math.min(240, Math.max(8, Math.floor(dist / 20)));
+  for (let i = 1; i < steps; i++) {
+    const f = i / steps;
+    const z = oz + (tz - oz) * f;
+    if (sampleGrid(elev, meta, ox + (tx - ox) * f, oy + (ty - oy) * f) > z + margin)
+      return true;
+  }
+  return false;
 }

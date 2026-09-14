@@ -1,0 +1,45 @@
+{
+  "reference": {
+    "epsgX": 738600,
+    "epsgY": 4725200,
+    "epsgZ": 4000,
+    "headingDeg": 75,
+    "fov": 50
+  },
+  "target": {
+    "x": 744500,
+    "y": 2100,
+    "z": -2600
+  },
+  "checks": [
+    {
+      "id": "pradera",
+      "x": 741218,
+      "y": 4726062,
+      "z": 1321,
+      "visible": true
+    },
+    {
+      "id": "monte-perdido",
+      "x": 748638,
+      "y": 4729252,
+      "z": 3347,
+      "visible": true
+    },
+    {
+      "id": "cola-caballo",
+      "x": 747191,
+      "y": 4726348,
+      "z": 1762,
+      "visible": false
+    },
+    {
+      "id": "calcilarruego",
+      "x": 741507,
+      "y": 4725203,
+      "z": 1960,
+      "visible": true
+    }
+  ],
+  "note": "Cola oculta esperada (pared S tapa el circo desde el oeste). FOV 50 horizontal; vertical: alejar 1.35×."
+}
