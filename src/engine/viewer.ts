@@ -1,8 +1,21 @@
-// viewer.ts — phase-2 viewer: gate + continuous sun/sky + height fog +
-// clouds + Line2 track + telemetry + labels + derived camera.
+// viewer.ts — phase-3A viewer: scroll drives the journey via narrative/rig.
+// The render loop is the project's SINGLE requestAnimationFrame: it pumps
+// lenis, progress and rig.update(dt) — nothing else moves the camera.
+// Instruments (OrbitControls, tuning HUD) live behind URL flags.
 import * as THREE from "three";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Sky } from "three/addons/objects/Sky.js";
+import { createRig } from "../narrative/camera-rig.ts";
+import {
+  SHADOW_EPS_DEG,
+  SHADOW_EXTENT_M,
+  SHADOW_FAR_M,
+  SHADOW_LIGHT_DIST_M,
+  SHADOW_MIN_FRAMES,
+  SHADOW_MOVE_EPS_M,
+  SHADOW_NEAR_M,
+} from "../narrative/choreography.ts";
+import { initProgress, type ProgressHandle } from "../narrative/progress.ts";
+import { createScroll, type ScrollHandle } from "../narrative/scroll.ts";
 import { buildClouds } from "./clouds.ts";
 import { frameClock, mountDebug, parseBootQuery } from "./debug.ts";
 import { buildGate, nextFrame } from "./gate.ts";
@@ -20,14 +33,11 @@ import { lightingAt, sunPosition } from "./sun.ts";
 import {
   driveTelemetry,
   loadRouteData,
-  projectCameraToS,
-  telemetryAt,
   type RouteData,
   type TeleCells,
 } from "./telemetry.ts";
 import {
   buildTerrainGeometry,
-  epsgToWorld,
   loadElevations,
   loadMeta,
   worldFromMeta,
@@ -66,7 +76,7 @@ async function fetchWithProgress(
   return new Blob(chunks, { type: res.headers.get("content-type") ?? "" });
 }
 
-// U3: hour keeps full precision; the slider only mirrors it (step = 1 min).
+// U3: hour keeps full precision; telemetry only mirrors it (1 min steps).
 // hhmm rounds to the nearest minute so ?t=14:00 reads 14:00, not 13:56.
 function hhmm(h: number): string {
   const totalMin = Math.round(h * 60);
@@ -93,7 +103,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  // R2: shadows ON, static map refreshed only when the sun moves.
+  // R2: shadows ON, static map refreshed only on sun/target moves (3A gate).
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.autoUpdate = false;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -103,66 +113,34 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
 
   const scene = new THREE.Scene();
   // S2.1: while the Sky dome paints, background stays a dark fallback only.
-  // Sky.scale (60000) exceeds camera.far (80000)? No — 60000 < 80000 keeps
-  // it inside the frustum with depthWrite:false + BackSide, so it wins.
   scene.background = new THREE.Color(0x0e141b);
   scene.fog = null;
 
   const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 5, 80000);
-  const camJson = (await fetch("/assets/camera.json").then((r) => r.json()).catch(() => null)) as {
-    reference: { epsgX: number; epsgY: number; epsgZ: number };
-  } | null;
-  const CE = camJson?.reference ?? { epsgX: 738600, epsgY: 4725200, epsgZ: 4000 };
-  const portrait = window.innerWidth < window.innerHeight;
-  const back = portrait ? 1.35 : 1;
-  const [cwx, cwy, cwz] = epsgToWorld(CE.epsgX, CE.epsgY, CE.epsgZ, world);
-  // S6: nearer + steeper — only the TRACK anchors + Monte Perdido must fit.
-  // Model corners are allowed (and welcome) out of frame: it hides the cut.
-  camera.position.set(cwx * 0.72 * back, cwy * 0.88, cwz * 0.72 * back);
-  // R5: closer, steeper general framing — the canyon axis in depth, not the
-  // plateau. Target sits ON the canyon floor mid-valley; the rest (faja,
-  // rim, Perdido) falls above it in frame.
-  const controls = new OrbitControls(camera, renderer.domElement);
-  {
-    const [tx, ty, tz] = epsgToWorld(743600, 4725600, 1650, world);
-    controls.target.set(tx, ty, tz);
-  }
-  controls.enableDamping = true;
-  if (boot.cam === "pradera") {
-    const [px, py, pz] = epsgToWorld(741218, 4726062, 1321, world);
-    camera.position.set(px - 1500, 2600, pz + 2500);
-    controls.target.set(px, py, pz);
-  } else if (boot.cam === "mirador") {
-    const [px, py, pz] = epsgToWorld(741507, 4725203, 1960, world);
-    camera.position.set(px - 800, 2900, pz + 1800);
-    controls.target.set(px, py, pz);
-  } else if (boot.cam === "circo") {
-    // R5 reference framing: low inside the circo, Cola + strata readable.
-    const [px, py, pz] = epsgToWorld(747191, 4726348, 1762, world);
-    camera.position.set(px - 2600, 2600, pz + 2400);
-    controls.target.set(px, py, pz);
-  }
-  controls.update();
 
-  // --- sun + sky (R2: static 2048 shadow map over the whole frame) ---
+  // --- sun + sky (B4: light follows the rig target, 1800 m box) ---
   const sun = new THREE.DirectionalLight(0xfff3e2, 2.4);
   sun.castShadow = true;
   {
-    // 10.8 × 8.2 km frame → ±5.500 half-extent; near/far span the
-    // 1.107–3.347 m relief seen from the sun position (r = 22000).
-    const s = 5500;
+    const s = SHADOW_EXTENT_M / 2;
     sun.shadow.camera.left = -s;
     sun.shadow.camera.right = s;
     sun.shadow.camera.top = s;
     sun.shadow.camera.bottom = -s;
-    sun.shadow.camera.near = 5000;
-    sun.shadow.camera.far = 40000;
+    sun.shadow.camera.near = SHADOW_NEAR_M;
+    sun.shadow.camera.far = SHADOW_FAR_M;
     sun.shadow.mapSize.set(2048, 2048);
     sun.shadow.bias = -0.0002;
     sun.shadow.normalBias = 3;
   }
   scene.add(sun, sun.target);
   let shadowNeedsUpdate = true;
+  let lastShadowAz = Infinity;
+  let lastShadowEl = Infinity;
+  let lastShadowTx = Infinity;
+  let lastShadowTy = Infinity;
+  let lastShadowTz = Infinity;
+  let framesSinceShadow = SHADOW_MIN_FRAMES;
   const hemi = new THREE.HemisphereLight(0xbdd3e6, 0x5c5648, 0.5);
   scene.add(hemi);
   const sky = new Sky();
@@ -170,32 +148,9 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   sky.frustumCulled = false;
   sky.renderOrder = -10;
   scene.add(sky);
-  // S9: lone-sky scene for the 64×32 equirect capture (same dome instance
-  // cannot render in two scenes, so the capture renders `scene` with terrain
-  // hidden — simpler than cloning the Sky material; done rarely).
   const skyU = sky.material.uniforms as Record<string, { value: unknown }>;
   const nightBg = new THREE.Color(0x05070f);
   let skyCap: SkyCapture | null = null;
-
-  function parseHourParam(raw: string | null): number | null {
-    if (raw === null || raw.trim() === "") return null;
-    const s = raw.trim();
-    if (s.includes(":")) {
-      const [hs, ms] = s.split(":");
-      const h = Number(hs);
-      const m = Number(ms ?? 0);
-      if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-      return h + m / 60;
-    }
-    const v = Number(s);
-    return Number.isFinite(v) ? v : null;
-  }
-  const parsedHour = parseHourParam(boot.t);
-  let hour = parsedHour === null ? 8.7 : Math.min(17.5, Math.max(6.5, parsedHour));
-  // T1: user cloud multiplier 0..1 (default 1), applied outside applyLighting
-  let cloudUser = boot.clouds;
-  metrics.time = hhmm(hour);
-  metrics.cam = boot.cam ?? "general";
 
   let routeDim = 1;
   const sunDirV = new THREE.Vector3(0, 1, 0);
@@ -206,24 +161,21 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     const sp = sunPosition(h);
     const az = (sp.azimuthDeg * Math.PI) / 180;
     const ev = (sp.elevationDeg * Math.PI) / 180;
-    const r = 22000;
     const dir = new THREE.Vector3(
       Math.sin(az) * Math.cos(ev),
       Math.sin(ev),
       -Math.cos(az) * Math.cos(ev),
     );
-    sun.position.copy(dir.clone().multiplyScalar(r));
+    // B4: position follows the rig target every frame (viewer loop sets
+    // sun.position/target from the same dir); colours only here.
+    sunDirV.copy(dir);
     sun.color.setHex(L.sunColor);
     sun.intensity = L.sunIntensity;
-    shadowNeedsUpdate = true;
-    // sky: Preetham by day, fade to night below horizon
     (skyU["turbidity"] as { value: number }).value = L.turbidity;
     (skyU["rayleigh"] as { value: number }).value = L.rayleigh;
     (skyU["mieCoefficient"] as { value: number }).value = L.mieCoefficient;
     (skyU["mieDirectionalG"] as { value: number }).value = L.mieDirectionalG;
     (skyU["sunPosition"] as { value: THREE.Vector3 }).value.copy(dir);
-    // S2.1: the dome IS the background by day — null the clear colour so no
-    // flat fill can wash the Preetham gradient. Night keeps its own colour.
     sky.visible = L.nightMix < 1;
     if (L.nightMix >= 1) {
       scene.background = nightBg;
@@ -231,8 +183,6 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       scene.background = null;
     }
     renderer.toneMappingExposure = L.exposure;
-    // fog uniforms: uSkyColor stays as the no-capture fallback; S9 capture
-    // (below) overrides per view-ray whenever the sun moves.
     const warm = Math.max(0, 1 - Math.abs(sp.elevationDeg - 12) / 25);
     fogUniforms.uFogTop.value = L.fogTopM;
     fogUniforms.uFogDensity.value = 0.25 + L.fogDensity * 0.75;
@@ -241,18 +191,9 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       : [0.55 + warm * 0.35, 0.6 + warm * 0.15, 0.72 - warm * 0.2];
     fogUniforms.uSkyColor.value = top;
     hemi.intensity = 0.25 + 0.35 * (1 - L.nightMix);
-    // dim the track slightly at twilight
     routeDim = 1 - L.nightMix * 0.3;
-    sunDirV.copy(dir);
     cloudDensity = L.cloudDensity;
-    // A1: model-only diagnostics (never framebuffer reads, never opinions).
-    // zenithHex = rough uniform-based estimate of the Preetham zenith
-    // (bluer with elevation, paler with rayleigh — directionally right,
-    // identical with/without clouds by construction, which is the point:
-    // if the model commands blue but the screen looks white, the veil is
-    // clouds/fog, not the sky). fog10km = pure distance term of the
-    // height-fog shader at 10 km (height term excluded).
-    {
+    if (boot.debug) {
       const ray = L.rayleigh;
       const elevF = Math.max(0, Math.min(1, sp.elevationDeg / 60));
       const zr = Math.round(Math.min(255, Math.max(0, 255 * (0.12 + 0.1 * elevF + 0.05 * ray))));
@@ -264,11 +205,16 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       const df10 = 1 - Math.exp(-x10 * x10 * x10 * x10 * 3.4);
       metrics.fog10km = Math.min(1, Math.max(0, df10 * (0.45 + 0.55 * dfog)));
     }
-    skyCap?.refresh();
   }
 
   // --- gate + progress (R0: global 45 s watchdog — never wait forever) ---
-  const gate = buildGate(() => undefined);
+  // B7: while the gate stands, body scroll is locked and lenis is stopped.
+  // On enter: scrollTo(0,0), lenis.start(), unlock — in that order.
+  let scroll: ScrollHandle | null = null;
+  const gate = buildGate(() => {
+    window.scrollTo(0, 0);
+    scroll?.start();
+  });
   const watchdog = window.setTimeout(() => {
     gate.fail("la carga está tardando demasiado; comprueba tu conexión y recarga");
   }, 45000);
@@ -302,9 +248,6 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     throw e;
   });
   await nextFrame();
-  // R0: decode with try/catch + <img> fallback after 10 s. A silent stall
-  // here is exactly what a user on a browser without
-  // colorSpaceConversion:"none" would see.
   async function decodeHeightmap(blob: Blob): Promise<Float32Array> {
     const decode = async (bmp: ImageBitmap): Promise<Float32Array> => {
       const cv = document.createElement("canvas");
@@ -431,13 +374,9 @@ uniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNorma
 uniform float uWallDeg; uniform float uRockWeight; uniform float uGrainK;
 uniform float uHasCorr; uniform float uHasNormal;
 varying vec3 vWPos2; varying vec3 vWNormal2;
-float gSteep = 0.0; // V1: lateral weight shared with the normal-map block below
-float gRaw = 0.0; // steep-map mode: raw geometric weight (no rock/weight gates)
-float gGrain = 0.0; // procedural grain value (shared colour/normal, one evaluation)
-// W-grain: procedural anisotropic value noise, flat by construction.
-// 3 octaves, amplitudes 1 / 0.5 / 0.25, scales x1 / x2.3 / x5.1 (non-integer
-// so octaves never align), stretched 2.5x along world-horizontal —
-// sediment strata grain, not TV static. No photo tile, no motif to repeat.
+float gSteep = 0.0;
+float gRaw = 0.0;
+float gGrain = 0.0;
 float whash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
 float wnoise(vec2 p){
   vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
@@ -456,16 +395,6 @@ float wgrain(vec2 lp){
   vec4 corr = texture2D(uCorridor, vUv2c.xy);
   float wcorr = vUv2c.z * uHasCorr;
   vec3 alb = mix(diffuseColor.rgb, corr.rgb, wcorr);
-  // V1 selective triplanar: steep faces sample the rock tile laterally
-  // (world XZ/Y in metres, tile 38 m repeat, mirrored to hide seams).
-  // V1.2: uTriScale preset so the blend is ~1.0 on >60° faces; uRockWeight
-  // (HUD) scales it 0..1 for separate calibration.
-  // V2-steep: normalised degree-space blend. smoothstep output is 0..1 BY
-  // CONSTRUCTION, so no pow-on-a-tiny-number and no magic scale — stable for
-  // ANY slider position 20°..60°. Threshold means what the label says.
-  // T1 grain, not wallpaper: procedural high frequency, NO colour of its own.
-  // Detrended (grain − 0.5, centred on 0) multiplies the real ortho colour,
-  // so strata bands and vegetation stains survive with detail on top.
   vec3 wn2 = normalize(vWNormal2);
   float slopeDeg = degrees(acos(clamp(wn2.y, 0.0, 1.0)));
   float rawSteep = smoothstep(uWallDeg, uWallDeg + 15.0, slopeDeg);
@@ -473,8 +402,6 @@ float wgrain(vec2 lp){
   float steep = rawSteep * uRockWeight;
   gSteep = steep;
   if (steep > 0.001) {
-    // lateral projection, world metres, tile 38 m; same axes mix the two
-    // wall planes so X- and Z-facing walls get continuous grain.
     float rep = 38.0;
     float wx = pow(abs(wn2.x), 6.0);
     float wz = pow(abs(wn2.z), 6.0);
@@ -496,9 +423,6 @@ float wgrain(vec2 lp){
             "#include <normal_fragment_maps>",
             `#include <normal_fragment_maps>
 {
-  // Same procedural grain drives the microrelief normal — one evaluation
-  // (gGrain), so colour and relief can never disagree or show two motifs.
-  // Finite differences of the grain field, lateral-projected like the colour.
   float eN = 0.6;
   vec3 wnN = normalize(vWNormal2);
   float repN = 38.0;
@@ -521,10 +445,6 @@ float wgrain(vec2 lp){
 }`,
           );
         if (boot.steep) {
-          // Steep weight map: R = raw geometry, G = effective, B = grain
-          // centred (0.5 = no modulation). Written at dithering_fragment
-          // (LAST chunk in this three version), so fog/tonemapping cannot
-          // wash the map.
           const prevSteep = terrainMat.onBeforeCompile.bind(terrainMat);
           terrainMat.onBeforeCompile = (s2: {
             uniforms: Record<string, unknown>;
@@ -550,8 +470,6 @@ float wgrain(vec2 lp){
   const corridorUniform = { value: null as THREE.Texture | null };
   const normalUniform = { value: null as THREE.Texture | null };
   const normalStrength = { value: 1.0 };
-  // Procedural wall grain (no photo tile — flat by construction).
-  // V2-steep: threshold in literal degrees (matches the HUD label).
   const wallDeg = { value: 30 };
   const rockWeight = { value: 1.0 };
   const grainK = { value: 0.45 };
@@ -560,8 +478,6 @@ float wgrain(vec2 lp){
 
   rebuildTerrain();
   gate.setProgress(0.62, 1);
-  // route needed before the line group exists; load it here so the S9 hide
-  // list below can reference it. (Order change only — same assets.)
   let route: RouteData;
   try {
     route = await loadRouteData();
@@ -569,17 +485,51 @@ float wgrain(vec2 lp){
     gate.fail(`no se ha podido cargar la senda: ${e instanceof Error ? e.message : e}`);
     throw e;
   }
+
+  // --- Phase 3A journey: scroll -> progress (single source) -> rig ---
+  scroll = createScroll();
+  scroll.stop(); // B7: locked until the gate opens
+  let progress: ProgressHandle;
+  try {
+    progress = initProgress(route, scroll);
+  } catch (e) {
+    gate.fail(`no se pudo resolver el recorrido: ${e instanceof Error ? e.message : e}`);
+    throw e;
+  }
+  if (progress.getState().divergenceWarn && boot.debug) {
+    metrics.warn = progress.getState().divergenceWarn as string;
+  }
+  const rig = createRig({ camera, route, world, elev, meta, progress });
+  {
+    // initial framing is simply rig.at(s=0) — no hardcoded default camera.
+    const p0 = rig.poseAt(scroll.s);
+    camera.position.set(p0.pos[0], p0.pos[1], p0.pos[2]);
+    camera.lookAt(p0.target[0], p0.target[1], p0.target[2]);
+  }
+
+  // ?orbit=1: deferred OrbitControls, rig excluded. Orbit starts where the
+  // rig would have put the camera for the given ?s= (inspect the framing).
+  let orbitControls: { update(): void } | null = null;
+  if (boot.orbit) {
+    const mod = await import("three/examples/jsm/controls/OrbitControls.js");
+    const oc = new mod.OrbitControls(camera, renderer.domElement);
+    const p = rig.poseAt(scroll.s);
+    oc.target.set(p.target[0], p.target[1], p.target[2]);
+    camera.position.set(p.pos[0], p.pos[1], p.pos[2]);
+    oc.update();
+    orbitControls = oc;
+  }
+  // Without the flag: zero mouse/touch listeners on the canvas — the canvas
+  // must never compete with scroll.
+
   const res2 = new THREE.Vector2(
     renderer.domElement.width,
     renderer.domElement.height,
   );
   const line = buildRouteLine(route, world, elev, meta, res2);
   group.add(line.group);
-  applyLighting(hour);
+  applyLighting(progress.getState().hourDec);
   renderer.compile(scene, camera);
-  // S9 capture needs the compiled sky; create lazily here (renderer exists).
-  // Capture renders the scene with terrain+clouds+line hidden — the dome
-  // alone on a 64×32 target, ~2k px, only on sun moves.
   skyCap = createSkyCapture(renderer, scene, camera);
   skyCap.refresh();
   renderer.shadowMap.needsUpdate = true;
@@ -598,8 +548,6 @@ float wgrain(vec2 lp){
   }
   gate.setProgress(0.68, 1);
   gate.ready();
-  // S9: refresh the 64×32 sky capture with clouds present (they were added
-  // after the first capture) — still only on boot, not per frame.
   skyCap?.refresh();
   await nextFrame();
 
@@ -631,8 +579,9 @@ float wgrain(vec2 lp){
   // labels
   const labelLayer = el("div", "labels");
   document.body.appendChild(labelLayer);
+  // T1: user cloud multiplier 0..1 (default 1) — instrument, behind ?debug=1
+  let cloudUser = boot.clouds;
   if (boot.steep) {
-    // steep-map mode: clouds, line and labels off — terrain weight only.
     clouds.group.visible = false;
     line.group.visible = false;
     labelLayer.style.display = "none";
@@ -642,7 +591,7 @@ float wgrain(vec2 lp){
   };
   const labelRts = buildLabels(labelDefs.labels, world.centerX, world.centerY, labelLayer);
 
-  // --- telemetry bar (7 cols) ---
+  // --- telemetry bar (7 cols, reads progress.getState()) ---
   const tele = el("div", "tele");
   const cells: TeleCells = {
     alt: el("div", "tele-v"),
@@ -670,120 +619,113 @@ float wgrain(vec2 lp){
   }
   document.body.appendChild(tele);
   const lastTele: Record<string, string> = {};
-  let sCur = 0;
 
-  // --- HUD: time slider + normal strength + LOD ---
-  const hud = el("div", "hud2");
-  const timeLab = el("div", "hud-label", `hora ${hhmm(hour)}`);
-  const time = document.createElement("input");
-  time.type = "range";
-  time.min = "6.5";
-  time.max = "17.5";
-  time.step = "0.0166";
-  time.value = String(hour);
-  time.setAttribute("aria-label", "hora del día");
-  time.addEventListener("input", () => {
-    hour = Number(time.value);
-    timeLab.textContent = `hora ${hhmm(hour)}`;
-    metrics.time = hhmm(hour);
-    applyLighting(hour);
-  });
-  // T1.2: live cloud-density multiplier (0..1), next to the hour slider.
-  // Writes cloudUser only — no reload, no applyLighting, no time touch.
-  const cloudLab = el("div", "hud-label", `nubes ${Math.round(cloudUser * 100)} %`);
-  const cloudIn = document.createElement("input");
-  cloudIn.type = "range";
-  cloudIn.min = "0";
-  cloudIn.max = "1";
-  cloudIn.step = "0.01";
-  cloudIn.value = String(cloudUser);
-  cloudIn.setAttribute("aria-label", "densidad de nubes");
-  cloudIn.addEventListener("input", () => {
-    cloudUser = Number(cloudIn.value);
-    cloudLab.textContent = `nubes ${Math.round(cloudUser * 100)} %`;
-  });
-  const nLab = el("div", "hud-label", "detalle del normal map");
-  const nIn = document.createElement("input");
-  nIn.type = "range";
-  nIn.min = "0";
-  nIn.max = "2";
-  nIn.step = "0.05";
-  nIn.value = "1";
-  nIn.setAttribute("aria-label", "intensidad del normal map");
-  nIn.addEventListener("input", () => {
-    normalStrength.value = Number(nIn.value);
-  });
-  // V2-steep: threshold in literal degrees — the label means what it says.
-  const tLab = el("div", "hud-label", "pared desde 30°");
-  const tIn = document.createElement("input");
-  tIn.type = "range";
-  tIn.min = "20";
-  tIn.max = "60";
-  tIn.step = "1";
-  tIn.value = "30";
-  tIn.setAttribute("aria-label", "umbral de pendiente de proyección lateral");
-  tIn.addEventListener("input", () => {
-    const deg = Number(tIn.value);
-    tLab.textContent = `pared desde ${deg}°`;
-    wallDeg.value = deg;
-  });
-  // V1.5: separate rock-weight control (0..1) — threshold and weight
-  // calibrate independently instead of blind.
-  const wLab = el("div", "hud-label", "peso roca 100 %");
-  const wIn = document.createElement("input");
-  wIn.type = "range";
-  wIn.min = "0";
-  wIn.max = "1";
-  wIn.step = "0.05";
-  wIn.value = "1";
-  wIn.setAttribute("aria-label", "peso de la roca lateral");
-  wIn.addEventListener("input", () => {
-    const w = Number(wIn.value);
-    wLab.textContent = `peso roca ${Math.round(w * 100)} %`;
-    rockWeight.value = w;
-  });
-  // T1: grain strength 0.3–0.6 — the lever to calibrate by eye, not the
-  // threshold. Multiplies detrended tile luminance onto the ortho colour.
-  const gLab = el("div", "hud-label", "grano 0,45");
-  const gIn = document.createElement("input");
-  gIn.type = "range";
-  gIn.min = "0";
-  gIn.max = "1";
-  gIn.step = "0.05";
-  gIn.value = "0.45";
-  gIn.setAttribute("aria-label", "intensidad del grano lateral");
-  gIn.addEventListener("input", () => {
-    const k = Number(gIn.value);
-    gLab.textContent = `grano ${k.toFixed(2).replace(".", ",")}`;
-    grainK.value = k;
-  });
-  const lodRow = el("div", "hud-row");
-  for (const st of [1, 2, 4]) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.textContent = `paso ${st}`;
-    b.className = st === step ? "hud-btn active" : "hud-btn";
-    b.addEventListener("click", () => {
-      step = st;
-      metrics.lod = st;
-      for (const c of lodRow.children) c.classList.remove("active");
-      b.classList.add("active");
-      rebuildTerrain();
-      if (terrainMat?.map) terrainMat.needsUpdate = true;
+  // --- instruments: whole phase-2 HUD behind ?debug=1, extended with 3A ---
+  if (boot.debug) {
+    const hud = el("div", "hud2");
+    const timeLab = el("div", "hud-label", `hora ${hhmm(progress.getState().hourDec)}${progress.getState().hourFrozen ? " (fija ?t=)" : ""}`);
+    const cloudLab = el("div", "hud-label", `nubes ${Math.round(cloudUser * 100)} %`);
+    const cloudIn = document.createElement("input");
+    cloudIn.type = "range";
+    cloudIn.min = "0";
+    cloudIn.max = "1";
+    cloudIn.step = "0.01";
+    cloudIn.value = String(cloudUser);
+    cloudIn.setAttribute("aria-label", "densidad de nubes");
+    cloudIn.addEventListener("input", () => {
+      cloudUser = Number(cloudIn.value);
+      cloudLab.textContent = `nubes ${Math.round(cloudUser * 100)} %`;
     });
-    lodRow.appendChild(b);
+    const nLab = el("div", "hud-label", "detalle del normal map");
+    const nIn = document.createElement("input");
+    nIn.type = "range";
+    nIn.min = "0";
+    nIn.max = "2";
+    nIn.step = "0.05";
+    nIn.value = "1";
+    nIn.setAttribute("aria-label", "intensidad del normal map");
+    nIn.addEventListener("input", () => {
+      normalStrength.value = Number(nIn.value);
+    });
+    const tLab = el("div", "hud-label", "pared desde 30°");
+    const tIn = document.createElement("input");
+    tIn.type = "range";
+    tIn.min = "20";
+    tIn.max = "60";
+    tIn.step = "1";
+    tIn.value = "30";
+    tIn.setAttribute("aria-label", "umbral de pendiente de proyección lateral");
+    tIn.addEventListener("input", () => {
+      const deg = Number(tIn.value);
+      tLab.textContent = `pared desde ${deg}°`;
+      wallDeg.value = deg;
+    });
+    const wLab = el("div", "hud-label", "peso roca 100 %");
+    const wIn = document.createElement("input");
+    wIn.type = "range";
+    wIn.min = "0";
+    wIn.max = "1";
+    wIn.step = "0.05";
+    wIn.value = "1";
+    wIn.setAttribute("aria-label", "peso de la roca lateral");
+    wIn.addEventListener("input", () => {
+      const w = Number(wIn.value);
+      wLab.textContent = `peso roca ${Math.round(w * 100)} %`;
+      rockWeight.value = w;
+    });
+    const gLab = el("div", "hud-label", "grano 0,45");
+    const gIn = document.createElement("input");
+    gIn.type = "range";
+    gIn.min = "0";
+    gIn.max = "1";
+    gIn.step = "0.05";
+    gIn.value = "0.45";
+    gIn.setAttribute("aria-label", "intensidad del grano lateral");
+    gIn.addEventListener("input", () => {
+      const k = Number(gIn.value);
+      gLab.textContent = `grano ${k.toFixed(2).replace(".", ",")}`;
+      grainK.value = k;
+    });
+    const lodRow = el("div", "hud-row");
+    for (const st of [1, 2, 4]) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = `paso ${st}`;
+      b.className = st === step ? "hud-btn active" : "hud-btn";
+      b.addEventListener("click", () => {
+        step = st;
+        metrics.lod = st;
+        for (const c of lodRow.children) c.classList.remove("active");
+        b.classList.add("active");
+        rebuildTerrain();
+        if (terrainMat?.map) terrainMat.needsUpdate = true;
+      });
+      lodRow.appendChild(b);
+    }
+    hud.append(timeLab, cloudLab, cloudIn, nLab, nIn, tLab, tIn, wLab, wIn, gLab, gIn, lodRow);
+    if (boot.steep) {
+      hud.append(el("div", "hud-label", "mapa: R = peso geo · G = efectivo · B = grano"));
+    }
+    document.body.appendChild(hud);
+    // hour readout follows the journey (write-if-changed in the loop)
+    const hourTick = window.setInterval(() => {
+      const label = `hora ${hhmm(progress.getState().hourDec)}${progress.getState().hourFrozen ? " (fija ?t=)" : ""}`;
+      if (timeLab.textContent !== label) timeLab.textContent = label;
+    }, 500);
+    void hourTick;
   }
-  hud.append(timeLab, time, cloudLab, cloudIn, nLab, nIn, tLab, tIn, wLab, wIn, gLab, gIn, lodRow);
-  if (boot.steep) {
-    // steep-map legend, kept with the tool (stays in the project).
-    hud.append(el("div", "hud-label", "mapa: R = peso geo · G = efectivo · B = grano"));
+
+  // ?debug=path instrument (3-panel overlay, lazy import keeps it out of the
+  // entry chunk graph unless requested)
+  if (boot.path) {
+    const { mountPathOverlay } = await import("../narrative/debug-path.ts");
+    mountPathOverlay({ route, world, elev, meta, progress, rig });
   }
-  document.body.appendChild(hud);
 
   gate.setProgress(1, 5);
   clearWatchdog();
   await nextFrame();
-  applyLighting(hour);
+  applyLighting(progress.getState().hourDec);
 
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -803,17 +745,69 @@ float wgrain(vec2 lp){
   const gpuNub = { v: -1 };
 
   let frames = 0;
+  let prevMs = -1;
   renderer.setAnimationLoop(() => {
     tickFrame(); // S3: real rAF-delta frame clock
+    const nowMs = performance.now();
+    const dtMs = prevMs < 0 ? 16.7 : Math.min(250, nowMs - prevMs);
+    prevMs = nowMs;
+    const dt = dtMs / 1000;
     const t0 = performance.now();
-    controls.update();
-    // s from camera (phase 2)
-    sCur = projectCameraToS(route, world, camera.position.x, camera.position.y, camera.position.z, sCur);
-    const t = telemetryAt(route, sCur);
-    const sp = sunPosition(hour);
-    driveTelemetry(cells, lastTele, t, hhmm(hour), sp.elevationDeg);
-    // T1.1: real draw cut, not alpha 0 — group off ⇒ zero cloud cost.
-    // In steep-map mode clouds stay off (hidden at boot, never restored).
+    if (orbitControls) {
+      orbitControls.update();
+    } else {
+      scroll.update(dtMs, nowMs);
+      progress.update();
+      rig.update(dt);
+    }
+    const st = progress.getState();
+    const hour = st.hourDec;
+    applyLighting(hour);
+    line.setProgressDist(st.d);
+    // B4: sun station follows the rig target; shadow refresh has TWO
+    // triggers (sun turned OR target moved), at most every N frames.
+    {
+      const tgt = rig.getTarget();
+      sun.target.position.set(tgt[0], tgt[1], tgt[2]);
+      sun.target.updateMatrixWorld();
+      sun.position.set(
+        tgt[0] + sunDirV.x * SHADOW_LIGHT_DIST_M,
+        tgt[1] + sunDirV.y * SHADOW_LIGHT_DIST_M,
+        tgt[2] + sunDirV.z * SHADOW_LIGHT_DIST_M,
+      );
+      const dAz = Math.abs(st.sunAzim - lastShadowAz);
+      const dEl = Math.abs(st.sunElev - lastShadowEl);
+      const dTgt = Math.hypot(tgt[0] - lastShadowTx, tgt[1] - lastShadowTy, tgt[2] - lastShadowTz);
+      framesSinceShadow++;
+      if ((dAz > SHADOW_EPS_DEG || dEl > SHADOW_EPS_DEG || dTgt > SHADOW_MOVE_EPS_M) && framesSinceShadow >= SHADOW_MIN_FRAMES) {
+        shadowNeedsUpdate = true;
+      }
+      if (shadowNeedsUpdate) {
+        renderer.shadowMap.needsUpdate = true;
+        shadowNeedsUpdate = false;
+        lastShadowAz = st.sunAzim;
+        lastShadowEl = st.sunElev;
+        lastShadowTx = tgt[0];
+        lastShadowTy = tgt[1];
+        lastShadowTz = tgt[2];
+        framesSinceShadow = 0;
+      }
+    }
+    // sky + fog colour refresh in the SAME event (gated by solar elevation)
+    skyCap?.refreshIfNeeded(st.sunElev);
+    metrics.time = hhmm(hour);
+    if (boot.debug) {
+      const dg = rig.getDiag();
+      metrics.s = st.s;
+      metrics.d = st.d;
+      metrics.hour = hhmm(hour);
+      metrics.yaw = dg.yaw;
+      metrics.pitch = dg.pitch;
+      metrics.dist = dg.dist;
+      metrics.holgura = dg.holgura;
+      metrics.cam = boot.orbit ? "orbit" : "rig";
+    }
+    driveTelemetry(cells, lastTele, st, hhmm(hour), st.sunElev);
     const effCloud = cloudDensity * cloudUser;
     if (boot.steep || effCloud <= 0.001) {
       clouds.group.visible = false;
@@ -823,28 +817,13 @@ float wgrain(vec2 lp){
       clouds.setDensity(effCloud, sunDirV);
       clouds.update(clock.elapsedTime, camera, renderer.domElement.width, renderer.domElement.height);
       metrics.cloudCoverage = clouds.getCoverage();
-      // V3: cap on the ALPHA-WEIGHTED veil at 20% of the screen.
       clouds.setCap(clouds.getCoverage() > 0.2);
     }
     line.setDim(routeDim);
     const t1 = performance.now();
-    if (shadowNeedsUpdate) {
-      renderer.shadowMap.needsUpdate = true;
-      shadowNeedsUpdate = false;
-    }
-    // S3: GPU split — terrain pass vs clouds pass (poll lands 2-4 frames late)
-    if (gpu.available) {
-      gpu.poll(gpuTerr, gpuNub);
-      metrics.msTerrain = gpuTerr.v;
-      metrics.msClouds = gpuNub.v;
-      gpu.begin("terrain");
-    }
-    renderer.render(scene, camera);
     const t2 = performance.now();
-    // steep-map diagnostics (read-only mirror of the live uniforms)
-    metrics.hasRock = 1; // procedural grain: always present, no tile to load
+    metrics.hasRock = 1;
     metrics.rockWeightShown = rockWeight.value;
-    // labels every frame (project cheap), occlusion every ~6th frame
     if (frames % 6 === 0) {
       for (const rt of labelRts) {
         rt.occluded = rayBlocked(
@@ -861,10 +840,17 @@ float wgrain(vec2 lp){
     }
     updateLabels(labelRts, camera, window.innerWidth, window.innerHeight, 30000);
     const t3 = performance.now();
-    // S3: JS slices stay JS; GPU numbers come only from the timer query.
     metrics.jsTerrain = Math.max(0, t2 - t1);
     metrics.jsLabels = Math.max(0, t3 - t2);
     metrics.msPost = 0;
+    if (gpu.available) {
+      gpu.poll(gpuTerr, gpuNub);
+      metrics.msTerrain = gpuTerr.v;
+      metrics.msClouds = gpuNub.v;
+      gpu.begin("terrain");
+    }
+    renderer.render(scene, camera);
+    void t0;
     frames++;
   });
 }

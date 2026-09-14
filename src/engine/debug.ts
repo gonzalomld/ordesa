@@ -30,9 +30,36 @@ export interface Metrics {
   texLevel: string;
   time: string;
   cam: string;
+  // Phase 3A journey magnitudes (?debug=1 readable, no console needed)
+  s: number;
+  d: number;
+  hour: string;
+  yaw: number;
+  pitch: number;
+  dist: number;
+  holgura: number;
+  warn: string;
 }
 
-export function parseBootQuery(): { debug: boolean; steep: boolean; t: string | null; cam: string | null; clouds: number } {
+export interface BootQuery {
+  debug: boolean;
+  steep: boolean;
+  path: boolean;
+  t: string | null;
+  cam: string | null;
+  clouds: number;
+  s: number | null;
+  act: string | null;
+  orbit: boolean;
+}
+
+function parseSParam(raw: string | null): number | null {
+  if (raw === null || raw.trim() === "") return null;
+  const v = Number(raw.trim().replace(",", "."));
+  return Number.isFinite(v) && v >= 0 && v <= 1 ? v : null;
+}
+
+export function parseBootQuery(): BootQuery {
   const q = new URLSearchParams(location.search);
   const rawClouds = q.get("clouds");
   let clouds = 1;
@@ -44,9 +71,13 @@ export function parseBootQuery(): { debug: boolean; steep: boolean; t: string | 
   return {
     debug: mode === "1" || mode === "steep",
     steep: mode === "steep",
+    path: mode === "path",
     t: q.get("t"),
     cam: q.get("cam"),
     clouds,
+    s: parseSParam(q.get("s")),
+    act: q.get("act"),
+    orbit: q.has("orbit"),
   };
 }
 
@@ -74,6 +105,14 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     texLevel: "",
     time: "",
     cam: "",
+    s: 0,
+    d: 0,
+    hour: "",
+    yaw: 0,
+    pitch: 0,
+    dist: 0,
+    holgura: Infinity,
+    warn: "",
   };
   (window as unknown as { __metrics: Metrics }).__metrics = metrics;
   if (!parseBootQuery().debug) return { metrics, el: null };
@@ -92,7 +131,9 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
       `frame ${metrics.msFrame.toFixed(1)} ms (${metrics.fps.toFixed(0)} fps) · js terr ${metrics.jsTerrain.toFixed(1)} · js etiq ${metrics.jsLabels.toFixed(1)}\n` +
       `gpu terr ${gpu(metrics.msTerrain)} · nub ${gpu(metrics.msClouds)} · cobertura ${(metrics.cloudCoverage * 100).toFixed(0)}%\n` +
       `calls ${metrics.drawCalls} · tris ${(metrics.triangles / 1e6).toFixed(2)}M · maxTex ${metrics.maxTextureSize} · dpr ${metrics.dpr} · lod ${metrics.lod} · ${metrics.texLevel}\n` +
-      `${metrics.time} · cam ${metrics.cam} · cenit ${metrics.zenithHex} · niebla10km ${metrics.fog10km.toFixed(2)}` +
+      `${metrics.time} · cam ${metrics.cam} · cenit ${metrics.zenithHex} · niebla10km ${metrics.fog10km.toFixed(2)}\n` +
+      `s ${metrics.s.toFixed(4)} · d ${(metrics.d / 1000).toFixed(2)} km · hora ${metrics.hour} · yaw ${metrics.yaw.toFixed(1)}° · pitch ${metrics.pitch.toFixed(1)}° · dist ${metrics.dist.toFixed(0)} m · holgura ${Number.isFinite(metrics.holgura) ? metrics.holgura.toFixed(0) + " m" : "—"}` +
+      (metrics.warn ? `\nAVISO ${metrics.warn}` : "") +
       (metrics.steep ? `\nsteep MAP · hasRock ${metrics.hasRock} · peso roca ${Math.round(metrics.rockWeightShown * 100)} %` : "");
     if (s !== last) {
       last = s;

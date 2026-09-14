@@ -22,3 +22,12 @@
 - Quality gate: model max must read ≈3347 m ±3 (Monte Perdido, official 3348). If it drifts, georeferencing broke.
 - Content: Spanish (Spain) UI/text; code + commits in English, small commits. No placeholder data, no invented figures/dates — every fact needs a source in `content/sources.md`; leave visible gaps. IGN services failing = stop and report, never swap sources silently.
 - Licences (footer + README): elevation + ortho © IGN/CNIG (CC BY 4.0 compatible); track = own GPX (or © OSM contributors, ODbL if fallback).
+
+## Senda de los Cazadores — phase 3A rules
+
+- Un único `requestAnimationFrame` en el proyecto. Cualquier animación se engancha al bucle de render existente.
+- Todo suavizado temporal usa `1 - exp(-k*dt)`. Los factores fijos por frame están prohibidos.
+- Los ángulos se interpolan por arco corto sobre el ángulo desenrollado, nunca con lerp lineal.
+- El estado del recorrido (s, d, z, hora, pendiente, desnivel) tiene una sola fuente: `narrative/progress.ts`. Ningún módulo lo recalcula.
+- Antes de ajustar un parámetro dos veces seguidas sin explicación, se construye la visualización que enseñe la magnitud que falla.
+- Todo instrumento de depuración vive detrás de una bandera de URL, se carga de forma diferida y no deja rastro en el bundle de producción. Ningún instrumento puede escribir en un estado que también controle la pieza.

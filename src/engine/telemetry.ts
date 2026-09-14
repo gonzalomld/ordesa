@@ -1,8 +1,9 @@
-// telemetry.ts — D6: s ∈ [0,1] along the track. telemetryAt(s) is pure;
-// phase-2 s comes from projecting the camera onto the track in 3D
-// (including height) with continuity bias. DOM writes only on change.
+// telemetry.ts — D6: DOM writes only on change. Phase 3A: reads journey
+// state from narrative/progress.ts (single source). No distance computation
+// of its own. loadRouteData stays (viewer builds RouteData from route.json).
 import { actForDistance } from "./sun.ts";
 import type { World } from "./terrain.ts";
+import type { ProgressState } from "../narrative/progress.ts";
 
 export interface RouteData {
   lengthM: number;
@@ -51,6 +52,19 @@ export interface Telemetry {
   slope: number; // %
   act: number;
   actName: string;
+}
+
+/** Phase-3A source: journey state straight from progress.getState().
+ * Kept for reference/tests; the render loop passes ProgressState. */
+export function telemetryFromState(st: ProgressState): Telemetry {
+  return {
+    alt: st.z,
+    climb: st.climbM,
+    km: st.d / 1000,
+    slope: st.slopePct,
+    act: st.actIndex,
+    actName: st.actName,
+  };
 }
 
 /** Pure mapping s∈[0,1] → telemetry (ground z = drape − offset). */
@@ -142,10 +156,11 @@ export interface TeleCells {
 export function driveTelemetry(
   cells: TeleCells,
   last: Record<string, string>,
-  t: Telemetry,
+  st: ProgressState,
   hourLabel: string,
   sunElev: number,
 ): void {
+  const t = telemetryFromState(st);
   const vals: Record<string, string> = {
     alt: `${fmtInt.format(Math.round(t.alt))} m`,
     climb: `+${fmtInt.format(Math.round(t.climb))} m`,

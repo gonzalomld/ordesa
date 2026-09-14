@@ -61,3 +61,64 @@ console.log(
 console.log(
   "captures: ?t=06:45&cam=pradera · ?t=08:42&cam=general · ?t=14:04&cam=general · ?t=17:30&cam=mirador",
 );
+
+// --- G8: phase-3A resolved anchor tables (runtime truth, brief wins) ---
+{
+  const { resolveAnchors, trackAt, bisectSunset } = await import("../src/narrative/anchors.ts");
+  const { buildPchip } = await import("../src/narrative/curve.ts");
+  const { CAMERA_ANCHORS, BRIEF_LENGTH_M } = await import("../src/narrative/choreography.ts");
+  const { sunPosition: nodeSun } = await import("./lib/sun.ts");
+  const routeJ = JSON.parse(
+    (await import("node:fs")).readFileSync("public/assets/route.json", "utf8"),
+  ) as {
+    x: number[];
+    y: number[];
+    z_mdt: number[];
+    d: number[];
+    cumClimb: number[];
+    lengthM: number;
+  };
+  const rl = {
+    n: routeJ.x.length,
+    lengthM: routeJ.lengthM,
+    x: Float32Array.from(routeJ.x),
+    y: Float32Array.from(routeJ.y),
+    z: Float32Array.from(routeJ.z_mdt),
+    d: Float32Array.from(routeJ.d),
+    cumClimb: Float32Array.from(routeJ.cumClimb),
+  };
+  const res = resolveAnchors(rl);
+  const hhmm = (h: number): string => {
+    const m = Math.round(h * 60);
+    return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  };
+  const hhmmss = (h: number): string => {
+    const s = Math.round(h * 3600);
+    return `${String(Math.floor(s / 3600)).padStart(2, "0")}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  };
+  console.log(`\n3A anchors (lengthM ${res.lengthM} m, brief ${BRIEF_LENGTH_M} m, divergence ${res.divergencePct.toFixed(3)}%):`);
+  console.log("  s->d:");
+  const fSD = buildPchip(res.sAnchors, res.dAnchorsM, "s->d");
+  void fSD;
+  void trackAt;
+  for (let i = 0; i < res.sAnchors.length; i++) {
+    console.log(
+      `    s=${(res.sAnchors[i] as number).toFixed(3)} d=${(res.dAnchorsM[i] as number).toFixed(1)} m (${((res.dAnchorsM[i] as number) / 1000).toFixed(2)} km)`,
+    );
+  }
+  console.log("  time:");
+  for (let i = 0; i < res.timeD.length; i++) {
+    const d = res.timeD[i] as number;
+    const h = res.timeH[i] as number;
+    console.log(`    d=${d.toFixed(1)} m ${hhmm(h)}`);
+  }
+  console.log("  camera:");
+  CAMERA_ANCHORS.forEach((c, i) => {
+    console.log(
+      `    ${c.id} s=${c.s.toFixed(3)} d=${((res.camDById[c.id] as number)).toFixed(1)} m dist=${c.distM} pitch=${c.pitchDeg} yaw=${(res.camYawUnwrapped[i] as number).toFixed(1)} (unwrapped) hT=${c.hTargetM}`,
+    );
+  });
+  const sunset = bisectSunset((h) => nodeSun(42.645, -0.055, 2026, 8, 16, h, 120).elevationDeg);
+  const e = nodeSun(42.645, -0.055, 2026, 8, 16, sunset, 120).elevationDeg;
+  console.log(`  sunset: ${hhmmss(sunset)} local, elev(sunset)=${e.toFixed(3)} deg (need -0.833 +/-0.005)`);
+}

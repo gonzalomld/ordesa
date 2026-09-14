@@ -4,6 +4,9 @@
   --color-paper: #f4f1ea;
   --font-text: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* Phase 3A: scroll-track height. scroll.ts writes the value at boot from
+     TRACK_VH (choreography.ts); tweakable live from devtools. */
+  --track-vh: 900vh;
 }
 
 * {
@@ -21,7 +24,8 @@ body {
   background: #000;
   color: var(--color-paper);
   font-family: var(--font-text);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 #scene {
@@ -30,6 +34,24 @@ body {
   width: 100%;
   height: 100%;
   display: block;
+}
+
+/* Phase 3A: the scroll that drives the journey lives behind the fixed canvas */
+#scroll-track {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: var(--track-vh);
+  pointer-events: none;
+}
+
+/* Phase 3A: ?debug=path instrument overlay */
+.path-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  pointer-events: none;
 }
 
 #text-layers {
