@@ -3,7 +3,7 @@
 // G5 sun-window · + OrbitControls anti-bundle check (C10: chunk-name based,
 // the minifier mangles identifiers so grepping "OrbitControls" is useless).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { A8_EXEMPT_S0, A8_EXEMPT_S1, BRIEF_LENGTH_M, CAM_CLEARANCE_M, ROUTE_DIVERGE_PCT, SUNSET_ELEV_DEG } from "../src/narrative/choreography.ts";
+import { A8_EXEMPT_S0, A8_EXEMPT_S1, BRIEF_LENGTH_M, CAM_CLEARANCE_M, G11_LUMA_MIN, LUMA_GRID, ROUTE_DIVERGE_PCT, SUNSET_ELEV_DEG } from "../src/narrative/choreography.ts";
 import { bisectSunset, resolveAnchors, trackAt } from "../src/narrative/anchors.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
 import { sunPosition } from "./lib/sun.ts";
@@ -109,13 +109,18 @@ const D2R = Math.PI / 180;
 const ds: number[] = new Array(STEPS + 1);
 const hs: number[] = new Array(STEPS + 1);
 const yaws: number[] = new Array(STEPS + 1);
+const climbs: number[] = new Array(STEPS + 1);
 let minClear = Infinity;
 let minClearS = 0;
+let clampSteps = 0;
+let maxClampRun = 0;
+let curClampRun = 0;
 for (let i = 0; i <= STEPS; i++) {
   const s = i / STEPS;
   const d = pchipSD(s);
   ds[i] = d;
   hs[i] = hourAt(s, d);
+  climbs[i] = trackAt(r, d).climb;
   const yaw = pchipYaw(s);
   yaws[i] = yaw;
   const pitch = pchipPitch(s);
@@ -148,7 +153,16 @@ for (let i = 0; i <= STEPS; i++) {
     }
   }
   const floor = sampleGrid(camX + cx, cy - camZ) + CAM_CLEARANCE_M;
-  if (camY < floor) camY = floor;
+  // G9 bookkeeping: was the floor clamp the active constraint? (1 cm tolerance)
+  const clamped = camY < floor - 0.01;
+  if (clamped) {
+    camY = floor;
+    clampSteps++;
+    curClampRun++;
+    maxClampRun = Math.max(maxClampRun, curClampRun);
+  } else {
+    curClampRun = 0;
+  }
   const clear = camY - sampleGrid(camX + cx, cy - camZ);
   if (clear < minClear) {
     minClear = clear;
@@ -243,6 +257,29 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
   const elevAtSunset = sunPosition(42.645, -0.055, 2026, 8, 16, sunset, 120).elevationDeg;
   gate("G5-sun", inRange && mono && endOk,
     `hour in [07:10, sunset ${sunset.toFixed(4)}h]${inRange ? "" : ` BROKEN at s=${(firstOut / STEPS).toFixed(3)}`}; elev monotone to zenith then down: ${mono}; epilogue ends exactly at computed sunset: ${endOk}; elev(sunset)=${elevAtSunset.toFixed(3)} deg (need ${SUNSET_ELEV_DEG} +/-0.005)`);
+}
+
+// --- G9 clearance-clamp duty (audit A4): the floor clamp is a safety net,
+// not the camera. Active in <=5% of steps, never >30 in a row. ---
+gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
+  `clamp active ${clampSteps}/${STEPS + 1} steps (${(clampSteps / (STEPS + 1) * 100).toFixed(1)}%, need <=5%), longest run ${maxClampRun} (need <=30)`);
+
+// --- G10 accumulated climb (audit A5): smoothed series ends at +815 ---
+{
+  const end = climbs[STEPS] as number;
+  gate("G10-climb", end >= 810 && end <= 820,
+    `climbM(s=1)=${end.toFixed(1)} m (need [810, 820]; sources.md publishes +815)`);
+}
+
+// --- G11 luminance probe contract (audit A6): threshold + grid live in
+// choreography.ts; the browser exposes window.__luma with ?luma=1. Node
+// checks the contract exists and the threshold is sane (the number itself
+// is measured in-browser at ?s=0.10, never invented here). ---
+{
+  const src = readFileSync("src/engine/viewer.ts", "utf8");
+  const hasProbe = src.includes("__luma") && src.includes('has("luma")');
+  gate("G11-luma-probe", hasProbe && G11_LUMA_MIN > 0 && LUMA_GRID >= 16,
+    hasProbe ? `probe in viewer (?luma=1 -> window.__luma), threshold ${G11_LUMA_MIN}, grid ${LUMA_GRID}x${LUMA_GRID} — measure at ?s=0.10` : "no __luma probe in viewer.ts");
 }
 
 // --- anti-bundle: OrbitControls must be a deferred chunk, not in the entry ---

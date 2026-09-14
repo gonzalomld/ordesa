@@ -15,6 +15,8 @@ export interface Clouds {
   group: THREE.Group;
   setDensity(d: number, sunDir: THREE.Vector3): void;
   setCap(on: boolean): void;
+  /** A9: 0 = eye-level (full density) .. 1 = straight down (fade). */
+  setZenithFade(f: number): void;
   update(time: number, camera: THREE.Camera, vw: number, vh: number): void;
   getCoverage(): number;
   dispose(): void;
@@ -83,6 +85,7 @@ export function buildClouds(
     uDensity: { value: 0.5 },
     uCap: { value: 1 },
     uTime: { value: 0 },
+    uZenithFade: { value: 0 },
     uHeightMap: { value: htex },
     uHMin: { value: new THREE.Vector2(meta.bbox.minx, meta.bbox.miny) },
     uHSize: { value: new THREE.Vector2(meta.bbox.maxx - meta.bbox.minx, meta.bbox.maxy - meta.bbox.miny) },
@@ -123,13 +126,16 @@ export function buildClouds(
       varying vec2 vUv; varying float vShade; varying float vAlpha; varying vec3 vWPos;
       uniform sampler2D uMap; uniform sampler2D uHeightMap;
       uniform vec2 uHMin; uniform vec2 uHSize; uniform float uHMaxY; uniform vec2 uHCenter;
+      uniform float uZenithFade;
       void main(){
         // soft particles: fade where the fragment meets the terrain
         vec2 epsg = vec2(vWPos.x + uHCenter.x, uHCenter.y - vWPos.z);
         vec2 huv = vec2((epsg.x - uHMin.x) / uHSize.x, (uHMaxY - epsg.y) / uHSize.y);
         float terr = texture2D(uHeightMap, huv).r;
         float soft = smoothstep(terr + 20.0, terr + 150.0, vWPos.y);
-        float a = texture2D(uMap, vUv).r * vAlpha * soft;
+        // A9: from above, billboards read as stains on the ground, not
+        // clouds. Fade toward the zenith; grazing views keep full density.
+        float a = texture2D(uMap, vUv).r * vAlpha * soft * (1.0 - uZenithFade);
         if (a < 0.004) discard;
         vec3 col = vec3(1.04, 1.0, 0.96) * vShade;
         gl_FragColor = vec4(col * a, a);
@@ -188,6 +194,9 @@ export function buildClouds(
       // V3: with the alpha-weighted metric the 20% cap is a real control:
       // halve the global alpha while the visible veil exceeds it.
       uniforms.uCap.value = on ? 0.45 : 1;
+    },
+    setZenithFade(f) {
+      uniforms.uZenithFade.value = Math.min(1, Math.max(0, f));
     },
     update(time, camera, vw, vh) {
       if (!group.visible) return; // T1.1: cut group ⇒ skip CPU work too

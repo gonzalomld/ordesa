@@ -25,9 +25,13 @@ export async function loadRouteData(): Promise<RouteData> {
     z_mdt: number[];
     d: number[];
     cumClimb: number[];
+    cumClimbSm?: number[];
     lengthM: number;
     totalClimbM: number;
   };
+  // A5: cumClimb IS the smoothed series (S7) — pipeline writes it; the raw
+  // drape never had its own accumulation. cumClimbSm is a forward alias.
+  const climb = j.cumClimbSm ?? j.cumClimb;
   return {
     lengthM: j.lengthM,
     totalClimbM: j.totalClimbM,
@@ -36,7 +40,7 @@ export async function loadRouteData(): Promise<RouteData> {
     y: Float32Array.from(j.y),
     z: Float32Array.from(j.z_mdt),
     d: Float32Array.from(j.d),
-    cumClimb: Float32Array.from(j.cumClimb),
+    cumClimb: Float32Array.from(climb),
   };
 }
 

@@ -36,6 +36,22 @@ export const SKY_EPS_DEG = 0.5; // sky-capture + fog colour refresh only when so
 export const TRACK_DIM_PAST = 1.0; // walked stretch opacity (full)
 export const TRACK_DIM_FUTURE = 0.35; // pending stretch opacity
 
+// --- audit A6: sky-ambient valley fill (a shadowed valley under clear sky
+// is blue, not black). Dome colour comes from the same zenith estimate the
+// debug overlay prints; floor is limestone in shadow. Day factor stays 1
+// between sunrise and sunset and dies only after sunset (epilogue).
+export const HEMI_DAY = 0.9; // hemisphere intensity while the sun is up (fraction of sky visible ~ sky dome)
+export const HEMI_NIGHT = 0.06; // ...after sunset (faint skyglow, never pure black)
+export const HEMI_SKY_RGB: [number, number, number] = [0.42, 0.55, 0.78]; // zenith-blue dome base (linear-ish, modulated by lightingAt rayleigh/elevation)
+export const HEMI_GROUND_RGB: [number, number, number] = [0.32, 0.3, 0.26]; // limestone in shadow
+export const G11_LUMA_MIN = 0.06; // mean linear framebuffer luminance at s=0.10 (audit A6, 32x32 readPixels grid)
+export const LUMA_GRID = 32; // G11 readPixels grid (audit A6); measured in-browser via ?luma=1, every 30th frame
+
+// --- audit A9: cloud layer seen from above (epilogue) must fade toward the
+// zenith while keeping its grazing-incidence density.
+export const CLOUD_ZENITH_FADE = 0.85; // max opacity cut looking straight down (0 = opaque disc, 1 = invisible)
+export const CLOUD_FADE_START_DEG = 25; // view-ray elevation above which the fade ramps in (deg from horizontal)
+
 // --- s -> distance anchors (brief section 2) ---
 // kmBrief is DESCRIPTIVE (rounded off route.json), never the distance axis.
 // Resolution moves d, never s: the s values below are fixed (anchors.ts).
@@ -76,9 +92,16 @@ export const TIME_ANCHORS: TimeAnchor[] = [
   { kmBrief: 18.13, hh: 16, mm: 40, via: "A10", porQue: "vuelta a la Pradera" },
 ];
 
-// --- camera anchors (brief section 4) ---
+// --- camera anchors (brief section 4 + audit) ---
 // yaw = bearing FROM the target TO the camera, degrees from north, clockwise.
 // yaw 266 puts the camera WSW looking up-canyon toward Monte Perdido (D8).
+// Phase-2 pose presets restored by ?cam= (A7): pradera/mirador/circo/general,
+// verbatim from the pre-3A viewer. Source: viewer.ts @ parent commit.
+export const CAM_PRESETS: Record<string, { eye: [number, number, number]; tgt: [number, number, number] }> = {
+  pradera: { eye: [741218 - 1500, 2600, 4726062 + 2500], tgt: [741218, 1321, 4726062] },
+  mirador: { eye: [741507 - 800, 2900, 4725203 + 1800], tgt: [741507, 1960, 4725203] },
+  circo: { eye: [747191 - 2600, 2600, 4726348 + 2400], tgt: [747191, 1762, 4726348] },
+};
 export type YawSpec = { mode: "abs"; deg: number } | { mode: "tang"; off: number };
 export interface CameraAnchor {
   id: string;
@@ -93,13 +116,33 @@ export const CAMERA_ANCHORS: CameraAnchor[] = [
   { id: "A0", s: 0.0, kmBrief: 0.0, distM: 420, pitchDeg: 12, yaw: { mode: "abs", deg: 266 }, hTargetM: 40 },
   { id: "A1", s: 0.06, kmBrief: 0.3, distM: 300, pitchDeg: 18, yaw: { mode: "tang", off: 150 }, hTargetM: 25 },
   { id: "A2", s: 0.18, kmBrief: 1.2, distM: 220, pitchDeg: 26, yaw: { mode: "tang", off: 120 }, hTargetM: 20 },
-  { id: "A3", s: 0.3, kmBrief: 2.44, distM: 260, pitchDeg: 8, yaw: { mode: "abs", deg: 266 }, hTargetM: 30 },
-  { id: "A4", s: 0.46, kmBrief: 3.0, distM: 340, pitchDeg: 6, yaw: { mode: "abs", deg: 266 }, hTargetM: 35 },
-  { id: "A5", s: 0.57, kmBrief: 6.0, distM: 200, pitchDeg: 14, yaw: { mode: "tang", off: -90 }, hTargetM: 20 },
+  // A3/A4 (audit A4): pitch 8/6 deg buried the camera in Sierra Custodia
+  // (clamp active 18% of the piece). Same D8 gaze ENE toward Monte Perdido,
+  // from above the ridge instead of inside it. Values exactly as audited.
+  { id: "A3", s: 0.3, kmBrief: 2.44, distM: 520, pitchDeg: 26, yaw: { mode: "abs", deg: 266 }, hTargetM: 30 },
+  { id: "A4", s: 0.46, kmBrief: 3.0, distM: 620, pitchDeg: 22, yaw: { mode: "abs", deg: 266 }, hTargetM: 35 },
+  // A5 (audit A2): tang +90 puts the camera south looking north into the
+  // void. Bearing resolves ~92.7 deg, yaw ~182.7. A1/A2 keep their brief
+  // signs: checked against the grid, both already sit over air
+  // (A1 +150 clear ~127 m, A2 +120 clear ~342 m).
+  { id: "A5", s: 0.57, kmBrief: 6.0, distM: 200, pitchDeg: 14, yaw: { mode: "tang", off: 90 }, hTargetM: 20 },
   { id: "A6", s: 0.68, kmBrief: 9.0, distM: 380, pitchDeg: 10, yaw: { mode: "abs", deg: 250 }, hTargetM: 60 },
   { id: "A7", s: 0.745, kmBrief: 9.67, distM: 150, pitchDeg: 4, yaw: { mode: "abs", deg: 275 }, hTargetM: 40 },
-  // A8: the only deliberate hard turn — camera crosses east, looks west down-valley (turnaround moment, G4-exempt window s 0.84-0.88)
-  { id: "A8", s: 0.86, kmBrief: 10.5, distM: 600, pitchDeg: 20, yaw: { mode: "abs", deg: 85 }, hTargetM: 120 },
+  // A7b (audit A1): hold-shot, same 275 heading until s=0.845, so the whole
+  // 170 deg turn happens inside the exempt window instead of spilling out.
+  // kmBrief -1 = sentinel: d resolved as d(s=0.845) in anchors.ts.
+  { id: "A7b", s: 0.845, kmBrief: -1, distM: 900, pitchDeg: 38, yaw: { mode: "abs", deg: 275 }, hTargetM: 120 },
+  // A8 (audit A1): pitch 38 + dist 900 reads the yaw change as an orbit over
+  // the cirque, not a whip. The only deliberate hard turn (G4-exempt window).
+  // Audit round 2: A9 tang -60 backtracks against the loop (582 deg) and
+  // forces a second 110 deg swing AFTER the window. Pinned abs 266: after
+  // the turnaround the camera holds WSW and looks down-valley with the
+  // walker — one turn in the whole piece, not two.
+  { id: "A8", s: 0.86, kmBrief: 10.5, distM: 900, pitchDeg: 38, yaw: { mode: "abs", deg: 85 }, hTargetM: 120 },
+  // A9 (audit round 2): the return leg walks WSW, so the brief's tang -60
+  // backtracks against the loop and forces a second swing AFTER the window.
+  // Reverted to the brief value: the audit pass decides A8/A9 framing from
+  // ?debug=path captures, not from the gate number alone.
   { id: "A9", s: 0.93, kmBrief: 14.0, distM: 300, pitchDeg: 12, yaw: { mode: "tang", off: -60 }, hTargetM: 25 },
   { id: "A10", s: 0.98, kmBrief: 18.13, distM: 500, pitchDeg: 16, yaw: { mode: "abs", deg: 266 }, hTargetM: 60 },
   // A11 epilogue: camera detached and high, no longer the walker's POV
@@ -121,9 +164,10 @@ export const ACT_MID_S: Record<string, number> = {
 // shows the frozen value; no slider anymore). Source: phase-2 HUD.
 export const DEBUG_STILLS: number[] = [6.75, 8.7, 14 + 4 / 60, 17.5];
 
-// G4-exempt yaw window around A8 (the deliberate turnaround)
+// G4-exempt yaw window around A8 (the deliberate turnaround, audit A1:
+// the whole 170 deg turn happens between A7b s=0.845 and A8 s=0.86)
 export const A8_EXEMPT_S0 = 0.84; // G4 test declares its own exemption here
-export const A8_EXEMPT_S1 = 0.88; // (same window, single source)
+export const A8_EXEMPT_S1 = 0.872; // (same window, single source)
 
 // @doc-only: brief figure, NEVER a distance axis. Used only to compute the 2%
 // divergence warning in verify:3a and doctor. The real axis is route.lengthM.

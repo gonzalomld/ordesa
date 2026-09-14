@@ -60,11 +60,11 @@ export function createRig(deps: RigDeps): {
   const pchipH = buildPchip(res.camS, res.camHTarget, "cam-h");
   const D2R = Math.PI / 180;
 
-  let distSm = pchipDist(0);
+  let corrSm = 0; // smoothed COLLISION CORRECTION only (A3) — the choreographed dist is followed exactly
   let lastYaw = res.camYawUnwrapped[0] as number;
   let lastPitch = pchipPitch(0);
   let lastTarget: [number, number, number] = [0, 0, 0];
-  const diag: RigDiag = { yaw: lastYaw, pitch: lastPitch, dist: distSm, holgura: Infinity };
+  const diag: RigDiag = { yaw: lastYaw, pitch: lastPitch, dist: pchipDist(0), holgura: Infinity };
 
   // s->d evaluation without touching scroll (poseAt must be callable standalone)
   const pchipSD = buildPchip(res.sAnchors, res.dAnchorsM, "s->d");
@@ -152,14 +152,20 @@ export function createRig(deps: RigDeps): {
     const st = progress.getState();
     const s = Math.min(1, Math.max(0, st.s));
     const r = rawPose(s);
-    const want = collide(r.target, r.distRaw, r.yaw, r.pitch);
+    // A3: choreography is followed EXACTLY; only the collision correction
+    // is smoothed (K_IN shorten fast, K_OUT recover slow). The camera can
+    // never lag behind its own script, and the 25 m floor is NOT smoothed
+    // (instant lift — burying the lens for even one frame is worse than a pop).
+    const safe = collide(r.target, r.distRaw, r.yaw, r.pitch);
+    const corr = Math.max(0, r.distRaw - safe);
     if (dt > 0 && Number.isFinite(dt)) {
-      const k = want < distSm ? K_IN : K_OUT;
-      distSm += (want - distSm) * (1 - Math.exp(-k * dt));
+      const k = corr > corrSm ? K_IN : K_OUT;
+      corrSm += (corr - corrSm) * (1 - Math.exp(-k * dt));
     } else {
-      distSm = want;
+      corrSm = corr;
     }
-    let pos = spherical(r.target, distSm, r.pitch, r.yaw);
+    const dist = Math.max(DIST_MIN_M, r.distRaw - corrSm);
+    let pos = spherical(r.target, dist, r.pitch, r.yaw);
     const floor = floorClearance(pos);
     if (pos[1] < floor) pos = [pos[0], floor, pos[2]];
     deps.camera.position.set(pos[0], pos[1], pos[2]);
@@ -170,7 +176,7 @@ export function createRig(deps: RigDeps): {
     const [ex, ey] = worldToEpsg(pos[0], pos[2], world);
     diag.yaw = r.yaw;
     diag.pitch = r.pitch;
-    diag.dist = distSm;
+    diag.dist = dist;
     diag.holgura = pos[1] - sampleGrid(elev, meta, ex, ey);
   }
 

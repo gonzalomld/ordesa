@@ -38,6 +38,7 @@ export interface Metrics {
   pitch: number;
   dist: number;
   holgura: number;
+  luma: number;
   warn: string;
 }
 
@@ -112,6 +113,7 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     pitch: 0,
     dist: 0,
     holgura: Infinity,
+    luma: -1,
     warn: "",
   };
   (window as unknown as { __metrics: Metrics }).__metrics = metrics;
@@ -132,7 +134,9 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
       `gpu terr ${gpu(metrics.msTerrain)} · nub ${gpu(metrics.msClouds)} · cobertura ${(metrics.cloudCoverage * 100).toFixed(0)}%\n` +
       `calls ${metrics.drawCalls} · tris ${(metrics.triangles / 1e6).toFixed(2)}M · maxTex ${metrics.maxTextureSize} · dpr ${metrics.dpr} · lod ${metrics.lod} · ${metrics.texLevel}\n` +
       `${metrics.time} · cam ${metrics.cam} · cenit ${metrics.zenithHex} · niebla10km ${metrics.fog10km.toFixed(2)}\n` +
-      `s ${metrics.s.toFixed(4)} · d ${(metrics.d / 1000).toFixed(2)} km · hora ${metrics.hour} · yaw ${metrics.yaw.toFixed(1)}° · pitch ${metrics.pitch.toFixed(1)}° · dist ${metrics.dist.toFixed(0)} m · holgura ${Number.isFinite(metrics.holgura) ? metrics.holgura.toFixed(0) + " m" : "—"}` +
+      // A10: yaw printed mod 360 (readable); unwrapped in parens for debug.
+      `s ${metrics.s.toFixed(4)} · d ${(metrics.d / 1000).toFixed(2)} km · hora ${metrics.hour} · yaw ${mod360(metrics.yaw).toFixed(1)}° (${metrics.yaw.toFixed(1)}°) · pitch ${metrics.pitch.toFixed(1)}° · dist ${metrics.dist.toFixed(0)} m · holgura ${Number.isFinite(metrics.holgura) ? metrics.holgura.toFixed(0) + " m" : "—"}` +
+      (metrics.luma >= 0 ? ` · luma ${metrics.luma.toFixed(3)}` : "") +
       (metrics.warn ? `\nAVISO ${metrics.warn}` : "") +
       (metrics.steep ? `\nsteep MAP · hasRock ${metrics.hasRock} · peso roca ${Math.round(metrics.rockWeightShown * 100)} %` : "");
     if (s !== last) {
@@ -156,4 +160,9 @@ export function frameClock(metrics: Metrics, alpha = 0.08): () => void {
     }
     prev = now;
   };
+}
+
+// A10: readable yaw (0..360); the unwrapped value is printed alongside.
+function mod360(deg: number): number {
+  return ((deg % 360) + 360) % 360;
 }

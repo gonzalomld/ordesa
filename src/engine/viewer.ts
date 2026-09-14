@@ -6,6 +6,15 @@ import * as THREE from "three";
 import { Sky } from "three/addons/objects/Sky.js";
 import { createRig } from "../narrative/camera-rig.ts";
 import {
+  CAM_PRESETS,
+  CLOUD_FADE_START_DEG,
+  CLOUD_ZENITH_FADE,
+  G11_LUMA_MIN,
+  HEMI_DAY,
+  HEMI_GROUND_RGB,
+  HEMI_NIGHT,
+  HEMI_SKY_RGB,
+  LUMA_GRID,
   SHADOW_EPS_DEG,
   SHADOW_EXTENT_M,
   SHADOW_FAR_M,
@@ -13,6 +22,7 @@ import {
   SHADOW_MIN_FRAMES,
   SHADOW_MOVE_EPS_M,
   SHADOW_NEAR_M,
+  SUNSET_ELEV_DEG,
 } from "../narrative/choreography.ts";
 import { initProgress, type ProgressHandle } from "../narrative/progress.ts";
 import { createScroll, type ScrollHandle } from "../narrative/scroll.ts";
@@ -38,6 +48,7 @@ import {
 } from "./telemetry.ts";
 import {
   buildTerrainGeometry,
+  epsgToWorld,
   loadElevations,
   loadMeta,
   worldFromMeta,
@@ -143,6 +154,12 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   let framesSinceShadow = SHADOW_MIN_FRAMES;
   const hemi = new THREE.HemisphereLight(0xbdd3e6, 0x5c5648, 0.5);
   scene.add(hemi);
+  const hemiSky = new THREE.Color(0x6b8cc7);
+  const hemiGround = new THREE.Color(
+    HEMI_GROUND_RGB[0] as number,
+    HEMI_GROUND_RGB[1] as number,
+    HEMI_GROUND_RGB[2] as number,
+  );
   const sky = new Sky();
   sky.scale.setScalar(60000);
   sky.frustumCulled = false;
@@ -190,7 +207,23 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       ? [0.02, 0.03, 0.07]
       : [0.55 + warm * 0.35, 0.6 + warm * 0.15, 0.72 - warm * 0.2];
     fogUniforms.uSkyColor.value = top;
-    hemi.intensity = 0.25 + 0.35 * (1 - L.nightMix);
+    // A6: the valley in shadow is lit by the SKY, not the sun. Dome colour
+    // from the same zenith estimate the overlay prints (bluer with
+    // elevation, paler with rayleigh); floor is limestone in shadow.
+    // Daylight factor stays 1 between sunrise and sunset — low sun still
+    // means a bright sky — and dies only after sunset (epilogue).
+    {
+      const ray = L.rayleigh;
+      const elevF = Math.max(0, Math.min(1, sp.elevationDeg / 60));
+      const zr = Math.min(1, Math.max(0, 0.12 + 0.1 * elevF + 0.05 * ray)) * (HEMI_SKY_RGB[0] as number) * 2;
+      const zg = Math.min(1, Math.max(0, 0.32 + 0.22 * elevF)) * (HEMI_SKY_RGB[1] as number) * 2;
+      const zb = Math.min(1, Math.max(0, 0.62 + 0.2 * elevF - 0.08 * ray)) * (HEMI_SKY_RGB[2] as number) * 2;
+      hemiSky.setRGB(zr, zg, zb);
+      hemi.color.copy(hemiSky);
+      hemi.groundColor.copy(hemiGround);
+      const dayF = sp.elevationDeg > SUNSET_ELEV_DEG ? 1 : 0;
+      hemi.intensity = HEMI_DAY * dayF + HEMI_NIGHT * (1 - dayF);
+    }
     routeDim = 1 - L.nightMix * 0.3;
     cloudDensity = L.cloudDensity;
     if (boot.debug) {
@@ -509,13 +542,30 @@ float wgrain(vec2 lp){
 
   // ?orbit=1: deferred OrbitControls, rig excluded. Orbit starts where the
   // rig would have put the camera for the given ?s= (inspect the framing).
+  // A7: ?cam= overrides the POSE explicitly (same precedence ?t= has over
+  // the hour): the rig does not compose, scroll does not move the camera.
+  // Phase-2 framings (general/pradera/mirador/circo) restored verbatim.
   let orbitControls: { update(): void } | null = null;
-  if (boot.orbit) {
+  if (boot.orbit || boot.cam !== null) {
     const mod = await import("three/examples/jsm/controls/OrbitControls.js");
     const oc = new mod.OrbitControls(camera, renderer.domElement);
-    const p = rig.poseAt(scroll.s);
-    oc.target.set(p.target[0], p.target[1], p.target[2]);
-    camera.position.set(p.pos[0], p.pos[1], p.pos[2]);
+    if (boot.cam !== null && boot.cam !== "general") {
+      const pre = CAM_PRESETS[boot.cam];
+      if (pre) {
+        const [ex, ey, ez] = epsgToWorld(pre.eye[0], pre.eye[1], pre.eye[2], world);
+        const [tx, ty, tz] = epsgToWorld(pre.tgt[0], pre.tgt[1], pre.tgt[2], world);
+        camera.position.set(ex, ey, ez);
+        oc.target.set(tx, ty, tz);
+      } else {
+        const p = rig.poseAt(scroll.s);
+        oc.target.set(p.target[0], p.target[1], p.target[2]);
+        camera.position.set(p.pos[0], p.pos[1], p.pos[2]);
+      }
+    } else {
+      const p = rig.poseAt(scroll.s);
+      oc.target.set(p.target[0], p.target[1], p.target[2]);
+      camera.position.set(p.pos[0], p.pos[1], p.pos[2]);
+    }
     oc.update();
     orbitControls = oc;
   }
@@ -721,6 +771,11 @@ float wgrain(vec2 lp){
     const { mountPathOverlay } = await import("../narrative/debug-path.ts");
     mountPathOverlay({ route, world, elev, meta, progress, rig });
   }
+  // G11 probe flag (?luma=1 with ?s=0.10): luminance sampling in the loop.
+  // The threshold lives in choreography.ts; the loop exposes window.__luma
+  // and the HUD line so the audit reads a number, not an impression.
+  const lumaOn = new URLSearchParams(location.search).has("luma");
+  void G11_LUMA_MIN;
 
   gate.setProgress(1, 5);
   clearWatchdog();
@@ -805,7 +860,8 @@ float wgrain(vec2 lp){
       metrics.pitch = dg.pitch;
       metrics.dist = dg.dist;
       metrics.holgura = dg.holgura;
-      metrics.cam = boot.orbit ? "orbit" : "rig";
+      // A7: ?cam= poses report their own name, like phase 2 did.
+      metrics.cam = boot.cam ?? (boot.orbit ? "orbit" : "rig");
     }
     driveTelemetry(cells, lastTele, st, hhmm(hour), st.sunElev);
     const effCloud = cloudDensity * cloudUser;
@@ -815,6 +871,18 @@ float wgrain(vec2 lp){
     } else {
       clouds.group.visible = true;
       clouds.setDensity(effCloud, sunDirV);
+      // A9: fade the layer as the view ray steepens (epilogue from above).
+      // Elevation of the camera->target ray above horizontal, deg.
+      {
+        const tgt = rig.getTarget();
+        const dx = tgt[0] - camera.position.x;
+        const dy = tgt[1] - camera.position.y;
+        const dz = tgt[2] - camera.position.z;
+        const horiz = Math.hypot(dx, dz);
+        const elevDeg = (Math.atan2(-dy, horiz) * 180) / Math.PI;
+        const f = Math.min(1, Math.max(0, (elevDeg - CLOUD_FADE_START_DEG) / (90 - CLOUD_FADE_START_DEG)));
+        clouds.setZenithFade(f * CLOUD_ZENITH_FADE);
+      }
       clouds.update(clock.elapsedTime, camera, renderer.domElement.width, renderer.domElement.height);
       metrics.cloudCoverage = clouds.getCoverage();
       clouds.setCap(clouds.getCoverage() > 0.2);
@@ -850,6 +918,35 @@ float wgrain(vec2 lp){
       gpu.begin("terrain");
     }
     renderer.render(scene, camera);
+    // G11 (audit A6): mean linear luminance over a LUMA_GRID^2 readPixels
+    // grid, every 30th frame, only with ?luma=1 (a per-frame readPixels
+    // stall would eat the budget it is meant to protect).
+    if (lumaOn && frames % 30 === 5) {
+      const g = LUMA_GRID;
+      const w = Math.max(1, Math.floor(renderer.domElement.width / 2));
+      const h = Math.max(1, Math.floor(renderer.domElement.height / 2));
+      const buf = new Uint8Array(w * h * 4);
+      const gl = renderer.getContext() as WebGL2RenderingContext;
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      let sum = 0;
+      let cnt = 0;
+      const sx = Math.max(1, Math.floor(w / g));
+      const sy = Math.max(1, Math.floor(h / g));
+      for (let yy = 0; yy < h; yy += sy) {
+        for (let xx = 0; xx < w; xx += sx) {
+          const o = (yy * w + xx) * 4;
+          const rr = (buf[o] as number) / 255;
+          const gg = (buf[o + 1] as number) / 255;
+          const bb = (buf[o + 2] as number) / 255;
+          // sRGB -> linear approx + Rec.709 luma
+          const lin = (c: number): number => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+          sum += 0.2126 * lin(rr) + 0.7152 * lin(gg) + 0.0722 * lin(bb);
+          cnt++;
+        }
+      }
+      (window as unknown as { __luma?: number }).__luma = cnt > 0 ? sum / cnt : 0;
+      if (boot.debug) metrics.luma = (window as unknown as { __luma?: number }).__luma ?? -1;
+    }
     void t0;
     frames++;
   });

@@ -6,12 +6,14 @@
 // - route.json always wins. kmBrief figures are descriptive/rounded.
 // - Resolution moves d, NEVER s: the s values of all three tables are fixed,
 //   so the G4-exempt window (s 0.84-0.88) keeps pointing at A8 after resolve.
-// - Pinned (derived from the track itself, never hand-written):
-//   A0 = 0; A3 = d[argmax z_mdt]; A7 = d[nearest to Cola de Caballo];
-//   A8 = d[farthest in plan from the start] (B3, no heading threshold);
-//   A10 = lengthM; A11 = lengthM.
-// - Intermediates keep their fraction INSIDE their span (C1):
-//   A0-A3 -> A1, A2; A3-A7 -> A4, A5, A6; A7-A8 -> none; A8-A10 -> A9.
+  // pinned (derived from the track itself, never hand-written):
+  // A0 = 0; A3 = d[argmax z_mdt]; A7 = d[nearest to Cola de Caballo];
+  // A10 = lengthM; A11 = lengthM.
+  // (Audit rectification: the old B3 pinned A8 at farthest-in-plan, which
+  // collapses on A7 — the farthest point from the Pradera IS the Cola.
+  // A8 is an intermediate again, fraction inside A7->A10 like the brief.)
+  // - Intermediates keep their fraction INSIDE their span:
+  //   A0-A3 -> A1, A2; A3-A7 -> A4, A5, A6; A7-A10 -> A8, A9.
 // - Hours hook onto resolved d via TIME_ANCHORS[].via (C2): resolve all
 //   distances first, then hook the hours.
 import {
@@ -26,7 +28,7 @@ import {
   TANGENT_WINDOW_M,
   TIME_ANCHORS,
 } from "./choreography.ts";
-import { angleUnwrapDeg } from "./curve.ts";
+import { angleUnwrapDeg, buildPchip } from "./curve.ts";
 import { REF_POINTS } from "../../scripts/geo-constants.ts";
 
 export interface RouteLike {
@@ -37,6 +39,9 @@ export interface RouteLike {
   z: ArrayLike<number>;
   d: ArrayLike<number>;
   cumClimb: ArrayLike<number>;
+  /** Smoothed-Z climb series (S7: 100 m radius, 5 m threshold, sources.md).
+   * Present in route.json as cumClimb; absent in old/test fixtures. */
+  cumClimbSm?: ArrayLike<number>;
 }
 
 export interface ResolvedAnchors {
@@ -63,22 +68,25 @@ function num(a: ArrayLike<number>, i: number): number {
   return a[i] as number;
 }
 
-/** Linear track sample at distance d (route.json is already ~5 m: plenty). */
+/** Linear track sample at distance d (route.json is already ~5 m: plenty).
+ * climb comes from the SMOOTHED series (A5: the published +815 m); Z stays
+ * the raw drape everywhere else. */
 export function trackAt(
   route: RouteLike,
   d: number,
 ): { x: number; y: number; z: number; climb: number } {
+  const climbArr = route.cumClimbSm ?? route.cumClimb;
   const n = route.n;
   const dd = route.d;
   if (d <= (num(dd, 0) as number)) {
-    return { x: num(route.x, 0), y: num(route.y, 0), z: num(route.z, 0), climb: num(route.cumClimb, 0) };
+    return { x: num(route.x, 0), y: num(route.y, 0), z: num(route.z, 0), climb: num(climbArr, 0) };
   }
   if (d >= (num(dd, n - 1) as number)) {
     return {
       x: num(route.x, n - 1),
       y: num(route.y, n - 1),
       z: num(route.z, n - 1),
-      climb: num(route.cumClimb, n - 1),
+      climb: num(climbArr, n - 1),
     };
   }
   let lo = 0;
@@ -95,7 +103,7 @@ export function trackAt(
     x: num(route.x, lo) + (num(route.x, hi) - num(route.x, lo)) * f,
     y: num(route.y, lo) + (num(route.y, hi) - num(route.y, lo)) * f,
     z: num(route.z, lo) + (num(route.z, hi) - num(route.z, lo)) * f,
-    climb: num(route.cumClimb, lo) + (num(route.cumClimb, hi) - num(route.cumClimb, lo)) * f,
+    climb: num(climbArr, lo) + (num(climbArr, hi) - num(climbArr, lo)) * f,
   };
 }
 
@@ -135,24 +143,20 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
     }
   }
   const dA7 = num(route.d, iCC);
-  // pinned: A8 = turnaround = route END of the outbound leg (B3: the Soaso
-  // cirque). Farthest-in-plan argmax fires at the eastmost wall BEFORE the
-  // Cola (d 9495 < d_cola 9670), which is not the narrative turnaround:
-  // the track reaches the Cola (nearest to the falls), then shares the same
-  // way back. The turnaround is the Cola index itself — deepest point out.
-  // NOTE (G2/G4 audit): A8 == A7 collapses the V(V-regreso) span onto the
-  // s 0.86 anchor and forces the whole 8.5 km return into s 0.86-0.98, which
-  // fails G2 (5.7x) and G4 (2.2 deg) with the brief numbers as written.
-  // Kept as specified: the audit pass decides whether the brief moves A8.
-  const dA8 = dA7;
 
-  // intermediate fractions inside their span, from brief km figures
+  // intermediate fractions inside their span, from brief km figures.
+  // A8 is an intermediate again (audit): keeps its brief fraction inside
+  // A7->A10. A9 likewise. A7b carries no km: sentinel kmBrief -1, resolved
+  // as d(s=0.845) from the s->d PCHIP once built (two-pass below).
   const fA1 = frac(0.3, 0, 2.44);
   const fA2 = frac(1.2, 0, 2.44);
   const fA4 = frac(3.0, 2.44, 9.67);
   const fA5 = frac(6.0, 2.44, 9.67);
   const fA6 = frac(9.0, 2.44, 9.67);
-  const fA9 = frac(14.0, 10.5, 18.13);
+  const fA8 = frac(10.5, 9.67, 18.13);
+  const fA9 = frac(14.0, 9.67, 18.13);
+  const dA8 = dA7 + (lengthM - dA7) * fA8;
+  const dA9 = dA7 + (lengthM - dA7) * fA9;
   const camDById: Record<string, number> = {
     A0: 0,
     A1: dA3 * fA1,
@@ -163,9 +167,10 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
     A6: dA3 + (dA7 - dA3) * fA6,
     A7: dA7,
     A8: dA8,
-    A9: dA8 + (lengthM - dA8) * fA9,
+    A9: dA9,
     A10: lengthM,
     A11: lengthM,
+    A7b: -1, // sentinel: resolved in the two-pass below
   };
 
   // s->d anchors hook onto camera-anchor d (s values stay fixed)
@@ -187,10 +192,8 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
   }
 
   // hours hook onto resolved d via TIME_ANCHORS[].via (C2).
-  // A8 == A7 by construction (turnaround at the Cola), so the 13:20 row
-  // hooks onto the same d as 12:35: drop the duplicate — PCHIP needs
-  // strictly increasing x (the epilogue branch carries 13:20 -> 16:40
-  // continuity through pchipTD(d_A8..) anyway since d keeps growing).
+  // A7/A8 are distinct again, so all eight rows hook 1:1 (strictly
+  // increasing — PCHIP requires it; skip defensively all the same).
   const timeD: number[] = [];
   const timeH: number[] = [];
   let prevD = -Infinity;
@@ -202,13 +205,25 @@ export function resolveAnchors(route: RouteLike): ResolvedAnchors {
     timeH.push(t.hh + t.mm / 60);
   }
 
-  // camera series: resolve tang->abs, then unwrap the whole series (B6)
+  // camera series: resolve tang->abs, then unwrap the whole series (B6).
+  // A7b (sentinel -1) is a hold-shot: d resolved as d(s=0.845), i.e. where
+  // the s->d curve already is at its s. The s->d anchors never include A7b,
+  // so build that PCHIP first, sample it, then build the camera series.
   const camIds: string[] = [];
   const camS: number[] = [];
   const camDistM: number[] = [];
   const camPitch: number[] = [];
   const camYawRaw: number[] = [];
   const camHTarget: number[] = [];
+  {
+    const sA: number[] = [];
+    const dA: number[] = [];
+    for (const a of S_TO_D_ANCHORS) {
+      sA.push(a.s);
+      dA.push(camDById[hook[a.s] as string] as number);
+    }
+    camDById["A7b"] = buildPchip(sA, dA, "s->d")(0.845);
+  }
   let lastBearing = 0;
   let haveBearing = false;
   for (const c of CAMERA_ANCHORS) {

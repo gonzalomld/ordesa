@@ -31,3 +31,4 @@
 - El estado del recorrido (s, d, z, hora, pendiente, desnivel) tiene una sola fuente: `narrative/progress.ts`. Ningún módulo lo recalcula.
 - Antes de ajustar un parámetro dos veces seguidas sin explicación, se construye la visualización que enseñe la magnitud que falla.
 - Todo instrumento de depuración vive detrás de una bandera de URL, se carga de forma diferida y no deja rastro en el bundle de producción. Ningún instrumento puede escribir en un estado que también controle la pieza.
+- Anulaciones explícitas de la pieza (orden: `?cam=` > rig para la pose, `?t=` > scroll para la hora, `?s=`/`?act=` > scroll para `s`, `?orbit=1` excluye el rig). Si está `?cam=`, el rig no compone; si está `?t=`, la hora queda congelada.
