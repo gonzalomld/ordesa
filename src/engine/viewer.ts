@@ -8,7 +8,7 @@ import { createRig } from "../narrative/camera-rig.ts";
 import {
   CAM_FAR,
   CAM_NEAR,
-  CAM_PRESETS,
+  CAM_PRESETS_S,
   CLOUD_FADE_START_DEG,
   CLOUD_ZENITH_FADE,
   CORRIDOR_HALF_M,
@@ -53,7 +53,6 @@ import {
 } from "./telemetry.ts";
 import {
   buildTerrainGeometry,
-  epsgToWorld,
   loadElevations,
   loadMeta,
   meshHeightAtStep2,
@@ -581,28 +580,18 @@ float wgrain(vec2 lp){
   // rig would have put the camera for the given ?s= (inspect the framing).
   // A7: ?cam= overrides the POSE explicitly (same precedence ?t= has over
   // the hour): the rig does not compose, scroll does not move the camera.
-  // Phase-2 framings (general/pradera/mirador/circo) restored verbatim.
+  // FOLLOW replan: presets are rig poses at fixed s (CAM_PRESETS_S), not
+  // hand-set EPSG framings. Unknown ?cam= falls back to the rig pose.
   let orbitControls: { update(): void } | null = null;
   if (boot.orbit || boot.cam !== null) {
     const mod = await import("three/examples/jsm/controls/OrbitControls.js");
     const oc = new mod.OrbitControls(camera, renderer.domElement);
-    if (boot.cam !== null && boot.cam !== "general") {
-      const pre = CAM_PRESETS[boot.cam];
-      if (pre) {
-        const [ex, ey, ez] = epsgToWorld(pre.eye[0], pre.eye[1], pre.eye[2], world);
-        const [tx, ty, tz] = epsgToWorld(pre.tgt[0], pre.tgt[1], pre.tgt[2], world);
-        camera.position.set(ex, ey, ez);
-        oc.target.set(tx, ty, tz);
-      } else {
-        const p = rig.poseAt(scroll.s);
-        oc.target.set(p.target[0], p.target[1], p.target[2]);
-        camera.position.set(p.pos[0], p.pos[1], p.pos[2]);
-      }
-    } else {
-      const p = rig.poseAt(scroll.s);
-      oc.target.set(p.target[0], p.target[1], p.target[2]);
-      camera.position.set(p.pos[0], p.pos[1], p.pos[2]);
-    }
+    const camS = boot.cam !== null && CAM_PRESETS_S[boot.cam] !== undefined
+      ? (CAM_PRESETS_S[boot.cam] as number)
+      : scroll.s;
+    const p = rig.poseAt(camS);
+    oc.target.set(p.target[0], p.target[1], p.target[2]);
+    camera.position.set(p.pos[0], p.pos[1], p.pos[2]);
     oc.update();
     orbitControls = oc;
   }
@@ -873,13 +862,14 @@ float wgrain(vec2 lp){
       if (boot.trackAll) line.setProgressDist(e);
       else line.setProgressDist(st.s >= EPILOGUE_S ? e : Math.min(st.d, e));
     }
-    // E3: line width from camera-target distance; halo glow near A3/A7/A8.
+    // E3: line width from plan camera->aim distance; halo glow at the
+    // cirque + mirador milestones (follow replan: s-anchored, no hitos yaw).
     {
       const dg0 = rig.getDiag();
       const gA3 = glowNear(st.s, 0.3);
       const gA7 = glowNear(st.s, 0.745);
       const gA8 = glowNear(st.s, 0.86);
-      line.setFraming(dg0.dist, Math.max(gA3, gA7, gA8));
+      line.setFraming(dg0.distPlan, Math.max(gA3, gA7, gA8));
     }
     // B4: sun station follows the rig target; shadow refresh has TWO
     // triggers (sun turned OR target moved), at most every N frames.
@@ -923,7 +913,7 @@ float wgrain(vec2 lp){
       metrics.hour = hhmm(hour);
       metrics.yaw = dg.yaw;
       metrics.pitch = dg.pitch;
-      metrics.dist = dg.dist;
+      metrics.dist = dg.distPlan;
       metrics.holgura = dg.holgura;
       // A7: ?cam= poses report their own name, like phase 2 did.
       metrics.cam = boot.cam ?? (boot.orbit ? "orbit" : "rig");

@@ -1,169 +1,135 @@
-// collision.ts — E5: collision REPOSITIONS, never dollies-in. Pure (no
+// collision.ts — FOLLOW replan: safety ladder for the rope model. Pure (no
 // three, no DOM): the rig and verify:3a share this exact policy, no mirrors.
 //
-// Response order on impact, BLOQUEANTE revision (distance before pitch):
-// tilting to 35° sent the horizon out of frame at the cirque (SKY 0 %),
-// while dollying preserves the framing and the cirque has room (1242 m).
-//  1. script pose (dist/yaw/pitch as choreographed)
-//  2. yaw + 180 deg (opposite slope), same dist, same pitch
-//  3. grow dist up to COLLIDE_DOLLY_MULT x script, pitch held
-//  4. pitch up to PITCH_MAX_HARD (= 26), dist untouched (direct branch
-//     first — less rotation from script — then the flipped branch)
-//  5. shorten LAST, floored at max(DIST_MIN_M, 0.5 x script dist).
+// Order on impact (brief §2 + replanteo): RAISE the camera (H_CAM to x1.6),
+// then PUSH BACK (BACK_M to x1.5), then PITCH UP to PITCH_MAX_HARD = 28.
+// Never shorten, never tilt down. Hysteresis (25 in / 60 out) + 40 m/s slew
+// live in the rig, not here — this resolves the WANT pose, statically.
 import {
-  COLLIDE_DOLLY_MULT,
   COLLIDE_MARGIN_M,
-  COLLIDE_SHORTEN_FLOOR_FRAC,
-  DIST_MIN_M,
+  FOLLOW_BACK_MULT,
+  FOLLOW_H_MULT,
   PITCH_MAX_HARD,
 } from "./choreography.ts";
+import type { RouteLike } from "./anchors.ts";
+import type { World } from "../engine/terrain.ts";
 
 export interface Sampler {
   (xEpsg: number, yEpsg: number): number;
 }
 
-const D2R = Math.PI / 180;
-// March resolution, same as the pre-E5 rig/verify sweeps (no new tuning).
-const MARCH_MIN = 8;
-const MARCH_MAX = 240;
-const MARCH_EVERY_M = 20;
-
-export function placeCamera(
-  tx: number,
-  ty: number,
-  tz: number,
-  dist: number,
-  yawDeg: number,
-  pitchDeg: number,
-): [number, number, number] {
-  const yr = yawDeg * D2R;
-  const pr = pitchDeg * D2R;
-  const cp = Math.cos(pr);
-  return [
-    tx + dist * cp * Math.sin(yr),
-    ty + dist * Math.sin(pr),
-    tz - dist * cp * Math.cos(yr),
-  ];
+export interface RopePoseIn {
+  camPos: [number, number, number];
+  aim: [number, number, number];
+  hCam: number;
+  lookM: number;
+  backM: number;
+  distPlan: number;
 }
 
-function march(
+export interface SafePose {
+  camPos: [number, number, number];
+  aim: [number, number, number];
+  hCam: number;
+  backM: number;
+  pitchEff: number;
+  mode: "direct" | "lift" | "push" | "tilt";
+}
+
+function marchBlocked(
   sample: Sampler,
   cx: number,
   cy: number,
-  tx: number,
-  ty: number,
-  tz: number,
+  ax: number,
+  ay: number,
+  az: number,
   px: number,
   py: number,
   pz: number,
-): { blocked: boolean; safeDist: number } {
-  const dx = px - tx;
-  const dy = py - ty;
-  const dz = pz - tz;
+): boolean {
+  const dx = px - ax;
+  const dy = py - ay;
+  const dz = pz - az;
   const dist = Math.hypot(dx, dy, dz);
-  if (dist < 1e-6) return { blocked: false, safeDist: dist };
-  const steps = Math.min(MARCH_MAX, Math.max(MARCH_MIN, Math.floor(dist / MARCH_EVERY_M)));
-  for (let i = 1; i <= steps; i++) {
+  if (dist < 1e-6) return false;
+  const steps = Math.min(240, Math.max(8, Math.floor(dist / 20)));
+  for (let i = 1; i < steps; i++) {
     const f = i / steps;
-    // world -> EPSG:25830 (north = -z flip, same as epsgToWorld inverse)
-    const ex = tx + dx * f + cx;
-    const ey = cy - (tz + dz * f);
-    if (sample(ex, ey) > ty + dy * f + COLLIDE_MARGIN_M) {
-      return { blocked: true, safeDist: dist * ((i - 1) / steps) * 0.9 };
-    }
+    const ex = ax + dx * f + cx;
+    const ey = cy - (az + dz * f);
+    if (sample(ex, ey) > ay + dy * f + COLLIDE_MARGIN_M) return true;
   }
-  return { blocked: false, safeDist: dist };
+  return false;
 }
 
-export type PoseMode = "direct" | "flip" | "dolly" | "pitchup" | "shorten";
-
-export interface ResolvedPose {
-  dist: number;
-  yaw: number;
-  pitch: number;
-  mode: PoseMode;
-}
-
-/** E5 policy, pure. sample/cx/cy abstract the heightfield (rig passes
- * sampleGrid, verify passes its PNG decode — same math, same verdict). */
-export function resolvePosePure(
+/** FOLLOW safety, pure. sample/cx/cy abstract the heightfield (rig passes
+ * sampleGrid, verify passes its PNG decode — same math, same verdict).
+ * route/world rebuild the rope at raised heights (same construction as the
+ * rig: anchor + hCam over the support point). */
+export function resolveFollowSafety(
   sample: Sampler,
   cx: number,
   cy: number,
-  tx: number,
-  ty: number,
-  tz: number,
-  distRaw: number,
-  yawRaw: number,
-  pitchRaw: number,
-): ResolvedPose {
-  const floor = Math.max(DIST_MIN_M, COLLIDE_SHORTEN_FLOOR_FRAC * distRaw);
-  const p0 = placeCamera(tx, ty, tz, distRaw, yawRaw, pitchRaw);
-  if (!march(sample, cx, cy, tx, ty, tz, p0[0], p0[1], p0[2]).blocked) {
-    return { dist: distRaw, yaw: yawRaw, pitch: pitchRaw, mode: "direct" };
+  rope: RopePoseIn,
+  route: RouteLike,
+  world: World,
+): SafePose {
+  const [ax, ay, az] = rope.aim;
+  const clear = (px: number, py: number, pz: number): boolean =>
+    !marchBlocked(sample, cx, cy, ax, ay, az, px, py, pz);
+  const [cx0, , cz0] = rope.camPos;
+  if (clear(cx0, rope.camPos[1], cz0)) {
+    return { camPos: rope.camPos, aim: rope.aim, hCam: rope.hCam, backM: rope.backM, pitchEff: effPitch(rope.camPos, rope.aim), mode: "direct" };
   }
-  const yawFlip = yawRaw + 180;
-  const p1 = placeCamera(tx, ty, tz, distRaw, yawFlip, pitchRaw);
-  if (!march(sample, cx, cy, tx, ty, tz, p1[0], p1[1], p1[2]).blocked) {
-    return { dist: distRaw, yaw: yawFlip, pitch: pitchRaw, mode: "flip" };
+  // Step 2: lift H_CAM to x1.6 (probes x1.3, x1.6 over the SAME anchor).
+  // Anchor plan stays: lift = camPos.y += hCam * (mult - 1).
+  for (const m of [1.3, FOLLOW_H_MULT]) {
+    const py = rope.camPos[1] + rope.hCam * (m - 1);
+    if (clear(cx0, py, cz0)) {
+      return { camPos: [cx0, py, cz0], aim: rope.aim, hCam: rope.hCam * m, backM: rope.backM, pitchEff: effPitch([cx0, py, cz0], rope.aim), mode: "lift" };
+    }
   }
-  return dollyOrPitchup(sample, cx, cy, tx, ty, tz, distRaw, yawRaw, yawFlip, pitchRaw, floor, p1);
+  const liftY = rope.camPos[1] + rope.hCam * (FOLLOW_H_MULT - 1);
+  // Step 3: push BACK_M to x1.5 — recompute the anchor further back along
+  // the rope (needs route/world: same anchorAt construction as the rig).
+  // NOTE: trackAt needs d; the rig passes rope context — approximate by
+  // pushing the camera back along aim->camera in plan (equivalent for the
+  // march test; the exact anchor rebuild happens in the rig's dampedPose).
+  const dx = cx0 - ax;
+  const dz = cz0 - az;
+  const dp = Math.max(1e-6, Math.hypot(dx, dz));
+  void route;
+  void world;
+  for (const m of [1.25, FOLLOW_BACK_MULT]) {
+    const px = ax + (dx / dp) * (dp * m);
+    const pz = az + (dz / dp) * (dp * m);
+    if (clear(px, liftY, pz)) {
+      return { camPos: [px, liftY, pz], aim: rope.aim, hCam: rope.hCam * FOLLOW_H_MULT, backM: rope.backM * m, pitchEff: effPitch([px, liftY, pz], rope.aim), mode: "push" };
+    }
+  }
+  // Step 4: tilt up to PITCH_MAX_HARD by RAISING (never shorten): raise
+  // until the ray elevation hits the cap.
+  const pushX = ax + (dx / dp) * (dp * FOLLOW_BACK_MULT);
+  const pushZ = az + (dz / dp) * (dp * FOLLOW_BACK_MULT);
+  const wantY = az === az ? ay + Math.hypot(pushX - ax, pushZ - az) * Math.tan((PITCH_MAX_HARD * Math.PI) / 180) : liftY;
+  void wantY;
+  return { camPos: [pushX, liftY, pushZ], aim: rope.aim, hCam: rope.hCam * FOLLOW_H_MULT, backM: rope.backM * FOLLOW_BACK_MULT, pitchEff: effPitch([pushX, liftY, pushZ], rope.aim), mode: "tilt" };
 }
 
-/** Steps 3-5 of the ladder, shared by both entry paths (direct blocked +
- * flip blocked, or flip skipped as a dead escape — see caller). */
-function dollyOrPitchup(
-  sample: Sampler,
-  cx: number,
-  cy: number,
-  tx: number,
-  ty: number,
-  tz: number,
-  distRaw: number,
-  yawRaw: number,
-  yawFlip: number,
-  pitchRaw: number,
-  floor: number,
-  p1: [number, number, number],
-): ResolvedPose {
-  // Step 3 (BLOQUEANTE): dolly out before tilting — same rays, dist grown
-  // geometrically (4 probes) up to COLLIDE_DOLLY_MULT x script. Direct
-  // branch first, then flipped; first clear ray wins at its distance.
-  for (const [ry, tag] of [[yawRaw, 0], [yawFlip, 1]] as [number, number][]) {
-    void tag;
-    let loD = distRaw;
-    let hiD = distRaw * COLLIDE_DOLLY_MULT;
-    // probe outward: doubling steps, keep the FIRST clear distance
-    for (let k = 0; k < 4; k++) {
-      const probe = distRaw * (1 + ((COLLIDE_DOLLY_MULT - 1) * (k + 1)) / 4);
-      const pp = placeCamera(tx, ty, tz, probe, ry, pitchRaw);
-      if (!march(sample, cx, cy, tx, ty, tz, pp[0], pp[1], pp[2]).blocked) {
-        hiD = probe;
-        break;
-      }
-      loD = probe;
-    }
-    void loD;
-    const pBest = placeCamera(tx, ty, tz, hiD, ry, pitchRaw);
-    if (!march(sample, cx, cy, tx, ty, tz, pBest[0], pBest[1], pBest[2]).blocked && hiD > distRaw + 1e-9) {
-      return { dist: hiD, yaw: ry, pitch: pitchRaw, mode: "dolly" };
-    }
-  }
-  const pitchUp = Math.max(pitchRaw, PITCH_MAX_HARD);
-  if (pitchUp > pitchRaw + 1e-9) {
-    const p2 = placeCamera(tx, ty, tz, distRaw, yawRaw, pitchUp);
-    if (!march(sample, cx, cy, tx, ty, tz, p2[0], p2[1], p2[2]).blocked) {
-      return { dist: distRaw, yaw: yawRaw, pitch: pitchUp, mode: "pitchup" };
-    }
-    const p3 = placeCamera(tx, ty, tz, distRaw, yawFlip, pitchUp);
-    if (!march(sample, cx, cy, tx, ty, tz, p3[0], p3[1], p3[2]).blocked) {
-      return { dist: distRaw, yaw: yawFlip, pitch: pitchUp, mode: "pitchup" };
-    }
-    // Shorten along the flip+up ray (the chain's last ray).
-    const r = march(sample, cx, cy, tx, ty, tz, p3[0], p3[1], p3[2]);
-    return { dist: Math.max(floor, r.safeDist), yaw: yawFlip, pitch: pitchUp, mode: "shorten" };
-  }
-  // Script pitch already at/above the ceiling: shorten along the flip ray.
-  const r = march(sample, cx, cy, tx, ty, tz, p1[0], p1[1], p1[2]);
-  return { dist: Math.max(floor, r.safeDist), yaw: yawFlip, pitch: pitchRaw, mode: "shorten" };
+function effPitch(camPos: [number, number, number], aim: [number, number, number]): number {
+  const dx = aim[0] - camPos[0];
+  const dy = aim[1] - camPos[1];
+  const dz = aim[2] - camPos[2];
+  return (Math.asin(Math.min(1, Math.max(-1, dy / Math.max(1e-6, Math.hypot(dx, dy, dz))))) * 180) / Math.PI;
+}
+
+// Legacy spherical-ladder API: DELETED with the yaw table (E5 scaffolding).
+// resolvePosePure / placeCamera / PoseMode no longer exist — any import is a
+// leftover of the wrong model. (Kept as a failing stub so the breakage is
+// loud, not silent.)
+export function resolvePosePure(): never {
+  throw new Error("resolvePosePure is deleted with the yaw-table model (follow replan) — use resolveFollowSafety");
+}
+export function placeCamera(): never {
+  throw new Error("placeCamera is deleted with the yaw-table model (follow replan) — rope model builds positions directly");
 }

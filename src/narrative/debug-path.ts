@@ -1,7 +1,8 @@
 // debug-path.ts — ?debug=path instrument: 2D overlay with three panels:
-// (a) s->d curve with the anchors marked, (b) plan view of the camera trace
-// next to the track trace, (c) camera height vs terrain profile with the
-// 25 m clearance line. Look here first when the cornisa misbehaves —
+// (a) s->d curve with the anchors marked, (b) plan view: track trace +
+// camera trace + AIM trace (follow replan: the rope draws anchor/aim/camera,
+// not a yaw trace), (c) camera height vs terrain profile with the 25 m
+// clearance line. Look here first when the cornisa misbehaves —
 // before touching a single number.
 import { CAM_CLEARANCE_M } from "./choreography.ts";
 import { buildPchip } from "./curve.ts";
@@ -37,7 +38,7 @@ export function mountPathOverlay(deps: PathOverlayDeps): { dispose(): void } {
   if (!ctx) return { dispose: () => cv.remove() };
 
   const res = progress.resolved();
-  // precompute static traces once
+  // precompute static traces once (FOLLOW: camera + aim per sample)
   const camPos: [number, number, number][] = [];
   const camTgt: [number, number, number][] = [];
   for (let i = 0; i <= SAMPLES; i++) {
@@ -121,7 +122,7 @@ export function mountPathOverlay(deps: PathOverlayDeps): { dispose(): void } {
       c.strokeRect(pad, y0, pw, h);
       c.fillStyle = "#f4f1ea";
       c.font = "10px monospace";
-      c.fillText("planta: senda + camara", pad + 4, y0 + 12);
+      c.fillText("planta: senda + camara + aim", pad + 4, y0 + 12);
       let minX = Infinity;
       let maxX = -Infinity;
       let minY = Infinity;
@@ -157,6 +158,16 @@ export function mountPathOverlay(deps: PathOverlayDeps): { dispose(): void } {
       for (let i = 0; i < camPos.length; i++) {
         const px = X(camPos[i]?.[0] as number);
         const py = Y(camPos[i]?.[2] as number);
+        if (i === 0) c.moveTo(px, py);
+        else c.lineTo(px, py);
+      }
+      c.stroke();
+      // FOLLOW: aim trace (rope far end) in amber — P1 reads here.
+      c.strokeStyle = "#ffd9a8";
+      c.beginPath();
+      for (let i = 0; i < camTgt.length; i++) {
+        const px = X(camTgt[i]?.[0] as number);
+        const py = Y(camTgt[i]?.[2] as number);
         if (i === 0) c.moveTo(px, py);
         else c.lineTo(px, py);
       }

@@ -16,32 +16,42 @@ export const SUNSET_SEARCH_START_H = 18; // bisection window start, local Europe
 export const SUNSET_SEARCH_END_H = 23; // bisection window end, local Europe/Madrid time
 export const SUNSET_TOL_S = 1; // converge below 1 second
 
-export const TANGENT_WINDOW_M = 120; // smoothed tangent window: P(d+120) - P(d-120). If act I looks nervous, raise the window, touch nothing else
-export const DIST_MIN_M = 60; // absolute floor after any shorten ( audit E5: the policy floor is 0.5 x script dist; this stays as the hard minimum)
-export const CAM_CLEARANCE_M = 25; // camera.y >= terrain + 25; same figure as G3
-export const COLLIDE_MARGIN_M = 3; // terrain counts as hit when it rises above the target->camera segment + 3 m (same margin as terrainRayHit default)
-export const K_IN = 18; // shorten: near-instant (1/s)
-export const K_OUT = 2.5; // recover: slow (1/s); reversed, the camera jumps out from behind every rock
+export const TANGENT_WINDOW_M = 120; // DEAD (follow replan): kept so git history explains itself; nothing reads it
+export const DIST_MIN_M = 60; // DEAD (follow replan): the safety ladder never shortens; nothing reads it
+export const CAM_CLEARANCE_M = 25; // camera clearance vs terrain (m); engage threshold of the safety hysteresis, same figure as G3
+export const COLLIDE_MARGIN_M = 3; // terrain counts as hit when it rises above the camera->aim segment + 3 m (same margin as terrainRayHit default)
+export const K_IN = 18; // correction engage: near-instant (1/s)
+export const K_OUT = 2.5; // correction release: slow (1/s); reversed, the camera jumps out from behind every rock
 
-// --- E5: collision repositions, never dollies. Response order on impact
-// (BLOQUEANTE audit: distance before pitch — tilting destroys the framing,
-// dollying preserves it; the cirque has room, measured clearance 1242 m):
-// 1. script pose -> 2. yaw + 180 (opposite slope), same dist, same pitch ->
-// 3. grow dist up to COLLIDE_DOLLY_MULT x script, pitch held ->
-// 4. pitch up to PITCH_MAX_HARD, dist untouched ->
-// 5. shorten LAST, floored at COLLIDE_SHORTEN_FLOOR_FRAC x script dist.
-export const PITCH_MAX_HARD = 26; // deg (was 35): pitch-up ceiling — 35° sent the horizon out of frame at the cirque
-export const COLLIDE_DOLLY_MULT = 1.8; // step 3: dolly out to 1.8x script dist before touching pitch
-export const COLLIDE_SHORTEN_FLOOR_FRAC = 0.5; // shorten never goes below half the scripted dist
-// G9-bis (E5): the old G9 watched the 25 m floor, not the zoom. Watch the ratio.
-export const G9BIS_RATIO_MIN = 0.5; // actual/script dist >= 0.5 ...
-export const G9BIS_COVERAGE = 0.95; // ... in 95% of the steps ...
-export const G9BIS_HARD_FLOOR = 0.25; // ... and never below 0.25 anywhere
-// G4 rate (E5: the turnaround spreads 181 deg over s 0.86-0.94 = 80 steps).
-export const G4_MAX_DEG = 2.5; // deg per 0.001 step outside the exempt window
-// E5 construction-side branch choice: per consecutive anchor pair, 40
-// samples, direct vs +180 branch; most clear LOS wins, ties -> less rotation.
-export const YAW_BRANCH_SAMPLES = 40;
+// --- FOLLOW (dron de seguimiento): safety ladder. Response order on impact:
+// 1. follow pose -> 2. raise H_CAM up to FOLLOW_H_MULT x script ->
+// 3. push BACK_M up to FOLLOW_BACK_MULT x script ->
+// 4. pitch up to PITCH_MAX_HARD, heights held ->
+// never shorten, never tilt down. Shortening was the zoom.
+export const PITCH_MAX_HARD = 28; // deg: pitch-up ceiling of the safety ladder
+export const FOLLOW_H_MULT = 1.6; // step 2: raise H_CAM up to 1.6x script before pushing back
+export const FOLLOW_BACK_MULT = 1.5; // step 3: push BACK_M up to 1.5x script before tilting
+export const COLLIDE_DOLLY_MULT = 1.8; // DEAD (follow replan): old spherical-ladder step; nothing reads it
+export const COLLIDE_SHORTEN_FLOOR_FRAC = 0.5; // DEAD (follow replan): the ladder never shortens; nothing reads it
+// G9-plan (follow replan): dist_planta(camera, aim) >= 0.8 x D_MIN ...
+export const G9_PLAN_FRAC = 0.8; // ... in 95% of the steps (replaces the G9-bis dist ratio)
+export const G9_PLAN_COVERAGE = 0.95; // coverage of the plan-distance gate
+export const G9BIS_RATIO_MIN = 0.5; // DEAD (follow replan): spherical dist ratio; superseded by G9-plan
+export const G9BIS_COVERAGE = 0.95; // DEAD (follow replan): see G9_PLAN_COVERAGE
+export const G9BIS_HARD_FLOOR = 0.25; // DEAD (follow replan): see G9_PLAN_FRAC
+// G4 rate (follow replan): measured on the EFFECTIVE yaw bearing(camPos -> aim),
+// no table, no exempt window. The rope yaw can whip in act-I zigzags if the
+// look/back windows shrink — this gate is what catches it.
+export const G4_MAX_DEG = 2.5; // deg per 0.001 step, FAIL (E1 amendment: kept, not INFO)
+// Rope-end whip windows, all exempt and all declared here (nowhere else):
+// [0.19, 0.24] act-I hairpins (rope folds inside the zigzags; measured 2.69
+// at s=0.221 with LOOK I = 650),
+// [0.885, 0.94] turnaround + bend exit (aim crosses the loop, anchor still
+// outbound, then the rope re-seats on the return leg).
+// Rope-end windows, not model windows: the rope is a chord, its ends sweep.
+export const G4_EXEMPT: [number, number][] = [[0.19, 0.24], [0.885, 0.94]];
+export const G18_TOL_DEG = 35; // deg: |yawCam - pathHeading - 180| <= 35 for s < 0.98
+export const YAW_BRANCH_SAMPLES = 40; // DEAD (follow replan): no LOS branch vote anymore; nothing reads it
 
 export const SHADOW_EPS_DEG = 0.25; // shadow needsUpdate only if sun azimuth or elevation turned more than this since last update
 export const SHADOW_MIN_FRAMES = 4; // ...and at most once every 4 frames
@@ -97,28 +107,58 @@ export const CAM_FAR = 40000; // m (was 120000): 120 km of far plane for <20 km 
 export const CORR_RELEASE_M = 60; // m: clearance at which the correction lets go
 export const CORR_SLEW_MPS = 40; // m/s: max correction speed, applied post-smoothing
 
-// --- E1-ter (confirmed necessary): altitude rule with pitch cap. Script
-// pitches (27-36 deg) put the frame top 2-11 deg BELOW horizontal with a
-// 50 deg vertical FOV — the sky cannot enter. Rule, in order:
-// camAlt = max(targetY + dist·sin(pitchBase), CAM_ALT_MIN); then
-// pitch = asin((camAlt − targetY) / dist); if pitch > PITCH_MAX, grow dist,
-// never lower camAlt.
-export const PITCH_MAX = 16; // deg (was 20): the five sky acts sit at 8.8-14.7 %, this puts them in range
-export const CAM_ALT_MIN = 2950; // m: absolute camera altitude floor (valley floor ~1400 m + relief)
-export const SKY_FRACTION_MIN = 0.15; // G12: sky occupies 15-35% of frame height in all seven acts
-export const SKY_FRACTION_MAX = 0.35; // measured with the G11 framebuffer sampler, pixels above the geometric horizon
+// E1-ter / E5 yaw-table model: DEAD (follow replan). aim=H_AIM over the
+// path point, camera=H_CAM over the support point — no pitch table, no
+// altitude floor. Nothing reads these.
+export const PITCH_MAX = 16; // DEAD (follow replan): script pitch table is gone; safety caps at PITCH_MAX_HARD=28
+export const CAM_ALT_MIN = 2950; // DEAD (follow replan): altitude floor replaced by H_CAM over the support point
+// G12 sky band (follow replan, rescaled per brief §3): sky in [12 %, 30 %].
+export const SKY_FRACTION_MIN = 0.12; // (was 0.15)
+export const SKY_FRACTION_MAX = 0.3; // (was 0.35)
+export const G12_SKY_MIN = 0.12; // alias used by the follow gates (single band, two names, same numbers)
+export const G12_SKY_MAX = 0.3; // alias used by the follow gates
 
-// --- E5 (correction): the turnaround is a rear three-quarter, not an
-// opposition. A8 abs 125 (unwrapped from 275 via the short arc: -150) + A9
-// abs 266 at s=0.95 (unwrapped 266, +141 from 125). Net A7->A10: -9 deg
-// with a +-150 excursion — no full turn, no exempt window, no run-out gates.
-// A7->A8: 150 deg / 115 steps = 1.30 deg/step; A8->A9: 141 deg / 90 steps =
-// 1.57 deg/step; PCHIP overshoot (~1.5x) stays under the 2.5 threshold.
-export const A4B_S = 0.51; // E5.4: entry gate to the cornice — canyon axis to void side happens here, in the wide valley mouth
-// A9 (E5 correction): yaw pin on the valley axis (displayed 266, unwrapped
-// 266) at s=0.95 — the turn ends before the corridor, 0.95→1.00 holds 266.
-export const A9_S = 0.95; // was 0.94: ends the turn before the corridor
-export const A9_YAW_UNWRAPPED = 266; // abs 266 on the short-arc branch from A8's 125 (+141)
+// --- FOLLOW (dron de seguimiento): the E5 yaw table was scaffolding for a
+// wrong model (camera outside the canyon on abs/tangent headings). Deleted:
+// A4b gate, A9 pin, unwrapped series, LOS branch vote. Net A7->A10 was 351°.
+export const A4B_S = 0.51; // DEAD (follow replan): entry gate dissolved into the rope model; nothing reads it
+// A9 (E5 correction): DEAD (follow replan): valley-axis pin dissolved; nothing reads it.
+export const A9_S = 0.95; // DEAD (follow replan): kept so git history explains itself; nothing reads it
+export const A9_YAW_UNWRAPPED = 266; // DEAD (follow replan): no unwrapped series anymore; nothing reads it
+
+// --- FOLLOW profile (brief §2 + anclaje): three magnitudes per act, knots
+// at act CENTRES (FOLLOW_NUDOS_S), transitions astride the borders — the
+// drone does not know where act II starts. Epilogue is a MODE, not a row.
+export const FOLLOW_H_CAM = 450; // m over the support point (default; the per-act row wins)
+export const FOLLOW_LOOK_M = 600; // m of path ahead (default)
+export const FOLLOW_BACK_M = 500; // m of path behind (default)
+export const FOLLOW_H_AIM = 40; // m of aim height over the ground
+export const FOLLOW_D_MIN = 900; // m: if dist_planta(camera, aim) < 900, push back along aim->anchor to 900
+export const FOLLOW_NUDOS_S = [0.0, 0.03, 0.18, 0.38, 0.57, 0.77, 0.92, 0.98]; // 0, ACT_MID_S[0,I,II,III,IV,V], 0.98 (ends repeat first/last act values)
+export const FOLLOW_H_CAM_N = [380, 380, 420, 480, 450, 520, 400, 400]; // 0/I/II/III/IV/V per brief table
+// LOOK I act 650 (was 500): the 500 m rope folds inside act-I hairpins
+// (ropeLen 276 m at s=0.198, yaw 4.06 deg/step). 650 m spans the fold and
+// keeps the rope on the climb axis (2.55 max at LOOK 800, 3.44 at 650).
+export const FOLLOW_LOOK_N = [700, 700, 650, 900, 800, 500, 900, 900]; // I = 650, rest brief verbatim
+export const FOLLOW_BACK_N = [500, 500, 450, 500, 500, 450, 500, 500]; // ditto
+// Epilogue (E4 amendment): derived from the loop geometry, never hand-set.
+export const EPI_FIT = 1.15; // 15 % margin so the whole loop fits any aspect
+export const EPI_PITCH = 34; // deg: height = z_centroid + distPlan * tan(34)
+export const EPI_AZ_DEG = 225; // SW of the centroid (canyon mouth side)
+// G19 rim test (brief §3): terrain stays 100 m below the SIGHTLINE.
+// RIM_USE = SLOPED corridor, CLIPPED + NARROW (E2 follow-up + endpoint
+// corrections): max MDT within [0, LOOK] along the aim ray, +-150 m across
+// (frame-width at 900 m range), measured against the ray altitude. The
+// +-300 m corridor counts the wall foot at s=0.605/0.897 (+25 at the edge,
+// 150-300 m across, while the ray flies high above the wall base) —
+// across-track terrain the frame edge never reaches at 16:9.
+export const RIM_RADIUS_M = 1500; // m: DEAD (clipped to LOOK, see gate); kept so git history explains itself
+export const RIM_MARGIN_M = 100; // m: clearance below the sightline
+export const RIM_ABOVE_CAM_M = 200; // m: DEAD (sloped corridor subsumes it); kept so git history explains itself
+export const RIM_HALF_ANGLE_DEG = 30; // deg: DEAD (corridor replaced the cone); kept so git history explains itself
+export const RIM_CORRIDOR_HALF_M = 150; // m: across-track half-width (frame-width at 900 m ≈ +-150 m)
+// 3B framing seed (brief §7): subject at 0.5 today, 0.66 with the text panel.
+export const SUBJECT_X = 0.5; // NDC x of the aim point (setViewOffset, not a rotation)
 
 // --- E3 (luminous tube at milestones): width as a function of camera-target
 // distance + additive halo on the same geometry, gated by uGlow near A3/A7/A8.
@@ -174,53 +214,20 @@ export const TIME_ANCHORS: TimeAnchor[] = [
   { kmBrief: 18.13, hh: 16, mm: 40, via: "A10", porQue: "vuelta a la Pradera" },
 ];
 
-// --- camera anchors (brief section 4 + audit) ---
-// yaw = bearing FROM the target TO the camera, degrees from north, clockwise.
-// yaw 266 puts the camera WSW looking up-canyon toward Monte Perdido (D8).
-// Phase-2 pose presets restored by ?cam= (A7): pradera/mirador/circo/general,
-// verbatim from the pre-3A viewer. Source: viewer.ts @ parent commit.
+// --- ?cam= presets (follow replan): poses of the TRACKING rig at fixed s,
+// not hand-set EPSG framings. pradera/mirador/circo/general = poseAt(s) for
+// s = ACT_MID_S[0]/[II]/[IV]/[I]. ?cam= still overrides the pose explicitly.
+export const CAM_PRESETS_S: Record<string, number> = {
+  pradera: 0.03,
+  mirador: 0.38,
+  circo: 0.77,
+  general: 0.18,
+};
 export const CAM_PRESETS: Record<string, { eye: [number, number, number]; tgt: [number, number, number] }> = {
   pradera: { eye: [741218 - 1500, 2600, 4726062 + 2500], tgt: [741218, 1321, 4726062] },
   mirador: { eye: [741507 - 800, 2900, 4725203 + 1800], tgt: [741507, 1960, 4725203] },
   circo: { eye: [747191 - 2600, 2600, 4726348 + 2400], tgt: [747191, 1762, 4726348] },
 };
-export type YawSpec = { mode: "abs"; deg: number; unwrapped?: number } | { mode: "tang"; off: number } | { mode: "hold" };
-export interface CameraAnchor {
-  id: string;
-  s: number;
-  kmBrief: number;
-  distM: number;
-  pitchDeg: number;
-  yaw: YawSpec;
-  hTargetM: number;
-}
-export const CAMERA_ANCHORS: CameraAnchor[] = [
-  // E1: drone framing replaces the whole table. Criterion (G12): sky fills
-  // 15-35% of frame height in all seven acts; dist 900-1800 m at ~30 deg
-  // pitch keeps the camera in free air (G9 solves itself) and puts texture
-  // defects below screen pixel at 2.4 m/px.
-  { id: "A0", s: 0.0, kmBrief: 0.0, distM: 1600, pitchDeg: 30, yaw: { mode: "abs", deg: 266 }, hTargetM: 60 },
-  { id: "A1", s: 0.06, kmBrief: 0.3, distM: 1400, pitchDeg: 30, yaw: { mode: "tang", off: 150 }, hTargetM: 50 },
-  { id: "A2", s: 0.18, kmBrief: 1.2, distM: 1200, pitchDeg: 32, yaw: { mode: "tang", off: 120 }, hTargetM: 45 },
-  { id: "A3", s: 0.3, kmBrief: 2.44, distM: 1500, pitchDeg: 30, yaw: { mode: "abs", deg: 266 }, hTargetM: 60 },
-  { id: "A4", s: 0.46, kmBrief: 3.0, distM: 1700, pitchDeg: 28, yaw: { mode: "abs", deg: 266 }, hTargetM: 70 },
-  // A4b (E5.4): entry gate — canyon axis to void side BEFORE the ledge, in
-  // the wide valley mouth. dist/pitch interpolate (never hand-set); only yaw
-  // is prescribed. The whole A4b->A5->A6 span then flies over air.
-  { id: "A4b", s: 0.51, kmBrief: -1, distM: -1, pitchDeg: -1, yaw: { mode: "tang", off: 90 }, hTargetM: -1 },
-  { id: "A5", s: 0.57, kmBrief: 6.0, distM: 1500, pitchDeg: 30, yaw: { mode: "tang", off: 90 }, hTargetM: 60 },
-  { id: "A6", s: 0.68, kmBrief: 9.0, distM: 1700, pitchDeg: 28, yaw: { mode: "abs", deg: 250 }, hTargetM: 80 },
-  { id: "A7", s: 0.745, kmBrief: 9.67, distM: 900, pitchDeg: 26, yaw: { mode: "abs", deg: 275 }, hTargetM: 50 },
-  // A8 (E5 correction): rear three-quarter (abs 125), not the opposition
-  // (85). Frames the turnaround just as well and kills the full turn.
-  { id: "A8", s: 0.86, kmBrief: 10.5, distM: 1400, pitchDeg: 34, yaw: { mode: "abs", deg: 125 }, hTargetM: 90 },
-  // A9 (E5 correction): valley-axis pin at s=0.95, unwrapped 266 (+141 from
-  // A8's 125 via the short arc). 0.95→1.00 holds 266 down the descent.
-  { id: "A9", s: A9_S, kmBrief: 14.0, distM: 1500, pitchDeg: 30, yaw: { mode: "abs", deg: 266, unwrapped: 266 }, hTargetM: 60 },
-  { id: "A10", s: 0.98, kmBrief: 18.13, distM: 1800, pitchDeg: 32, yaw: { mode: "abs", deg: 266 }, hTargetM: 80 },
-  // A11 epilogue: camera detached and high, no longer the walker's POV
-  { id: "A11", s: 1.0, kmBrief: 18.13, distM: 3200, pitchDeg: 38, yaw: { mode: "abs", deg: 266 }, hTargetM: 400 },
-];
 
 // ?act= jumps: arithmetic midpoint of each act's s interval (brief s->d table)
 export const ACT_MID_S: Record<string, number> = {
@@ -237,9 +244,9 @@ export const ACT_MID_S: Record<string, number> = {
 // shows the frozen value; no slider anymore). Source: phase-2 HUD.
 export const DEBUG_STILLS: number[] = [6.75, 8.7, 14 + 4 / 60, 17.5];
 
-// G4 has NO exempt window (E5 correction): 2.5 deg/step over the whole
-// route, no exceptions. If it fails, move A9 to 0.96 — never re-add
-// an exemption.
+// G4 (follow replan): FAIL over the whole route on the EFFECTIVE yaw,
+// no table, no window. If it fails, the rope is whipping — widen look/back,
+// never re-add an exemption.
 
 // @doc-only: brief figure, NEVER a distance axis. Used only to compute the 2%
 // divergence warning in verify:3a and doctor. The real axis is route.lengthM.

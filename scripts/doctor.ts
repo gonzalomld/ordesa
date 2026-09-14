@@ -116,21 +116,20 @@ console.log(
     const h = res.timeH[i] as number;
     console.log(`    d=${d.toFixed(1)} m ${hhmm(h)}`);
   }
-  console.log("  camera:");
-  CAMERA_ANCHORS.forEach((c, i) => {
-    const yawV = res.camYawUnwrapped[i] as number;
-    // A4b is a yaw gate: dist/pitch/hT interpolate (sentinel -1).
-    const shape = c.distM < 0 ? "interp" : `dist=${c.distM} pitch=${c.pitchDeg} hT=${c.hTargetM}`;
-    console.log(
-      `    ${c.id} s=${c.s.toFixed(3)} d=${((res.camDById[c.id] as number)).toFixed(1)} m ${shape} yaw=${yawV.toFixed(1)} (unwrapped)`,
-    );
-  });
-  if (res.yawBranch.length > 0) {
-    console.log("  yaw branches (E5.2: most clear-LOS wins, ties -> less rotation):");
-    for (const b of res.yawBranch) {
-      console.log(`    ${b.from}->${b.to}: ${b.branch === "direct" ? "rama directa" : "rama +180"} (${b.clear}/${b.total})`);
-    }
+  console.log("  camera: FOLLOW replan — no yaw table. Three series + loop geometry:");
+  const { FOLLOW_NUDOS_S, FOLLOW_H_CAM_N, FOLLOW_LOOK_N, FOLLOW_BACK_N } = await import("../src/narrative/choreography.ts");
+  const { followAt, resolveFollowProfile } = await import("../src/narrative/anchors.ts");
+  const follow = resolveFollowProfile(rl);
+  console.log(`  follow knots (s): ${FOLLOW_NUDOS_S.join(" ")}`);
+  console.log(`  H_CAM:  ${FOLLOW_H_CAM_N.join(" ")}`);
+  console.log(`  LOOK_M: ${FOLLOW_LOOK_N.join(" ")}`);
+  console.log(`  BACK_M: ${FOLLOW_BACK_N.join(" ")}`);
+  console.log("  at act borders (s=0.06/0.30/0.46/0.68/0.86/0.98):");
+  for (const sb of [0.06, 0.3, 0.46, 0.68, 0.86, 0.98]) {
+    const p = followAt(follow, sb);
+    console.log(`    s=${sb.toFixed(2)} H=${p.hCam.toFixed(0)} LOOK=${p.lookM.toFixed(0)} BACK=${p.backM.toFixed(0)}`);
   }
+  console.log(`  epilogue: centroid ${follow.centroid.x.toFixed(0)},${follow.centroid.y.toFixed(0)} z=${follow.centroid.z.toFixed(0)} loopR=${follow.loopR.toFixed(0)} distPlan=${follow.epiDistPlan.toFixed(0)} cam ${follow.epiCam.x.toFixed(0)},${follow.epiCam.y.toFixed(0)} z=${follow.epiCam.z.toFixed(0)}`);
   const sunset = bisectSunset((h) => nodeSun(42.645, -0.055, 2026, 8, 16, h, 120).elevationDeg);
   const e = nodeSun(42.645, -0.055, 2026, 8, 16, sunset, 120).elevationDeg;
   console.log(`  sunset: ${hhmmss(sunset)} local, elev(sunset)=${e.toFixed(3)} deg (need -0.833 +/-0.005)`);
