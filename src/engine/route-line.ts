@@ -34,6 +34,10 @@ export interface RouteLine {
   setFraming(camDistM: number, glow01: number): void;
   /** BLOQUEANTE isolation probe: expose the shared uniform for tests. */
   debugProgressDist(): number;
+  /** G15 (pasada rig puro): offscreen ID pass — render ONLY the solid Line2
+   * (no terrain, no halo, flat unlit colour) into a 256x144 target and count
+   * non-null pixels. A 1088-point grid cannot see a 2 px line; this can. */
+  countIdPixels(renderer: THREE.WebGLRenderer, camera: THREE.Camera): number;
 }
 
 export function buildRouteLine(
@@ -77,7 +81,9 @@ export function buildRouteLine(
   }
   const geo = new LineGeometry();
   geo.setPositions(pos);
-  // C4: per-segment accumulated distance (instanced: n-1 segments)
+  // C4: per-segment accumulated distance (instanced: n-1 segments, METRES
+  // in route.d — doctor prints instanceDistEnd min/max to prove the units;
+  // an index-vs-metres mixup here blanks the line until km 3.6).
   const nSeg = Math.max(0, route.n - 1);
   const dStart = new Float32Array(nSeg);
   const dEnd = new Float32Array(nSeg);
@@ -161,6 +167,16 @@ float alpha = opacity * mix( uDimFuture, uDimPast * head, step( vDist, uProgress
   halo.frustumCulled = false;
   halo.renderOrder = 4;
   group.add(halo);
+  // G15 ID pass: the SAME solid Line2, flat unlit material, rendered alone
+  // into a 256x144 target. No terrain, no halo, no lighting — line or void.
+  const idMat = new LineMaterial({ color: 0xffffff, linewidth: 2, worldUnits: false, alphaToCoverage: false });
+  idMat.resolution.set(256, 144);
+  const idLine = new Line2(geo, idMat);
+  idLine.frustumCulled = false;
+  const idScene = new THREE.Scene();
+  idScene.add(idLine);
+  const idTarget = new THREE.WebGLRenderTarget(256, 144, { depthBuffer: true });
+  const idBuf = new Uint8Array(256 * 144 * 4);
   return {
     group,
     setDim(f: number) {
@@ -174,9 +190,28 @@ float alpha = opacity * mix( uDimFuture, uDimPast * head, step( vDist, uProgress
     debugProgressDist() {
       return uProgressDist.value;
     },
+    countIdPixels(renderer: THREE.WebGLRenderer, camera: THREE.Camera) {
+      // G15: solid-only ID pass. The idLine shares geo (hence the same
+      // progress cut via its own material? NO — idMat is unpatched, so it
+      // always draws the WHOLE line: the ID pass answers "geometry paints",
+      // the cut is answered by ?track=all vs progressive in the main pass.
+      const prev = renderer.getRenderTarget();
+      renderer.setRenderTarget(idTarget);
+      renderer.setClearColor(0x000000, 1);
+      renderer.clear(true, true, false);
+      renderer.render(idScene, camera);
+      renderer.readRenderTargetPixels(idTarget, 0, 0, 256, 144, idBuf);
+      renderer.setRenderTarget(prev);
+      let n = 0;
+      for (let i = 0; i < 256 * 144; i++) {
+        if ((idBuf[i * 4] as number) > 4 || (idBuf[i * 4 + 1] as number) > 4 || (idBuf[i * 4 + 2] as number) > 4) n++;
+      }
+      return n;
+    },
     setFraming(camDistM: number, glow01: number) {
-      // E3: 2 px beyond 1200 m, 7 px under 400 m, smoothstep between.
-      // Halo width tracks x3; its opacity tracks uGlow (0 away from hitos).
+      // E3 drone revision: 2 px beyond 2600 m, 5 px under 1200 m, smoothstep
+      // between. Halo width tracks x3; its opacity tracks uGlow (0 away
+      // from milestones — the audit caught it lit at s=0/0.14).
       const f = Math.min(1, Math.max(0, (LINE_W_D_FAR - camDistM) / (LINE_W_D_FAR - LINE_W_D_NEAR)));
       const s = f * f * (3 - 2 * f);
       const w = LINE_W_FAR + (LINE_W_NEAR - LINE_W_FAR) * s;

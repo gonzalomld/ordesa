@@ -133,9 +133,10 @@ console.log(
   const sunset = bisectSunset((h) => nodeSun(42.645, -0.055, 2026, 8, 16, h, 120).elevationDeg);
   const e = nodeSun(42.645, -0.055, 2026, 8, 16, sunset, 120).elevationDeg;
   console.log(`  sunset: ${hhmmss(sunset)} local, elev(sunset)=${e.toFixed(3)} deg (need -0.833 +/-0.005)`);
-  // BLOQUEANTE suspicion: vDist garbage kills the whole line. Print the
-  // real instanced-attribute range next to lengthM — if max != ~18126,
-  // the cut, not the geometry, is the killer.
+  // RASTRO (pasada rig puro): the cut compares vDist vs uProgressDist.
+  // Hypothesis on the table: instanceDistStart/End carry the POINT INDEX
+  // (0-3625) instead of metres (0-18126) — then nothing paints until
+  // uProgressDist > 3626 (km 3.6). One-line check before touching anything:
   {
     let mn = Infinity;
     let mx = -Infinity;
@@ -144,6 +145,14 @@ console.log(
       if (v < mn) mn = v;
       if (v > mx) mx = v;
     }
-    console.log(`  track-dist attr: min=${mn.toFixed(1)} max=${mx.toFixed(1)} lengthM=${routeJ.lengthM} (route.d feeds instanceDistStart/End 1:1)`);
+    const n = routeJ.d.length;
+    const verdict = Math.abs(mx - routeJ.lengthM) < 1
+      ? "METRES ok — cut hypothesis dead, look at passes/renderOrder/corridor"
+      : Math.abs(mx - (n - 1)) < 1
+        ? "INDEX — hypothesis confirmed: attributes carry point index, not metres"
+        : Math.abs(mx - routeJ.lengthM / 1000) < 0.05
+          ? "KILOMETRES — attributes carry km, not metres"
+          : "UNKNOWN units — do not touch, report";
+    console.log(`  instanceDistEnd: min=${mn.toFixed(1)} max=${mx.toFixed(1)} (n=${n}, lengthM=${routeJ.lengthM}) → ${verdict}`);
   }
 }

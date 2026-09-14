@@ -43,6 +43,10 @@ export interface RigDiag {
   /** effective yaw/pitch, READ-ONLY diagnostics (never controls). */
   yaw: number;
   pitch: number;
+  /** G16 (pasada rig puro): the damped H_CORRECTION the camera flies with.
+   * The gate watches THIS (corrHSm), not the plan-dist series — knot
+   * inflexions of the choreography are not nodding. */
+  corrH: number;
 }
 
 export interface RigPose {
@@ -92,7 +96,7 @@ export function createRig(deps: RigDeps): {
   let corrBackSm = 0;
   let engaged = false;
   let lastTarget: [number, number, number] = [0, 0, 0];
-  const diag: RigDiag = { distPlan: 0, hCam: 0, lookM: 0, backM: 0, holgura: Infinity, yaw: 0, pitch: 0 };
+  const diag: RigDiag = { distPlan: 0, hCam: 0, lookM: 0, backM: 0, holgura: Infinity, yaw: 0, pitch: 0, corrH: 0 };
 
   // s->d evaluation without touching scroll (poseAt must be callable standalone)
   const pchipSD = buildPchip(res.sAnchors, res.dAnchorsM, "s->d");
@@ -310,6 +314,7 @@ export function createRig(deps: RigDeps): {
     diag.holgura = posF[1] - sampleGrid(elev, meta, ex, ey);
     diag.yaw = ang.yaw;
     diag.pitch = ang.pitch;
+    diag.corrH = corrHSm;
   }
 
   return { update, poseAt, getDiag: () => diag, getTarget: () => lastTarget };

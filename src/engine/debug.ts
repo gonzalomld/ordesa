@@ -42,6 +42,8 @@ export interface Metrics {
   pitch: number;
   dist: number;
   holgura: number;
+  /** G16 (pasada rig puro): damped H correction the camera flies with. */
+  corrH: number;
   luma: number;
   warn: string;
 }
@@ -124,6 +126,7 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     pitch: 0,
     dist: 0,
     holgura: Infinity,
+    corrH: 0,
     luma: -1,
     warn: "",
   };
@@ -146,7 +149,8 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
       `calls ${metrics.drawCalls} · tris ${(metrics.triangles / 1e6).toFixed(2)}M · maxTex ${metrics.maxTextureSize} · dpr ${metrics.dpr} · lod ${metrics.lod} · ${metrics.texLevel}\n` +
       `${metrics.time} · cam ${metrics.cam} · cenit ${metrics.zenithHex} · niebla10km ${metrics.fog10km.toFixed(2)}\n` +
       // A10: yaw printed mod 360 (readable); unwrapped in parens for debug.
-      `s ${metrics.s.toFixed(4)} · d ${(metrics.d / 1000).toFixed(2)} km · hora ${metrics.hour} · yaw ${mod360(metrics.yaw).toFixed(1)}° (${metrics.yaw.toFixed(1)}°) · pitch ${metrics.pitch.toFixed(1)}° · dist ${metrics.dist.toFixed(0)} m · holgura ${Number.isFinite(metrics.holgura) ? metrics.holgura.toFixed(0) + " m" : "—"}` +
+      // G16: corrH (damped H correction) rides along — nodding reads here.
+      `s ${metrics.s.toFixed(4)} · d ${(metrics.d / 1000).toFixed(2)} km · hora ${metrics.hour} · yaw ${mod360(metrics.yaw).toFixed(1)}° (${metrics.yaw.toFixed(1)}°) · pitch ${metrics.pitch.toFixed(1)}° · dist ${metrics.dist.toFixed(0)} m · holgura ${Number.isFinite(metrics.holgura) ? metrics.holgura.toFixed(0) + " m" : "—"} · corrH ${metrics.corrH.toFixed(0)} m` +
       (metrics.luma >= 0 ? ` · luma ${metrics.luma.toFixed(3)}` : "") +
       (metrics.warn ? `\nAVISO ${metrics.warn}` : "") +
       (metrics.steep ? `\nsteep MAP · hasRock ${metrics.hasRock} · peso roca ${Math.round(metrics.rockWeightShown * 100)} %` : "");

@@ -265,6 +265,24 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   }
 
   // --- gate + progress (R0: global 45 s watchdog — never wait forever) ---
+  // P0/G20: after first render, a dead GL program must blame graphics, not
+  // the network. renderer.info.programs[].diagnostics.runnable === false
+  // means the shader never compiled (the vMapUv class of bug) — the gate
+  // message says so and ?debug=1 prints the program diagnostics.
+  function checkGLPrograms(): string | null {
+    try {
+      const progs = renderer.info.programs as { diagnostics?: { runnable?: boolean }; name?: string }[];
+      const dead = progs.filter((p) => p.diagnostics && p.diagnostics.runnable === false);
+      if (dead.length > 0) {
+        const names = dead.map((p) => p.name ?? "shader").join(", ");
+        console.error(`[ordesa] dead GL program(s): ${names}`);
+        return `error de gráficos (${names}); recarga la página`;
+      }
+    } catch {
+      /* renderer.info unavailable — no verdict */
+    }
+    return null;
+  }
   // B7: while the gate stands, body scroll is locked and lenis is stopped.
   // On enter: scrollTo(0,0), lenis.start(), unlock — in that order.
   let scroll: ScrollHandle | null = null;
@@ -408,6 +426,17 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     const geo = buildTerrainGeometry(elev, meta, world, step, corridor);
     if (!terrainMat) {
       terrainMat = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 });
+      // P0: compile-proof material — a neutral 1x1 DataTexture as `map` so
+      // USE_MAP/vMapUv exist at first compile even if the base ortho hasn't
+      // arrived (slow net + ?s= pose-at-boot used to compile mapless and the
+      // onBeforeCompile read of vMapUv killed the program forever).
+      {
+        const px = new Uint8Array([200, 195, 185, 255]);
+        const neutral = new THREE.DataTexture(px, 1, 1, THREE.RGBAFormat);
+        neutral.colorSpace = THREE.SRGBColorSpace;
+        neutral.needsUpdate = true;
+        terrainMat.map = neutral;
+      }
       patchTerrainMaterial(terrainMat);
       const prev = terrainMat.onBeforeCompile.bind(terrainMat);
       terrainMat.onBeforeCompile = (s: {
@@ -421,12 +450,15 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uNormalStrength"] = normalStrength;
         s.uniforms["uWallDeg"] = wallDeg;
         s.uniforms["uRockWeight"] = rockWeight;
+        s.uniforms["uRoughness"] = rockWeight;
         s.uniforms["uGrainK"] = grainK;
         s.uniforms["uHasCorr"] = hasCorr;
         s.uniforms["uHasNormal"] = hasNormal;
         s.vertexShader = s.vertexShader
-          .replace("#include <common>", "#include <common>\nattribute vec3 uv2c; varying vec3 vUv2c; varying vec3 vWPos2; varying vec3 vWNormal2;")
-          .replace("#include <uv_vertex>", "#include <uv_vertex>\nvUv2c = uv2c;")
+          // P0: own varying (vTerrainUv = uv) — never vMapUv, which three
+          // only declares under USE_MAP and vanishes mapless.
+          .replace("#include <common>", "#include <common>\nattribute vec3 uv2c; varying vec3 vUv2c; varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv;")
+          .replace("#include <uv_vertex>", "#include <uv_vertex>\nvUv2c = uv2c;\nvTerrainUv = uv;")
           .replace("#include <fog_vertex>", "#include <fog_vertex>\nvWPos2 = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvWNormal2 = normalize(mat3(modelMatrix) * objectNormal);");
         s.fragmentShader = s.fragmentShader
           .replace(
@@ -500,7 +532,7 @@ float wgrain(vec2 lp){
     float hY = wgrain(pxX + vec2(0.0, eN / repN)) * (wxN / wsumN) + wgrain(pxZ + vec2(0.0, eN / repN)) * (wzN / wsumN);
     latNV = vec2(hX - hC, hY - hC) * (repN / max(eN, 1e-4)) * 0.02;
   }
-  vec3 nt2 = texture2D(uNormalMap2, vMapUv).rgb * 2.0 - 1.0;
+  vec3 nt2 = texture2D(uNormalMap2, vTerrainUv).rgb * 2.0 - 1.0;
   vec2 mixN = mix(nt2.xy, latNV, clamp(gSteep, 0.0, 1.0));
   mixN *= uNormalStrength * max(uHasNormal, clamp(gSteep, 0.0, 1.0));
   normal = normalize(normal + vec3(mixN.x, mixN.y, 0.0) * 0.35);
@@ -612,12 +644,15 @@ float wgrain(vec2 lp){
   shadowNeedsUpdate = false;
   await nextFrame();
 
-  // base texture
+  // base texture (replaces the neutral 1x1 probe from material creation —
+  // the program was already compiled WITH map, so no recompile hazard)
   try {
     const t = await loadTex(`/${baseAsset ?? "assets/terrain-2k.webp"}`, true);
     if (terrainMat) {
+      const old = terrainMat.map;
       terrainMat.map = t;
       terrainMat.needsUpdate = true;
+      if (old && (old as THREE.DataTexture).image && (old as THREE.DataTexture).image.width === 1) old.dispose();
     }
   } catch {
     gate.fail("no se ha podido cargar la ortofoto base; sigo con relieve");
@@ -805,8 +840,10 @@ float wgrain(vec2 lp){
   // and the HUD line so the audit reads a number, not an impression.
   // G12 rides the same sampler (?skyfrac=1 -> window.__skyFrac): fraction
   // of sampled rows above the geometric horizon (sky pixels / total).
-  // G15 (?trackpx=1 -> window.__trackpx): track-cream pixels over the same
-  // grid — >0 at s>=0.05 or the trail has vanished again.
+  // G15 (?trackpx=1 -> window.__trackpx): offscreen ID pass — the solid
+  // Line2 alone into 256x144, non-null pixels counted. The old cream-grid
+  // sampler (9/1088 on a full screen of line) could not see a 2 px line and
+  // PASSed by luck; this measures what it claims. Threshold: >= 40 px.
   const lumaOn = new URLSearchParams(location.search).has("luma");
   const skyfracOn = new URLSearchParams(location.search).has("skyfrac");
   const trackpxOn = new URLSearchParams(location.search).has("trackpx");
@@ -915,6 +952,7 @@ float wgrain(vec2 lp){
       metrics.pitch = dg.pitch;
       metrics.dist = dg.distPlan;
       metrics.holgura = dg.holgura;
+      metrics.corrH = dg.corrH;
       // A7: ?cam= poses report their own name, like phase 2 did.
       metrics.cam = boot.cam ?? (boot.orbit ? "orbit" : "rig");
     }
@@ -1031,25 +1069,23 @@ float wgrain(vec2 lp){
         }
         (window as unknown as { __skyFrac?: number }).__skyFrac = tot > 0 ? sky / tot : 0;
       }
-      // G15: track-cream pixels — sRGB distance to 0xefe3c8 under 0.09.
+      // G15: offscreen ID pass (solid Line2 alone, 256x144). Runs on the
+      // same 30-frame cadence as G11/G12; result in window.__trackpx.
       if (trackpxOn) {
-        let track = 0;
-        let totp = 0;
-        for (let yy = 0; yy < h; yy += sy) {
-          for (let xx = 0; xx < w; xx += sx) {
-            const o = (yy * w + xx) * 4;
-            const dr = (buf[o] as number) / 255 - 0xef / 255;
-            const dg2 = (buf[o + 1] as number) / 255 - 0xe3 / 255;
-            const db = (buf[o + 2] as number) / 255 - 0xc8 / 255;
-            totp++;
-            if (dr * dr + dg2 * dg2 + db * db < 0.09 * 0.09 * 3) track++;
-          }
+        try {
+          (window as unknown as { __trackpx?: number }).__trackpx = line.countIdPixels(renderer, camera);
+        } catch {
+          (window as unknown as { __trackpx?: number }).__trackpx = -1;
         }
-        (window as unknown as { __trackpx?: number }).__trackpx = track;
-        (window as unknown as { __trackpxTotal?: number }).__trackpxTotal = totp;
       }
     }
     frames++;
+    // P0/G20: first frames decide — a dead program now means the boot
+    // compiled mapless (or any shader regression), never the network.
+    if (frames === 8) {
+      const glErr = checkGLPrograms();
+      if (glErr) gate.fail(glErr);
+    }
     // E1 budget: sustained >24 ms frames drop the far LOD one notch (2->4),
     // once. The camera never pays for the triangle budget.
     if (!lodDropped && frames > 120 && metrics.msFrame > 24 && step === 2) {

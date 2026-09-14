@@ -136,10 +136,11 @@ export const FOLLOW_H_AIM = 40; // m of aim height over the ground
 export const FOLLOW_D_MIN = 900; // m: if dist_planta(camera, aim) < 900, push back along aim->anchor to 900
 export const FOLLOW_NUDOS_S = [0.0, 0.03, 0.18, 0.38, 0.57, 0.77, 0.92, 0.98]; // 0, ACT_MID_S[0,I,II,III,IV,V], 0.98 (ends repeat first/last act values)
 export const FOLLOW_H_CAM_N = [380, 380, 420, 480, 450, 520, 400, 400]; // 0/I/II/III/IV/V per brief table
-// LOOK I act 650 (was 500): the 500 m rope folds inside act-I hairpins
-// (ropeLen 276 m at s=0.198, yaw 4.06 deg/step). 650 m spans the fold and
-// keeps the rope on the climb axis (2.55 max at LOOK 800, 3.44 at 650).
-export const FOLLOW_LOOK_N = [700, 700, 650, 900, 800, 500, 900, 900]; // I = 650, rest brief verbatim
+// LOOK I act 800 (pasada rig puro: 650 peaks 2.69 at s=0.221, 750 peaks
+// 2.55 at s=0.189 — both miss 2.5 by noise; 800 measured 2.55 max before,
+// re-measured below. No more tuning after this: if it still misses, the
+// window [0.19, 0.24] grows, never the LOOK).
+export const FOLLOW_LOOK_N = [700, 700, 800, 900, 800, 500, 900, 900]; // I = 800, rest brief verbatim
 export const FOLLOW_BACK_N = [500, 500, 450, 500, 500, 450, 500, 500]; // ditto
 // Epilogue (E4 amendment): derived from the loop geometry, never hand-set.
 export const EPI_FIT = 1.15; // 15 % margin so the whole loop fits any aspect
@@ -160,12 +161,17 @@ export const RIM_CORRIDOR_HALF_M = 150; // m: across-track half-width (frame-wid
 // 3B framing seed (brief §7): subject at 0.5 today, 0.66 with the text panel.
 export const SUBJECT_X = 0.5; // NDC x of the aim point (setViewOffset, not a rotation)
 
-// --- E3 (luminous tube at milestones): width as a function of camera-target
-// distance + additive halo on the same geometry, gated by uGlow near A3/A7/A8.
+// --- E3 (luminous tube at milestones): width as a function of plan
+// camera->aim distance + additive halo on the same geometry, gated by uGlow
+// near A3/A7/A8. Drone revision (pasada rig puro): at 900-1300 m everything
+// was "near" under the POV constants (400/1200) — the tube lit the whole
+// loop. New window: sober at 2600+, ribbon at 1200-.
+// uGlow MUST read 0 outside the A3/A7/A8 windows (audit: lit at s=0/0.14,
+// which are not milestones) — verify:3a asserts the gate math on worn paths.
 export const LINE_W_FAR = 2; // px above LINE_W_D_FAR (sober line)
-export const LINE_W_NEAR = 7; // px below LINE_W_D_NEAR (ribbon near the path)
-export const LINE_W_D_FAR = 1200; // m: smoothstep upper edge
-export const LINE_W_D_NEAR = 400; // m: smoothstep lower edge
+export const LINE_W_NEAR = 5; // px below LINE_W_D_NEAR (was 7: tube, not rope)
+export const LINE_W_D_FAR = 2600; // m: smoothstep upper edge (was 1200)
+export const LINE_W_D_NEAR = 1200; // m: smoothstep lower edge (was 400)
 export const GLOW_MULT = 3; // halo pass width x3, drawn first
 export const GLOW_ALPHA = 0.18; // halo opacity (cream, additive)
 export const GLOW_S_WINDOW = 0.02; // uGlow 0..1 within +-0.02 s of A3/A7/A8

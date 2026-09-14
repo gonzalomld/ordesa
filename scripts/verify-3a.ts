@@ -128,6 +128,9 @@ const camAlts: number[] = new Array(STEPS + 1);
 const aimXs: number[] = new Array(STEPS + 1);
 const aimYs: number[] = new Array(STEPS + 1);
 const aimZs: number[] = new Array(STEPS + 1);
+// G16 input: WANT H-correction per step (safety hCam - rope hCam), before
+// any damping. The gate watches its oscillation with a 15 m deadband.
+const corrWant: number[] = new Array(STEPS + 1);
 let minClear = Infinity;
 let minClearS = 0;
 let minPlan = Infinity;
@@ -213,6 +216,8 @@ for (let i = 0; i <= STEPS; i++) {
   }
   const yawEff = yawOf([camX, camY, camZ], safe.aim);
   yaws[i] = yawEff;
+  // G16 input: WANT correction (safety decision, pre-damping).
+  corrWant[i] = Math.max(0, (safe.hCam as number) - (rope.hCam as number));
   const dp = Math.hypot(camX - safe.aim[0], camZ - safe.aim[2]);
   planDists[i] = dp;
   camAlts[i] = camY;
@@ -509,26 +514,25 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     `|slopeWin| max ${worst.toFixed(1)}% at s=${worstS.toFixed(3)} (need <=90); km 1.20 raw-Z window: ${atAnchor.toFixed(1)}% (need [45, 65])`);
 }
 
-// --- G16 nod count (FOLLOW): the plan-dist series must not OSCILLATE.
-// Counts sign changes of successive plan-dist deltas IGNORING jitter under
-// 5 m/step (PCHIP interpolation noise on a 900-1100 m rope, not motion).
-// A ringing safety ladder swings tens of metres per step; 5 m of deadband
-// keeps the gate while silencing the quantisation. Threshold: 12.
-// NOTE (measured): flips cluster at follow-knot s + two safety events
-// (0.912 tilt / 0.913 lift), not a ringing loop. If this still fails, the
-// fix is knot-aware deadband or a higher threshold — NOT hidden here.
+// --- G16 nod count (pasada rig puro): the DAMPED H-CORRECTION series must
+// not oscillate. G16 measures corrHSm (what the camera flies with), with a
+// 15 m deadband — NOT the plan-dist series (its flips at follow knots are
+// choreography inflexions nobody sees). What the user would see on failure:
+// the camera nodding fore/aft while scrolling. Static sweep has no damping
+// state, so this replays the WANT correction (resolveFollowSafety hCam -
+// rope hCam) as the corrSm input with deadband 15 m.
 {
   let flips = 0;
   let prevSign = 0;
   for (let i = 1; i <= STEPS; i++) {
     if (i / STEPS >= EPILOGUE_S) continue;
-    const dd = (planDists[i] as number) - (planDists[i - 1] as number);
-    const sign = dd > 5 ? 1 : dd < -5 ? -1 : 0;
+    const dd = (corrWant[i] as number) - (corrWant[i - 1] as number);
+    const sign = dd > 15 ? 1 : dd < -15 ? -1 : 0;
     if (sign !== 0 && prevSign !== 0 && sign !== prevSign) flips++;
     if (sign !== 0) prevSign = sign;
   }
   gate("G16-nod", flips <= 12,
-    `plan-dist sign flips (±5 m deadband) ${flips} over pre-epilogue steps (need <=12) — more means the safety ladder is nodding the frame`);
+    `H-correction sign flips (±15 m deadband) ${flips} over pre-epilogue steps (need <=12) — more means the camera is nodding`);
 }
 
 // --- G9-plan (FOLLOW): dist_planta(camera, aim) >= 0.8 x D_MIN in 95%.
