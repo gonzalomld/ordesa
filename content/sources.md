@@ -73,6 +73,12 @@ Huecos visibles y anotados — nada de relleno.
   sobre 18,13 km. Coincide con las cifras publicadas para la ruta (800-900 m).
   Un sendero real contornea las vaguadas que un trazado drapeado sobre un MDT
   de 5 m sube y baja; sin suavizar, el mismo método da +1.465 m.
+- Pendiente mostrada en la barra (G14): ventana móvil de 200 m
+  (`SLOPE_WINDOW_M`), subida dividida por recorrido along-track (no por
+  distancia entre extremos, que acorta las lazadas e infla la cifra).
+  Máximo sostenido medido en `route.json`: 64 % en 200 m en d=1185
+  (serie S7-200 m). El valor crudo sobre ±5 m alcanza 493 % en d=1365
+  (escalón de muro entre dos puntos a 5 m) y no es publicable.
 - Etiquetas de cumbres (fase 2): Monte Perdido, Mondarruego (2.845 m,
   ladera del avistamiento de cabra montés de noviembre de 2022) y Tozal del
   Mallo (2.255 m, espolón S) tienen nombre confirmado. Los 13 picos restantes

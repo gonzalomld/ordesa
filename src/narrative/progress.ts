@@ -1,8 +1,8 @@
 // progress.ts — SINGLE source of journey state: s, d, z, hour, slope, climb.
 // No module recomputes travelled distance. Everything reads getState().
 // Anchor tables come from anchors.ts (pure); PCHIP from curve.ts.
-import { applyYawBranches, bisectSunset, resolveAnchors, trackAt, type ResolvedAnchors, type RouteLike } from "./anchors.ts";
-import { EPILOGUE_S } from "./choreography.ts";
+import { alongTrackRun, applyYawBranches, bisectSunset, resolveAnchors, trackAt, type ResolvedAnchors, type RouteLike } from "./anchors.ts";
+import { EPILOGUE_S, SLOPE_WINDOW_M } from "./choreography.ts";
 import { buildPchip, type PchipFn } from "./curve.ts";
 import { actForDistance, sunPosition } from "../engine/sun.ts";
 import type { Meta } from "../engine/terrain.ts";
@@ -90,10 +90,16 @@ export function initProgress(
     const s = Math.min(1, Math.max(0, scroll.s));
     const d = pchipSD(s);
     const p = trackAt(route, d);
-    const pAhead = trackAt(route, Math.min(route.lengthM, d + 5));
-    const pBack = trackAt(route, Math.max(0, d - 5));
-    const dz = pAhead.z - pBack.z;
-    const dd = Math.max(1e-6, Math.hypot(pAhead.x - pBack.x, pAhead.y - pBack.y));
+    // G14: the PUBLISHED slope is a 200 m moving window (same definition as
+    // sources.md's 80%-in-200m figure): rise over ALONG-TRACK run, not over
+    // endpoint distance. The raw ±5 m stair hits 493 % on wall steps and is
+    // not publishable — never clamp, change the magnitude.
+    const half = SLOPE_WINDOW_M / 2;
+    const pW2 = trackAt(route, Math.min(route.lengthM, d + half));
+    const pW1 = trackAt(route, Math.max(0, d - half));
+    // along-track run: accumulate segment lengths between the window ends
+    // (endpoint distance foreshortens switchbacks and inflates the number).
+    const run = Math.max(1e-6, alongTrackRun(route, Math.max(0, d - half), Math.min(route.lengthM, d + half)));
     let hourDec: number;
     if (frozenHour !== null) {
       hourDec = frozenHour;
@@ -111,7 +117,7 @@ export function initProgress(
     st.d = d;
     st.z = p.z - 4; // ROUTE_OFFSET_M: ground z = drape - offset (telemetry ground)
     st.hourDec = hourDec;
-    st.slopePct = (dz / dd) * 100;
+    st.slopePct = ((pW2.z - pW1.z) / run) * 100;
     st.climbM = p.climb;
     st.actIndex = act;
     st.actName = name;

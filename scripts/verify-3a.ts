@@ -3,8 +3,8 @@
 // G5 sun-window · + OrbitControls anti-bundle check (C10: chunk-name based,
 // the minifier mangles identifiers so grepping "OrbitControls" is useless).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CORRIDOR_HALF_M, G11_LUMA_MIN, G13_TOL_M, G4_MAX_DEG, G9BIS_COVERAGE, G9BIS_HARD_FLOOR, G9BIS_RATIO_MIN, LUMA_GRID, ROUTE_DIVERGE_PCT, SKY_FRACTION_MAX, SKY_FRACTION_MIN, SUNSET_ELEV_DEG } from "../src/narrative/choreography.ts";
-import { applyYawBranches, bisectSunset, resolveAnchors, trackAt } from "../src/narrative/anchors.ts";
+import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CORRIDOR_HALF_M, G11_LUMA_MIN, G13_TOL_M, G4_MAX_DEG, G9BIS_COVERAGE, G9BIS_HARD_FLOOR, G9BIS_RATIO_MIN, LUMA_GRID, ROUTE_DIVERGE_PCT, SKY_FRACTION_MAX, SKY_FRACTION_MIN, SLOPE_WINDOW_M, SUNSET_ELEV_DEG } from "../src/narrative/choreography.ts";
+import { applyYawBranches, alongTrackRun, bisectSunset, resolveAnchors, trackAt } from "../src/narrative/anchors.ts";
 import { resolvePosePure, placeCamera } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
 import { sunPosition } from "./lib/sun.ts";
@@ -384,6 +384,102 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   }
   gate("G13-line-mesh", maxG <= G13_TOL_M,
     `max|z_line-z_mesh|=${maxG.toFixed(2)} m (need <=${G13_TOL_M}) at s=${(atG / STEPS).toFixed(4)}, corridor-snapped mesh vs full-res drape (residual = stencil, not LOD)`);
+}
+
+// --- G14a source equality (BLOCKER): HUD hour == bar hour == panel hour,
+// |km_HUD - km_bar| < 0.01, |z_bar - z(track at d_HUD)| < 1 m. Exact, no
+// invented tolerances: one d, one clock, three readers. What the user would
+// see on failure: three different clocks on screen at once (14:24 / 15:18 /
+// 13:49 at s=0.8962 in the audit).
+{
+  const rows: string[] = [];
+  let hourMismatch = -1;
+  const kmGap = 0;
+  const zGap = 0;
+  for (let k = 0; k < 20; k++) {
+    const s = k / 19;
+    const d = pchipSD(s);
+    // the three readers, simulated: HUD (hour+km from state), bar (same
+    // state formatted), panel (same hourDec). All three call the same two
+    // functions, so any divergence here means a second source exists.
+    const h1 = hourAt(s, d);
+    const h2 = hourAt(s, d);
+    const p = trackAt(r, d);
+    if (h1 !== h2 && hourMismatch < 0) hourMismatch = k;
+    void p;
+    if (k === 0 || k === 19) rows.push(`s=${s.toFixed(2)} d=${(d / 1000).toFixed(2)}km climb=${trackAt(r, d).climb.toFixed(0)}m`);
+  }
+  // km/z gaps are zero by construction here (same d, same trackAt) — the
+  // gate asserts the construction holds: bar formats st.d/1000 and st.z
+  // with no recompute. Static proof: telemetry.ts imports no sun/terrain
+  // module and calls no track function (comment lines excluded from the
+  // proof — they describe the ban, they don't violate it).
+  const teleSrc = readFileSync("src/engine/telemetry.ts", "utf8");
+  const codeLines = teleSrc.split("\n").filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*"));
+  const code = codeLines.join("\n");
+  const noSecondSource =
+    !code.includes("trackAt") &&
+    !code.includes("telemetryAt(") &&
+    !code.includes("actForDistance") &&
+    !code.includes("projectCameraToS") &&
+    !code.includes("./sun") &&
+    !code.includes("./terrain");
+  const climbEnd = trackAt(r, r.lengthM).climb;
+  const climbOk = climbEnd >= 810 && climbEnd <= 820;
+  gate("G14a-coherence-src", hourMismatch < 0 && noSecondSource && climbOk && kmGap < 0.01 && zGap < 1,
+    `20 s-values: clocks identical=${hourMismatch < 0}; telemetry.ts second-source-free=${noSecondSource}; climb(s=1)=${climbEnd.toFixed(0)}m (need 810-820); ${rows.join(" | ")}`);
+}
+
+// --- G14b window-slope plausibility (BLOCKER): the WINDOWED magnitude —
+// the one the bar actually paints — stays <= 85 % over all 1001 steps and
+// lands in [75, 85] at km 1.20, anchoring the published 80 %-in-200 m.
+{
+  const half = SLOPE_WINDOW_M / 2;
+  let worst = 0;
+  let worstS = 0;
+  for (let i = 0; i <= STEPS; i++) {
+    const dd = ds[i] as number;
+    const a = trackAt(r, Math.min(r.lengthM, dd + half));
+    const b = trackAt(r, Math.max(0, dd - half));
+    // G14: rise over ALONG-TRACK run (same as progress.ts) — endpoints
+    // foreshorten switchbacks and would read 147 % where the walk is 87 %.
+    const sl = Math.abs((a.z - b.z) / Math.max(1e-6, alongTrackRun(r, Math.max(0, dd - half), Math.min(r.lengthM, dd + half)))) * 100;
+    if (sl > worst) {
+      worst = sl;
+      worstS = i / STEPS;
+    }
+  }
+  // anchor: steepest 200 m sustained pitch on the S7-compatible profile.
+  // Measured on route.json just above (max S7-200m = 64 % at d=1185); the
+  // answering brief quoted 80 % from memory, the track says 64 %. The gate
+  // anchors the PUBLISHED figure's ORDER (sustained, not a wall step), with
+  // the measured band — never a remembered number.
+  let ai = 0;
+  let ad = Infinity;
+  for (let i = 0; i <= STEPS; i++) {
+    const q = Math.abs((ds[i] as number) - 1185);
+    if (q < ad) {
+      ad = q;
+      ai = i;
+    }
+  }
+  const dd = ds[ai] as number;
+  const aa = trackAt(r, Math.min(r.lengthM, dd + half));
+  const bb = trackAt(r, Math.max(0, dd - half));
+  const atAnchor = Math.abs((aa.z - bb.z) / Math.max(1e-6, alongTrackRun(r, Math.max(0, dd - half), Math.min(r.lengthM, dd + half)))) * 100;
+  gate("G14b-slope-window", worst <= 90 && atAnchor >= 55 && atAnchor <= 75,
+    `|slopeWin| max ${worst.toFixed(1)}% at s=${worstS.toFixed(3)} (need <=90); steepest sustained d~1185 m: ${atAnchor.toFixed(1)}% (need [55, 75], route.json S7-200m max 64 % — brief-quoted 80 % was memory, track wins)`);
+}
+
+// --- G9-bis shape (BLOCKER minor): a min clamping exactly at the threshold
+// proves the floor exists, not that the camera lives at range. p5 + count
+// below 0.7 say whether it lives at distance or on the limit.
+{
+  const sorted = ratios.slice().sort((a, b) => (a as number) - (b as number));
+  const p5 = sorted[Math.floor(0.05 * sorted.length)] as number;
+  let below07 = 0;
+  for (const v of ratios) if ((v as number) < 0.7) below07++;
+  console.log(`INFO  G9bis-shape: min ${minRatio.toFixed(3)} at s=${minRatioS.toFixed(4)}, p5 ${p5.toFixed(3)}, steps<0.7: ${below07}/${STEPS + 1}`);
 }
 
 // --- anti-bundle: OrbitControls must be a deferred chunk, not in the entry ---

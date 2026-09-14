@@ -6,6 +6,7 @@
 // frame), plus an EXT_disjoint_timer_query_webgl2 GPU split (terrain vs
 // clouds) when the extension exists. JS slices stay as jsTerrain/jsLabels.
 import * as THREE from "three";
+import type { ProgressState } from "../narrative/progress.ts";
 
 export interface Metrics {
   msTerrain: number; // GPU terrain pass (timer query) or -1 if unavailable
@@ -30,7 +31,10 @@ export interface Metrics {
   texLevel: string;
   time: string;
   cam: string;
-  // Phase 3A journey magnitudes (?debug=1 readable, no console needed)
+  // Phase 3A journey magnitudes (?debug=1 readable, no console needed).
+  // G14: the FULL ProgressState is mirrored here — z, slopePct, climbM
+  // included — so the audit can compare bar vs HUD vs track from outside.
+  journey: ProgressState | null;
   s: number;
   d: number;
   hour: string;
@@ -106,6 +110,9 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     texLevel: "",
     time: "",
     cam: "",
+    // G14: frozen shape — progress.update() mutates the live object, so the
+    // mirror is a COPY taken after update(), never the live reference.
+    journey: null,
     s: 0,
     d: 0,
     hour: "",

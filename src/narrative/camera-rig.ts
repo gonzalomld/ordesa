@@ -6,10 +6,12 @@ import { trackAt, type RouteLike } from "./anchors.ts";
 import { buildPchip } from "./curve.ts";
 import { resolvePosePure } from "./collision.ts";
 import {
+  CAM_ALT_MIN,
   CAM_CLEARANCE_M,
   DIST_MIN_M,
   K_IN,
   K_OUT,
+  PITCH_MAX,
 } from "./choreography.ts";
 import type { ProgressHandle } from "./progress.ts";
 import { sampleGrid, type Meta, type World } from "../engine/terrain.ts";
@@ -93,7 +95,24 @@ export function createRig(deps: RigDeps): {
     const [tx, , tz] = toWorld(p.x, p.y, 0, world);
     const hT = pchipH(s);
     const target: [number, number, number] = [tx, p.z + hT, tz];
-    return { target, yaw: pchipYaw(s), pitch: pchipPitch(s), hT, distRaw: pchipDist(s) };
+    // E1-ter: altitude rule with pitch cap, applied to the SCRIPT pose
+    // (before collision). camAlt floors the height; pitch recomputes from
+    // the floored height; dist grows if pitch would exceed PITCH_MAX.
+    // Never lowers camAlt — the sky criterion (G12) depends on it.
+    let distRaw = pchipDist(s);
+    let pitch = pchipPitch(s);
+    {
+      const sinBase = Math.sin(pitch * D2R);
+      const camAlt = Math.max(target[1] + distRaw * sinBase, CAM_ALT_MIN);
+      const sinNeed = Math.min(1, (camAlt - target[1]) / Math.max(1e-6, distRaw));
+      pitch = (Math.asin(Math.min(1, Math.max(-1, sinNeed))) * 180) / Math.PI;
+      if (pitch > PITCH_MAX) {
+        const sinMax = Math.sin((PITCH_MAX * Math.PI) / 180);
+        distRaw = (camAlt - target[1]) / Math.max(1e-6, sinMax);
+        pitch = PITCH_MAX;
+      }
+    }
+    return { target, yaw: pchipYaw(s), pitch, hT, distRaw };
   }
 
   function spherical(target: [number, number, number], dist: number, pitchDeg: number, yawDeg: number): [number, number, number] {

@@ -131,6 +131,44 @@ export function smoothedBearingDeg(route: RouteLike, d: number, lastValid: numbe
   return ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
 }
 
+/** Along-track plan run between two distances (sums segment lengths).
+ * G14: the 200 m window slope divides by THIS, not by endpoint distance —
+ * endpoints foreshorten switchbacks (108 m for a 182 m walk at d=1287)
+ * and inflate the number to 147 %. */
+export function alongTrackRun(route: RouteLike, d0: number, d1: number): number {
+  const n = route.n;
+  const dd = route.d;
+  if (d1 <= d0) return 0;
+  // index window containing [d0, d1], found by binary search
+  let lo = 0;
+  let hi = n - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (d0 < (num(dd, mid) as number)) hi = mid;
+    else lo = mid;
+  }
+  let run = 0;
+  // walk forward accumulating, clamped to [d0, d1] via interpolated ends
+  const atX = (d: number): number => trackAt(route, d).x;
+  const atY = (d: number): number => trackAt(route, d).y;
+  let prevX = atX(d0);
+  let prevY = atY(d0);
+  for (let i = lo + 1; i < n; i++) {
+    const di = num(dd, i) as number;
+    if (di > d1) break;
+    if (di < d0) continue;
+    const cx = num(route.x, i);
+    const cy = num(route.y, i);
+    run += Math.hypot(cx - prevX, cy - prevY);
+    prevX = cx;
+    prevY = cy;
+  }
+  const ex = atX(d1);
+  const ey = atY(d1);
+  run += Math.hypot(ex - prevX, ey - prevY);
+  return run;
+}
+
 function frac(km: number, lo: number, hi: number): number {
   return hi > lo ? (km - lo) / (hi - lo) : 0;
 }

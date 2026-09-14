@@ -1,8 +1,8 @@
-// telemetry.ts — D6: DOM writes only on change. Phase 3A: reads journey
-// state from narrative/progress.ts (single source). No distance computation
-// of its own. loadRouteData stays (viewer builds RouteData from route.json).
-import { actForDistance } from "./sun.ts";
-import type { World } from "./terrain.ts";
+// telemetry.ts — D6: DOM writes only on change. BLOCKER G14: the ONLY
+// input is ProgressState (single source). This module formats — it never
+// computes position, time, act or climb. No trackAt, no telemetryAt, no
+// actForDistance, no projectCameraToS: those lived here, drifted from the
+// rig's d, and painted three different clocks on the same frame.
 import type { ProgressState } from "../narrative/progress.ts";
 
 export interface RouteData {
@@ -69,74 +69,9 @@ export function telemetryFromState(st: ProgressState): Telemetry {
   };
 }
 
-/** Pure mapping s∈[0,1] → telemetry (ground z = drape − offset). */
-export function telemetryAt(route: RouteData, s: number, offsetM = 4): Telemetry {
-  const f = Math.min(route.n - 1, Math.max(0, s * (route.n - 1)));
-  const i = Math.floor(f);
-  const j = Math.min(route.n - 1, i + 1);
-  const fr = f - i;
-  const d = (route.d[i] as number) * (1 - fr) + (route.d[j] as number) * fr;
-  const z = ((route.z[i] as number) * (1 - fr) + (route.z[j] as number) * fr) - offsetM;
-  const climb = (route.cumClimb[i] as number) * (1 - fr) + (route.cumClimb[j] as number) * fr;
-  const dz = (route.z[j] as number) - (route.z[i] as number);
-  const dd = Math.max(1e-6, (route.d[j] as number) - (route.d[i] as number));
-  const { act, name } = actForDistance(d);
-  return { alt: z, climb, km: d / 1000, slope: (dz / dd) * 100, act, actName: name };
-}
-
-/** Phase-2 source of s: nearest track point to the camera in 3D world. */
-export function projectCameraToS(
-  route: RouteData,
-  world: World,
-  camX: number,
-  camY: number,
-  camZ: number,
-  prevS: number,
-): number {
-  // coarse scan every 8th point, then refine ±8 — 3D world distance
-  const step = 8;
-  let bi = Math.round(prevS * (route.n - 1));
-  let bd = Infinity;
-  for (let i = 0; i < route.n; i += step) {
-    const dx = (route.x[i] as number) - world.centerX - camX;
-    const dz = -((route.y[i] as number) - world.centerY) - camZ;
-    const dy = (route.z[i] as number) - camY;
-    const q = dx * dx + dz * dz + dy * dy;
-    if (q < bd) {
-      bd = q;
-      bi = i;
-    }
-  }
-  for (let i = Math.max(0, bi - step); i <= Math.min(route.n - 1, bi + step); i++) {
-    const dx = (route.x[i] as number) - world.centerX - camX;
-    const dz = -((route.y[i] as number) - world.centerY) - camZ;
-    const dy = (route.z[i] as number) - camY;
-    const q = dx * dx + dz * dz + dy * dy;
-    if (q < bd) {
-      bd = q;
-      bi = i;
-    }
-  }
-  // continuity bias: ambiguity where outbound/return overlap (Pradera)
-  const prev = Math.round(prevS * (route.n - 1));
-  if (Math.abs(bi - prev) > route.n / 4) {
-    // far jump: prefer the candidate end closest to prev — re-scan ends
-    let be = prev;
-    let beq = Infinity;
-    for (const i of [bi, prev]) {
-      const dx = (route.x[i] as number) - world.centerX - camX;
-      const dz = -((route.y[i] as number) - world.centerY) - camZ;
-      const dy = (route.z[i] as number) - camY;
-      const q = dx * dx + dz * dz + dy * dy + Math.abs(i - prev) * 50;
-      if (q < beq) {
-        beq = q;
-        be = i;
-      }
-    }
-    bi = be;
-  }
-  return bi / (route.n - 1);
-}
+/** Write-if-changed driver. Call every frame with progress.getState();
+ * touches DOM only on change. Receives the ALREADY-FORMATTED hour/sun
+ * strings: even the hhmm() rounding lives in viewer.ts, not here. */
 
 const fmtInt = new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0 });
 const fmt1 = new Intl.NumberFormat("es-ES", {

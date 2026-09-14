@@ -15,6 +15,7 @@ import {
   GLOW_S_WINDOW,
   HEMI_DAY,
   HEMI_GROUND_RGB,
+  HEMI_LUMA_FLOOR,
   HEMI_NIGHT,
   HEMI_SKY_RGB,
   LUMA_GRID,
@@ -225,20 +226,24 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     // as a terrain-shader uniform (no three Light reads it). The daylight
     // factor is 1 between sunrise and sunset — NEVER sin(altitude): at
     // 07:24 with the sun at 2.1 deg the valley still needs full sky light.
+    // BLOCKER R1b floor: keep the real hue, lift only the level so the
+    // early acts clear HEMI_LUMA_FLOOR instead of sitting at 0.009-0.037.
     {
       const ray = L.rayleigh;
       const elevF = Math.max(0, Math.min(1, sp.elevationDeg / 60));
       const zr = Math.min(1, Math.max(0, 0.12 + 0.1 * elevF + 0.05 * ray)) * (HEMI_SKY_RGB[0] as number) * 2;
       const zg = Math.min(1, Math.max(0, 0.32 + 0.22 * elevF)) * (HEMI_SKY_RGB[1] as number) * 2;
       const zb = Math.min(1, Math.max(0, 0.62 + 0.2 * elevF - 0.08 * ray)) * (HEMI_SKY_RGB[2] as number) * 2;
-      hemiSky.setRGB(zr, zg, zb);
+      const lumaSky = 0.2126 * zr + 0.7152 * zg + 0.0722 * zb;
+      const lift = Math.max(1, HEMI_LUMA_FLOOR / Math.max(1e-6, lumaSky));
+      hemiSky.setRGB(zr * lift, zg * lift, zb * lift);
       hemi.color.copy(hemiSky);
       hemi.groundColor.copy(hemiGround);
       const dayF = sp.elevationDeg > SUNSET_ELEV_DEG ? 1 : 0;
       hemi.intensity = HEMI_DAY * dayF + HEMI_NIGHT * (1 - dayF);
-      (fogUniforms.uHemiSky.value as [number, number, number])[0] = zr * 0.5;
-      (fogUniforms.uHemiSky.value as [number, number, number])[1] = zg * 0.5;
-      (fogUniforms.uHemiSky.value as [number, number, number])[2] = zb * 0.5;
+      (fogUniforms.uHemiSky.value as [number, number, number])[0] = zr * 0.5 * lift;
+      (fogUniforms.uHemiSky.value as [number, number, number])[1] = zg * 0.5 * lift;
+      (fogUniforms.uHemiSky.value as [number, number, number])[2] = zb * 0.5 * lift;
       (fogUniforms.uHemiDay as { value: number }).value = dayF;
     }
     routeDim = 1 - L.nightMix * 0.3;
@@ -700,6 +705,9 @@ float wgrain(vec2 lp){
   const lastTele: Record<string, string> = {};
 
   // --- instruments: whole phase-2 HUD behind ?debug=1, extended with 3A ---
+  // G14: the slider panel's HORA is a READOUT of st.hourDec (same source as
+  // the bar). There is no hour control: with scroll driving time, a slider
+  // that sets the hour would be a second source by definition.
   if (boot.debug) {
     const hud = el("div", "hud2");
     const timeLab = el("div", "hud-label", `hora ${hhmm(progress.getState().hourDec)}${progress.getState().hourFrozen ? " (fija ?t=)" : ""}`);
@@ -894,6 +902,9 @@ float wgrain(vec2 lp){
     // sky + fog colour refresh in the SAME event (gated by solar elevation)
     skyCap?.refreshIfNeeded(st.sunElev);
     metrics.time = hhmm(hour);
+    // G14: mirror the FULL state (copy — the live object mutates next frame).
+    // The audit reads z/slopePct/climbM from __metrics without touching DOM.
+    metrics.journey = { ...st };
     if (boot.debug) {
       const dg = rig.getDiag();
       metrics.s = st.s;

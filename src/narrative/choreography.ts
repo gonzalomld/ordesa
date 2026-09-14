@@ -62,6 +62,12 @@ export const HEMI_DAY = 0.9; // hemisphere intensity while the sun is up (fracti
 export const HEMI_NIGHT = 0.06; // ...after sunset (faint skyglow, never pure black)
 export const HEMI_SKY_RGB: [number, number, number] = [0.42, 0.55, 0.78]; // zenith-blue dome base (linear-ish, modulated by lightingAt rayleigh/elevation)
 export const HEMI_GROUND_RGB: [number, number, number] = [0.32, 0.3, 0.26]; // limestone in shadow
+// R1b floor (BLOCKER): early acts read 0.009-0.037 against a 0.06 target.
+// The fill keeps the real sky hue and only lifts the level:
+// uHemiSky = skyPreetham · max(1, HEMI_LUMA_FLOOR / luma(skyPreetham)).
+export const HEMI_LUMA_FLOOR = 0.1; // linear-luma floor for the dome colour (Rec.709)
+// G14: the published slope is a 200 m moving window, not the raw ±5 m stair.
+export const SLOPE_WINDOW_M = 200; // misma ventana que la cifra publicada en sources.md; el crudo sobre 5 m llega a 493 % y no es publicable
 export const G11_LUMA_MIN = 0.06; // mean linear framebuffer luminance at s=0.10 (audit A6, 32x32 readPixels grid)
 export const LUMA_GRID = 32; // G11 readPixels grid (audit A6); measured in-browser via ?luma=1, every 30th frame
 
@@ -70,8 +76,16 @@ export const LUMA_GRID = 32; // G11 readPixels grid (audit A6); measured in-brow
 export const CLOUD_ZENITH_FADE = 0.85; // max opacity cut looking straight down (0 = opaque disc, 1 = invisible)
 export const CLOUD_FADE_START_DEG = 25; // view-ray elevation above which the fade ramps in (deg from horizontal)
 
-// --- E5 (drone framing): full replacement camera table + far plane budget ---
+// --- E1 (drone framing): full replacement camera table + far plane budget ---
 export const CAM_FAR = 120000; // was 80000: drone views span tens of km; far plane follows
+// --- E1-ter (confirmed necessary): altitude rule with pitch cap. Script
+// pitches (27-36 deg) put the frame top 2-11 deg BELOW horizontal with a
+// 50 deg vertical FOV — the sky cannot enter. Rule, in order:
+// camAlt = max(targetY + dist·sin(pitchBase), CAM_ALT_MIN); then
+// pitch = asin((camAlt − targetY) / dist); if pitch > PITCH_MAX, grow dist,
+// never lower camAlt.
+export const PITCH_MAX = 20; // deg: script pitch ceiling after the altitude rule
+export const CAM_ALT_MIN = 2950; // m: absolute camera altitude floor (valley floor ~1400 m + relief)
 export const SKY_FRACTION_MIN = 0.15; // G12: sky occupies 15-35% of frame height in all seven acts
 export const SKY_FRACTION_MAX = 0.35; // measured with the G11 framebuffer sampler, pixels above the geometric horizon
 
