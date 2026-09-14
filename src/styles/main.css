@@ -227,7 +227,9 @@ body {
 
 .lbl-z {
   font-size: 10px;
-  opacity: 0.75;
+  font-weight: 700;
+  color: #ffd9a8;
+  opacity: 1;
   font-variant-numeric: tabular-nums;
 }
 

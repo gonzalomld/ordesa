@@ -69,11 +69,12 @@ export function lightingAt(t: string | number): Lighting {
   const { azimuthDeg, elevationDeg } = sunPosition(h);
   const e = elevationDeg;
   const nightMix = e >= 0 ? 0 : Math.min(1, -e / 8);
-  // valley fog: max at sunrise, gone by ~10:30
-  const fogDensity = e <= 0 ? 1 : Math.max(0, 1 - (h - 7.1) / 3.4);
+  // valley fog: max at sunrise, floor 0.55 at midday (U1: fog10km ≥ 0.80 —
+  // the x⁴ distance curve keeps the valley readable, only the far edge melts)
+  const fogDensity = e <= 0 ? 1 : Math.max(0.55, 1 - (h - 7.1) / 3.4);
   const fogTopM = lerp(1750, 1400, Math.min(1, Math.max(0, (h - 7) / 3.5)));
-  // convection: grows 11:00 → 16:00
-  const cloudDensity = Math.min(1, Math.max(0, (h - 11) / 5)) * 0.85 + (h >= 11 ? 0.15 : 0);
+  // convection: grows 11:00 → 16:00, midday peak capped at 20% cover (T1 verdict)
+  const cloudDensity = Math.min(0.55, Math.max(0, (h - 11) / 5)) * 0.55 + (h >= 11 ? 0.1 : 0);
   // R3c: exposure carries contrast at low sun, not a veil.
   // 16° → ~1.0; noon → 0.85; twilight stays bright enough to read (1.25).
   const exposure = e <= 0 ? 1.25 : lerp(1.05, 0.85, Math.min(1, Math.max(0, (e - 12) / 48)));

@@ -60,19 +60,21 @@ Huecos visibles y anotados — nada de relleno.
   1.318 m (waypoint GPX 741372,4725929) · mirador de Calcilarruego 1.960 m
   (waypoint GPX 741507,4725203; publicado 1.952 m) · cota máxima del camino
   1.999 m (trazado km 2,44 — el camino sigue por encima del mirador;
-  verificar cuál etiquetar) · Cola de Caballo 1.762 m (punto del trazado km
-  9,67 = pie publicado ~1.760 m; el waypoint del GPX da 1.816 m porque está
-  por encima del salto) · Monte Perdido 3.347 m (máximo del MDT
-  748638,4729252 = 42,67556 N / 0,03442 E; oficial 3.348 m).
+  verificar cuál etiquetar, T5) · Cola de Caballo 1.762 m fijado en A2 (punto
+  del trazado km 9,67 = pie publicado ~1.760 m; el regenerado actual da
+  1.758 m por el redondeo del remuestreo: diferencia de 4 m documentada, no
+  error) · Monte Perdido 3.347 m (máximo del MDT 748638,4729252 = 42,67556 N
+  / 0,03442 E; oficial 3.348 m) · Tozal del Mallo 2.255 m (U2: espolón S
+  741710,4726950 = publicado 2.254 m; el transecto MDT sube monótono
+  2255 → 2447 m hacia la cresta N, así que el ancla va clavada radio 0 en el
+  espolón, no al máximo del disco).
 - Desnivel acumulado (S7): calculado en `scripts/05-build-route.ts` sobre la
   cota del MDT suavizada a 100 m (±20 puntos) con umbral de 5 m: +815,1 m
   sobre 18,13 km. Coincide con las cifras publicadas para la ruta (800-900 m).
   Un sendero real contornea las vaguadas que un trazado drapeado sobre un MDT
   de 5 m sube y baja; sin suavizar, el mismo método da +1.465 m.
-- Etiquetas de cumbres (fase 2): solo Monte Perdido y Mondarruego (2.845 m,
-  ladera del avistamiento de cabra montés de noviembre de 2022) tienen nombre
-  confirmado. Los 13 picos restantes van con posición y cota del MDT pero SIN
-  nombre hasta identificarlos en MTN25 0146-3, 0146-4, 0178-1 y 0178-2 o en la
-  cartografía del parque. Tozal del Mallo (2.254 m): aguja no resuelta por el
-  MDT de 5 m en radio 150 m (máximo local 1.348 m); pendiente de búsqueda
-  específica.
+- Etiquetas de cumbres (fase 2): Monte Perdido, Mondarruego (2.845 m,
+  ladera del avistamiento de cabra montés de noviembre de 2022) y Tozal del
+  Mallo (2.255 m, espolón S) tienen nombre confirmado. Los 13 picos restantes
+  van con posición y cota del MDT pero SIN nombre hasta identificarlos en
+  MTN25 0146-3, 0146-4, 0178-1 y 0178-2 o en la cartografía del parque.

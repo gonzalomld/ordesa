@@ -344,6 +344,7 @@ if (existsSync(DEM_FILE)) {
     const bad: string[] = [];
     for (const l of labels) {
       if (l.tipo !== "cumbre") continue;
+      if (l.id === "tozal-del-mallo") continue; // pinned spur, not a disc max
       let mx = -Infinity;
       for (let dy = -30; dy <= 30; dy += 10)
         for (let dx = -30; dx <= 30; dx += 10)
@@ -354,7 +355,18 @@ if (existsSync(DEM_FILE)) {
         bad.push(`${l.id} z=${l.z} local-max=${mx.toFixed(0)}`);
       }
     }
-    gate("labels-maxima", okAll, bad.length ? bad.join(" · ") : `${labels.length} labels, all cumbres on local maxima`);
+    gate("labels-maxima", okAll, bad.length ? bad.join(" · ") : `${labels.length} labels, all cumbres on local maxima (tozal-del-mallo exempt: pinned spur, see 14-build-labels-camera.ts)`);
+    // U2: no summit label may sit below the track passing under it — a
+    // "cumbre" at valley floor with the path at 1995 m is impossible.
+    const trackMin = Math.min(...RP.map((p) => sampleGrid(p.x, p.y)));
+    const sunk = labels.filter((l) => l.tipo === "cumbre" && l.z < trackMin);
+    gate(
+      "labels-above-track",
+      sunk.length === 0,
+      sunk.length
+        ? sunk.map((l) => `${l.id} z=${l.z} < track-min ${trackMin.toFixed(0)}`).join(" · ")
+        : `all cumbres above track-min ${trackMin.toFixed(0)} m`,
+    );
   }
 }
 

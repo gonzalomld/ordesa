@@ -15,7 +15,7 @@ import {
   updateLabels,
   type LabelDef,
 } from "./labels.ts";
-import { buildRouteLine2 } from "./route-line.ts";
+import { buildRouteLine } from "./route-line.ts";
 import { lightingAt, sunPosition } from "./sun.ts";
 import {
   driveTelemetry,
@@ -66,9 +66,12 @@ async function fetchWithProgress(
   return new Blob(chunks, { type: res.headers.get("content-type") ?? "" });
 }
 
+// U3: hour keeps full precision; the slider only mirrors it (step = 1 min).
+// hhmm rounds to the nearest minute so ?t=14:00 reads 14:00, not 13:56.
 function hhmm(h: number): string {
-  const hh = Math.floor(h);
-  const mm = Math.floor((h - hh) * 60);
+  const totalMin = Math.round(h * 60);
+  const hh = Math.floor(totalMin / 60);
+  const mm = totalMin % 60;
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
@@ -254,8 +257,9 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       const zb = Math.round(Math.min(255, Math.max(0, 255 * (0.62 + 0.2 * elevF - 0.08 * ray))));
       metrics.zenithHex = `#${zr.toString(16).padStart(2, "0")}${zg.toString(16).padStart(2, "0")}${zb.toString(16).padStart(2, "0")}`;
       const dfog = fogUniforms.uFogDensity.value as number;
-      const df10 = 1 - Math.exp(-Math.pow(10000 / 9000, 2));
-      metrics.fog10km = Math.min(1, Math.max(0, df10 * (0.2 + 0.55 * dfog)));
+      const x10 = 10000 / 9000;
+      const df10 = 1 - Math.exp(-x10 * x10 * x10 * x10 * 2.2);
+      metrics.fog10km = Math.min(1, Math.max(0, df10 * (0.35 + 0.55 * dfog)));
     }
     skyCap?.refresh();
   }
@@ -495,7 +499,7 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
     renderer.domElement.width,
     renderer.domElement.height,
   );
-  const line = buildRouteLine2(route, world, elev, meta, res2);
+  const line = buildRouteLine(route, world, elev, meta, res2);
   group.add(line.group);
   applyLighting(hour);
   renderer.compile(scene, camera);
@@ -604,7 +608,7 @@ varying vec3 vWPos2; varying vec3 vWNormal2;`,
   time.type = "range";
   time.min = "6.5";
   time.max = "17.5";
-  time.step = "0.05";
+  time.step = "0.0166";
   time.value = String(hour);
   time.setAttribute("aria-label", "hora del día");
   time.addEventListener("input", () => {

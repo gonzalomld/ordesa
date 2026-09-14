@@ -6,7 +6,7 @@ import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { epsgToWorld, sampleGrid, type World } from "./terrain.ts";
 import type { RouteData } from "./telemetry.ts";
 
-export function buildRouteLine2(
+export function buildRouteLine(
   route: RouteData,
   world: World,
   elev: Float32Array,

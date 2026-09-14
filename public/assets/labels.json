@@ -138,11 +138,11 @@
   {
    "id": "tozal-del-mallo",
    "tipo": "cumbre",
-   "x": 739155,
-   "y": 4726205,
-   "z": 1348,
+   "x": 741710,
+   "y": 4726950,
+   "z": 2255,
    "nombre": "Tozal del Mallo",
-   "fuente": "radio 150 m (aguja absorbida en 400 m)"
+   "fuente": "espolón S MDT 2255 = publicado 2254"
   },
   {
    "id": "pradera",

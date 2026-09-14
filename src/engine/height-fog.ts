@@ -55,11 +55,13 @@ float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
   float hfrac = clamp(1.0 - (vWPos.y - (uFogTop - 500.0)) / 500.0, 0.0, 1.0);
   float camd = length(vWPos - cameraPosition);
   float hf = hfrac * hfrac * uFogDensity;
-  // R3b: D8 condition — ≥80% attenuation at 10.8 km (model edge behind
-  // Monte Perdido) without eating the valley at 4 km. Gaussian shoulder:
-  // 4 km → ~0.24, 8 km → ~0.62, 10.8 km → ~0.84.
-  float df = 1.0 - exp(-pow(camd / 9000.0, 2.0));
-  float f = clamp(hf * 0.85 + df * (0.2 + 0.55 * uFogDensity), 0.0, 1.0);
+  // U1: D8 condition — ≥80% attenuation at 10.8 km (the model edge behind
+  // Monte Perdido) with Monte Perdido itself still readable as a silhouette.
+  // Squared-exponential: slow start, steep finish.
+  // 2 km → ~0.03, 4 km → ~0.13, 6 km → ~0.30, 8 km → ~0.55, 10.8 km → ~0.86.
+  float x = camd / 9000.0;
+  float df = 1.0 - exp(-x * x * x * x * 2.2);
+  float f = clamp(hf * 0.85 + df * (0.35 + 0.55 * uFogDensity), 0.0, 1.0);
   float shade = 1.0 - uCloudShade * (0.5 + 0.5 * vnoise(vWPos.xz * 0.00035 + uTime * 0.004)) * 0.35;
   gl_FragColor.rgb *= shade;
   // S9: fog colour sampled from the 64×32 sky capture along the view ray —

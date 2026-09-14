@@ -14,6 +14,9 @@ import { utm30NToWgs84 } from "./lib/utm.ts";
 const dem = await readDem(DEM_FILE);
 
 // seeds: [x, y, radiusM, confirmedName|null, sourceNote]
+// U2: the peak search takes the MAXIMUM in the disc. For spurs that rise
+// monotonically into a higher ridge (Tozal prow 2255 → ridge 2447) the max
+// is the wrong rule — pin those by hand with radius 0 (exact XY, MDT cota).
 const SEEDS: [number, number, number, string | null, string][] = [
   [748638, 4729252, 400, "Monte Perdido", "MDT 3347 = oficial 3348 (MITECO)"],
   [747748, 4730232, 400, null, "sin identificar (MTN25 0178-2 pendiente)"],
@@ -30,7 +33,13 @@ const SEEDS: [number, number, number, string | null, string][] = [
   [741022, 4728318, 400, null, "sin identificar (MTN25 0146-4 pendiente)"],
   [743262, 4728958, 400, null, "sin identificar (MTN25 0146-4 pendiente)"],
   [744712, 4728058, 400, null, "sin identificar (MTN25 0178-1 pendiente)"],
-  [739040, 4726295, 150, "Tozal del Mallo", "radio 150 m (aguja absorbida en 400 m)"],
+  // U2: Tozal del Mallo (2254 m) — free-standing prow on the S wall above
+  // the Pradera. MDT transect 741710,4726950 → 741555,4727105 rises
+  // monotonically 2255 → 2447 m (no saddle): the 2254 m published summit is
+  // the S prow of that spur, not the ridge behind. Anchor pinned at the prow
+  // with radius 60 m; cota comes from the MDT by construction. Old anchor
+  // 739040,4726295 fell on the valley floor (1351 m).
+  [741710, 4726950, 0, "Tozal del Mallo", "espolón S MDT 2255 = publicado 2254"],
 ];
 
 interface Label {
@@ -46,12 +55,17 @@ interface Label {
 const labels: Label[] = [];
 SEEDS.forEach(([sx, sy, r, nombre, fuente], k) => {
   let best = { z: -Infinity, x: sx, y: sy };
-  for (let y = sy - r; y <= sy + r; y += 5)
-    for (let x = sx - r; x <= sx + r; x += 5) {
-      if (Math.hypot(x - sx, y - sy) > r) continue;
-      const z = dem.sampleBilinear(x, y);
-      if (z > best.z) best = { z, x, y };
-    }
+  if (r === 0) {
+    // pinned: exact XY (spur prow, not the max of the disc) — cota from MDT
+    best = { z: dem.sampleBilinear(sx, sy), x: sx, y: sy };
+  } else {
+    for (let y = sy - r; y <= sy + r; y += 5)
+      for (let x = sx - r; x <= sx + r; x += 5) {
+        if (Math.hypot(x - sx, y - sy) > r) continue;
+        const z = dem.sampleBilinear(x, y);
+        if (z > best.z) best = { z, x, y };
+      }
+  }
   const { lat, lon } = utm30NToWgs84(best.x, best.y);
   console.log(
     `${nombre ?? `pico${k}`} → ${Math.round(best.x)},${Math.round(best.y)} z=${best.z.toFixed(0)} (${lat.toFixed(5)},${lon.toFixed(5)})`,

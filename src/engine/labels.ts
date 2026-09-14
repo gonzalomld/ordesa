@@ -43,7 +43,7 @@ export function buildLabels(
       const z = document.createElement("span");
       z.className = "lbl-z";
       z.textContent = `${Math.round(def.z).toLocaleString("es-ES")} m`;
-      el.append(nm, z);
+      el.append(nm, document.createTextNode(" · "), z);
       container.appendChild(el);
       return {
         def,
