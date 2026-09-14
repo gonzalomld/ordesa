@@ -7,10 +7,12 @@ import { Sky } from "three/addons/objects/Sky.js";
 import { createRig } from "../narrative/camera-rig.ts";
 import {
   CAM_FAR,
+  CAM_NEAR,
   CAM_PRESETS,
   CLOUD_FADE_START_DEG,
   CLOUD_ZENITH_FADE,
   CORRIDOR_HALF_M,
+  EPILOGUE_S,
   G11_LUMA_MIN,
   GLOW_S_WINDOW,
   HEMI_DAY,
@@ -33,7 +35,6 @@ import { createScroll, type ScrollHandle } from "../narrative/scroll.ts";
 import { buildClouds } from "./clouds.ts";
 import { frameClock, mountDebug, parseBootQuery } from "./debug.ts";
 import { buildGate, nextFrame } from "./gate.ts";
-import { createGpuTimer } from "./gpu-timer.ts";
 import { createSkyCapture, type SkyCapture } from "./sky-capture.ts";
 import { fogUniforms, patchTerrainMaterial } from "./height-fog.ts";
 import {
@@ -137,7 +138,9 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   scene.background = new THREE.Color(0x0e141b);
   scene.fog = null;
 
-  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 5, CAM_FAR);
+  // T3: near 50 (never within 500 m of anything) + far 40000 (terrain
+  // ends < 20 km). Two lines, strictly better depth precision, cannot hurt.
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, CAM_NEAR, CAM_FAR);
 
   // --- sun + sky (B4: light follows the rig target, 1800 m box) ---
   const sun = new THREE.DirectionalLight(0xfff3e2, 2.4);
@@ -813,8 +816,11 @@ float wgrain(vec2 lp){
   // and the HUD line so the audit reads a number, not an impression.
   // G12 rides the same sampler (?skyfrac=1 -> window.__skyFrac): fraction
   // of sampled rows above the geometric horizon (sky pixels / total).
+  // G15 (?trackpx=1 -> window.__trackpx): track-cream pixels over the same
+  // grid — >0 at s>=0.05 or the trail has vanished again.
   const lumaOn = new URLSearchParams(location.search).has("luma");
   const skyfracOn = new URLSearchParams(location.search).has("skyfrac");
+  const trackpxOn = new URLSearchParams(location.search).has("trackpx");
   void G11_LUMA_MIN;
 
   gate.setProgress(1, 5);
@@ -839,9 +845,6 @@ float wgrain(vec2 lp){
 
   const clock = new THREE.Clock();
   const tickFrame = frameClock(metrics);
-  const gpu = createGpuTimer(renderer);
-  const gpuTerr = { v: -1 };
-  const gpuNub = { v: -1 };
 
   let frames = 0;
   let prevMs = -1;
@@ -851,7 +854,6 @@ float wgrain(vec2 lp){
     const dtMs = prevMs < 0 ? 16.7 : Math.min(250, nowMs - prevMs);
     prevMs = nowMs;
     const dt = dtMs / 1000;
-    const t0 = performance.now();
     if (orbitControls) {
       orbitControls.update();
     } else {
@@ -861,7 +863,16 @@ float wgrain(vec2 lp){
     }
     const st = progress.getState();
     const hour = st.hourDec;
+    const t2 = performance.now();
     applyLighting(hour);
+    // E2: progressive cut at the walker (epilogue draws the whole loop).
+    // BLOQUEANTE ?track=all: isolation probe — uProgressDist = lengthM,
+    // nothing else touched. Answers geometry-vs-cut in a single load.
+    {
+      const e = route.lengthM;
+      if (boot.trackAll) line.setProgressDist(e);
+      else line.setProgressDist(st.s >= EPILOGUE_S ? e : Math.min(st.d, e));
+    }
     // E3: line width from camera-target distance; halo glow near A3/A7/A8.
     {
       const dg0 = rig.getDiag();
@@ -942,8 +953,6 @@ float wgrain(vec2 lp){
       clouds.setCap(clouds.getCoverage() > 0.2);
     }
     line.setDim(routeDim);
-    const t1 = performance.now();
-    const t2 = performance.now();
     metrics.hasRock = 1;
     metrics.rockWeightShown = rockWeight.value;
     if (frames % 6 === 0) {
@@ -960,25 +969,27 @@ float wgrain(vec2 lp){
         );
       }
     }
+    // T1 (mandatory order): the rig already wrote position/quaternion above;
+    // refresh the world matrix, render, then project the labels with the
+    // SAME matrix that just rendered. Projecting before rig.update() trails
+    // one frame behind the canvas — invisible when still, swimming on scroll.
+    camera.updateMatrixWorld(true);
+    renderer.render(scene, camera);
+    // T1: labels AFTER render, every frame, no throttle (js etiq ~0.1 ms).
     updateLabels(labelRts, camera, window.innerWidth, window.innerHeight, 30000);
     const t3 = performance.now();
-    metrics.jsTerrain = Math.max(0, t2 - t1);
+    metrics.jsTerrain = 0; // terrain JS slice is inside rebuilds, not the loop
     metrics.jsLabels = Math.max(0, t3 - t2);
     metrics.msPost = 0;
-    if (gpu.available) {
-      gpu.poll(gpuTerr, gpuNub);
-      metrics.msTerrain = gpuTerr.v;
-      metrics.msClouds = gpuNub.v;
-      gpu.begin("terrain");
-    }
-    renderer.render(scene, camera);
     // G11 (audit A6): mean linear luminance over a LUMA_GRID^2 readPixels
     // grid, every 30th frame, only with ?luma=1 (a per-frame readPixels
     // stall would eat the budget it is meant to protect). R1: sampled AFTER
     // renderer.render() — the presented frame, never the previous one.
     // G12 (E1): same pass counts sky rows — pixels whose NDC ray points
     // above the geometric horizon from the camera position.
-    if ((lumaOn || skyfracOn) && frames % 30 === 5) {
+    // G15 (BLOQUEANTE): same pass counts track-cream pixels (0xefe3c8) —
+    // the trail must paint >0 pixels at s>=0.05.
+    if ((lumaOn || skyfracOn || trackpxOn) && frames % 30 === 5) {
       const g = LUMA_GRID;
       const w = Math.max(1, Math.floor(renderer.domElement.width / 2));
       const h = Math.max(1, Math.floor(renderer.domElement.height / 2));
@@ -1030,8 +1041,24 @@ float wgrain(vec2 lp){
         }
         (window as unknown as { __skyFrac?: number }).__skyFrac = tot > 0 ? sky / tot : 0;
       }
+      // G15: track-cream pixels — sRGB distance to 0xefe3c8 under 0.09.
+      if (trackpxOn) {
+        let track = 0;
+        let totp = 0;
+        for (let yy = 0; yy < h; yy += sy) {
+          for (let xx = 0; xx < w; xx += sx) {
+            const o = (yy * w + xx) * 4;
+            const dr = (buf[o] as number) / 255 - 0xef / 255;
+            const dg2 = (buf[o + 1] as number) / 255 - 0xe3 / 255;
+            const db = (buf[o + 2] as number) / 255 - 0xc8 / 255;
+            totp++;
+            if (dr * dr + dg2 * dg2 + db * db < 0.09 * 0.09 * 3) track++;
+          }
+        }
+        (window as unknown as { __trackpx?: number }).__trackpx = track;
+        (window as unknown as { __trackpxTotal?: number }).__trackpxTotal = totp;
+      }
     }
-    void t0;
     frames++;
     // E1 budget: sustained >24 ms frames drop the far LOD one notch (2->4),
     // once. The camera never pays for the triangle budget.

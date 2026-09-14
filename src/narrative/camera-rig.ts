@@ -8,6 +8,8 @@ import { resolvePosePure } from "./collision.ts";
 import {
   CAM_ALT_MIN,
   CAM_CLEARANCE_M,
+  CORR_RELEASE_M,
+  CORR_SLEW_MPS,
   DIST_MIN_M,
   K_IN,
   K_OUT,
@@ -148,6 +150,18 @@ export function createRig(deps: RigDeps): {
     return sampleGrid(elev, meta, ex, ey) + CAM_CLEARANCE_M;
   }
 
+  /** T5: clearance of a candidate pose (for the hysteresis band). */
+  function clearanceOf(
+    target: [number, number, number],
+    dist: number,
+    yaw: number,
+    pitch: number,
+  ): number {
+    const pos = spherical(target, dist, pitch, yaw);
+    const [ex, ey] = worldToEpsg(pos[0], pos[2], world);
+    return pos[1] - sampleGrid(elev, meta, ex, ey);
+  }
+
   function poseAt(s: number): RigPose {
     const sc = Math.min(1, Math.max(0, s));
     const r = rawPose(sc);
@@ -165,24 +179,45 @@ export function createRig(deps: RigDeps): {
     return { pos, target: r.target, yaw: rp.yaw, pitch: rp.pitch, dist };
   }
 
-  // E5: smoothing damps POSE CORRECTIONS (dist +yaw/pitch repositioning),
-  // not the script. corrSm was dist-only; yaw/pitch snapped instantly. All
-  // three share the same asymmetric rates: fast in (K_IN), slow out (K_OUT).
+  // T5: HYSTERESIS + SLEW. The asymmetric K_IN=18/K_OUT=2.5 pair rings
+  // when the LOS grazes terrain (snap in / creep out / snap in = a few-Hz
+  // nod of the whole frame). So: the correction ENGAGES when clearance < 25
+  // and does not RELEASE until clearance > 60 (dead band, no chatter); and
+  // |d(corr)| is capped at 40 m/s AFTER smoothing (a legit reframe never
+  // needs more). corrSm state covers dist+yaw+pitch; engaged covers the band.
+  let engaged = false;
   function update(dt: number): void {
     const st = progress.getState();
     const s = Math.min(1, Math.max(0, st.s));
     const r = rawPose(s);
     const want = resolveStatic(r.target, r.distRaw, r.yaw, r.pitch);
-    const wantCorrDist = Math.max(0, r.distRaw - want.dist);
-    const wantCorrYaw = want.yaw - r.yaw;
-    const wantCorrPitch = want.pitch - r.pitch;
+    // hysteresis on the WANT (pre-smoothing): engage below 25, release past 60
+    const wantClear = clearanceOf(r.target, want.dist, want.yaw, want.pitch);
+    if (!engaged && wantClear < CAM_CLEARANCE_M) engaged = true;
+    else if (engaged && wantClear > CORR_RELEASE_M) engaged = false;
+    const wantCorrDist = engaged ? Math.max(0, r.distRaw - want.dist) : 0;
+    const wantCorrYaw = engaged ? want.yaw - r.yaw : 0;
+    const wantCorrPitch = engaged ? want.pitch - r.pitch : 0;
     if (dt > 0 && Number.isFinite(dt)) {
       const kD = wantCorrDist > corrDistSm ? K_IN : K_OUT;
       const kY = Math.abs(wantCorrYaw) > Math.abs(corrYawSm) ? K_IN : K_OUT;
       const kP = Math.abs(wantCorrPitch) > Math.abs(corrPitchSm) ? K_IN : K_OUT;
-      corrDistSm += (wantCorrDist - corrDistSm) * (1 - Math.exp(-kD * dt));
-      corrYawSm += (wantCorrYaw - corrYawSm) * (1 - Math.exp(-kY * dt));
-      corrPitchSm += (wantCorrPitch - corrPitchSm) * (1 - Math.exp(-kP * dt));
+      let nD = corrDistSm + (wantCorrDist - corrDistSm) * (1 - Math.exp(-kD * dt));
+      let nY = corrYawSm + (wantCorrYaw - corrYawSm) * (1 - Math.exp(-kY * dt));
+      let nP = corrPitchSm + (wantCorrPitch - corrPitchSm) * (1 - Math.exp(-kP * dt));
+      // T5 slew AFTER smoothing, pose-coherent: factor the remaining dist
+      // step down to CORR_SLEW_MPS and apply the SAME factor to yaw/pitch
+      // so the pose travels slower without shearing.
+      {
+        const stepD = wantCorrDist - nD;
+        const f = Math.abs(stepD) > CORR_SLEW_MPS * dt ? (CORR_SLEW_MPS * dt) / Math.abs(stepD) : 1;
+        nD += stepD * f - stepD;
+        nY += (wantCorrYaw - nY) * f - (wantCorrYaw - nY);
+        nP += (wantCorrPitch - nP) * f - (wantCorrPitch - nP);
+      }
+      corrDistSm = nD;
+      corrYawSm = nY;
+      corrPitchSm = nP;
     } else {
       corrDistSm = wantCorrDist;
       corrYawSm = wantCorrYaw;

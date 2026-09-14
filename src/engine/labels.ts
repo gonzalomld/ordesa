@@ -1,6 +1,8 @@
-// labels.ts — D7: hand-projected divs. translate3d only, rounded pixels,
-// write-if-unchanged; CPU ray-march occlusion over the decoded heightmap;
-// nearest-first overlap culling.
+// labels.ts — D7: hand-projected divs. translate3d with UNROUNDED pixels +
+// write-if-unchanged (T2: left/top + Math.round jitter a whole pixel per
+// frame while scrolling); CPU ray-march occlusion over the decoded
+// heightmap; nearest-first overlap culling. No throttle: js etiq is
+// 0.0-0.2 ms, there is nothing to save by updating every 2-3 frames.
 import * as THREE from "three";
 
 export interface LabelDef {
@@ -124,8 +126,10 @@ export function updateLabels(
     let px = 0;
     let py = 0;
     if (!hidden) {
-      px = Math.round((o.nx * 0.5 + 0.5) * w);
-      py = Math.round((-o.ny * 0.5 + 0.5) * h);
+      // T2: NO Math.round — sub-pixel translate3d, snapped only for the
+      // overlap test and the change check (0.01 px epsilon).
+      px = (o.nx * 0.5 + 0.5) * w;
+      py = (-o.ny * 0.5 + 0.5) * h;
       if (px < -100 || px > w + 100 || py < -40 || py > h + 40) hidden = true;
     }
     // overlap cull vs already-placed nearer labels
@@ -146,7 +150,8 @@ export function updateLabels(
     }
     if (hidden) continue;
     const op = rt.occluded ? "0.25" : "1";
-    if (px !== rt.lastX || py !== rt.lastY) {
+    // T2: compare with epsilon; write unrounded values into the transform.
+    if (Math.abs(px - rt.lastX) > 0.01 || Math.abs(py - rt.lastY) > 0.01) {
       rt.lastX = px;
       rt.lastY = py;
       rt.el.style.transform = `translate3d(${px}px,${py}px,0) translate(-50%,-100%)`;

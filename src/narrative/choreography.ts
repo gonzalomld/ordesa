@@ -23,11 +23,15 @@ export const COLLIDE_MARGIN_M = 3; // terrain counts as hit when it rises above 
 export const K_IN = 18; // shorten: near-instant (1/s)
 export const K_OUT = 2.5; // recover: slow (1/s); reversed, the camera jumps out from behind every rock
 
-// --- E5: collision repositions, never dollies. Response order on impact:
-// 1. script pose -> 2. yaw + 180 (opposite slope), same dist/pitch ->
-// 3. pitch up to PITCH_MAX_HARD, dist untouched -> 4. shorten last, floored
-// at COLLIDE_SHORTEN_FLOOR_FRAC x script dist. Shortening was the zoom.
-export const PITCH_MAX_HARD = 35; // deg: pitch ceiling of the reposition policy (script pitches above it are kept)
+// --- E5: collision repositions, never dollies. Response order on impact
+// (BLOQUEANTE audit: distance before pitch — tilting destroys the framing,
+// dollying preserves it; the cirque has room, measured clearance 1242 m):
+// 1. script pose -> 2. yaw + 180 (opposite slope), same dist, same pitch ->
+// 3. grow dist up to COLLIDE_DOLLY_MULT x script, pitch held ->
+// 4. pitch up to PITCH_MAX_HARD, dist untouched ->
+// 5. shorten LAST, floored at COLLIDE_SHORTEN_FLOOR_FRAC x script dist.
+export const PITCH_MAX_HARD = 26; // deg (was 35): pitch-up ceiling — 35° sent the horizon out of frame at the cirque
+export const COLLIDE_DOLLY_MULT = 1.8; // step 3: dolly out to 1.8x script dist before touching pitch
 export const COLLIDE_SHORTEN_FLOOR_FRAC = 0.5; // shorten never goes below half the scripted dist
 // G9-bis (E5): the old G9 watched the 25 m floor, not the zoom. Watch the ratio.
 export const G9BIS_RATIO_MIN = 0.5; // actual/script dist >= 0.5 ...
@@ -51,7 +55,8 @@ export const SKY_EPS_DEG = 0.5; // sky-capture + fog colour refresh only when so
 
 export const TRACK_DIM_PAST = 1.0; // walked stretch opacity (full)
 export const TRACK_DIM_FUTURE = 0.0; // E2: the road ahead does not exist; the line ends at the walker (was 0.35)
-export const TRACK_TIP_FADE_M = 40; // E2: 40 m soft tip before the cut so the head is not a chop
+export const TRACK_TIP_FADE_M = 40; // E2: soft tip before the cut so the head is not a chop (audit: 180 reads better at drone distance — see TRACK_FADE_M below)
+export const TRACK_FADE_M = 180; // BLOQUEANTE audit: 150-200 m of path in the tip fade (40 m is sub-pixel at 2.6-4.8 km camera distance)
 export const EPILOGUE_S = 0.98; // E2/R3: epilogue transition; the full loop draws over s in [0.98, 1.00]
 
 // --- audit A6: sky-ambient valley fill (a shadowed valley under clear sky
@@ -65,7 +70,7 @@ export const HEMI_GROUND_RGB: [number, number, number] = [0.32, 0.3, 0.26]; // l
 // R1b floor (BLOCKER): early acts read 0.009-0.037 against a 0.06 target.
 // The fill keeps the real sky hue and only lifts the level:
 // uHemiSky = skyPreetham · max(1, HEMI_LUMA_FLOOR / luma(skyPreetham)).
-export const HEMI_LUMA_FLOOR = 0.1; // linear-luma floor for the dome colour (Rec.709)
+export const HEMI_LUMA_FLOOR = 0.14; // linear-luma floor (was 0.10): Pradera 0.049 and mirador 0.042 still below 0.06
 // G14: the published slope is a 200 m moving window, not the raw ±5 m stair.
 export const SLOPE_WINDOW_M = 200; // misma ventana que la cifra publicada en sources.md; el crudo sobre 5 m llega a 493 % y no es publicable
 export const G11_LUMA_MIN = 0.06; // mean linear framebuffer luminance at s=0.10 (audit A6, 32x32 readPixels grid)
@@ -76,15 +81,29 @@ export const LUMA_GRID = 32; // G11 readPixels grid (audit A6); measured in-brow
 export const CLOUD_ZENITH_FADE = 0.85; // max opacity cut looking straight down (0 = opaque disc, 1 = invisible)
 export const CLOUD_FADE_START_DEG = 25; // view-ray elevation above which the fade ramps in (deg from horizontal)
 
-// --- E1 (drone framing): full replacement camera table + far plane budget ---
-export const CAM_FAR = 120000; // was 80000: drone views span tens of km; far plane follows
+// --- TEMBLOR (T3/T5): depth + correction dynamics, all in one place ---
+// T3: the camera never gets within 500 m of anything; near=5 wastes depth
+// precision over a 120 km frustum. near 50 + far 40000 (loaded terrain
+// ends < 20 km) buys orders of magnitude for free. Logarithmic depth stays
+// OFF (cost + shader recompile) unless this proves insufficient.
+export const CAM_NEAR = 50; // m (was 5): nearest approach is 500 m+
+export const CAM_FAR = 40000; // m (was 120000): 120 km of far plane for <20 km of terrain
+// T5: asymmetric K_IN=18/K_OUT=2.5 rings when the LOS grazes terrain
+// (snap in / creep out / snap in). Two cures, both:
+// 1. explicit hysteresis — engage below CAM_CLEARANCE_M (25), release only
+//    above CORR_RELEASE_M (60). No dead band, any asymmetric loop rings.
+// 2. correction slew limit — |d(corr)| <= CORR_SLEW_MPS after smoothing.
+//    A legit reframe never needs more than 40 m/s.
+export const CORR_RELEASE_M = 60; // m: clearance at which the correction lets go
+export const CORR_SLEW_MPS = 40; // m/s: max correction speed, applied post-smoothing
+
 // --- E1-ter (confirmed necessary): altitude rule with pitch cap. Script
 // pitches (27-36 deg) put the frame top 2-11 deg BELOW horizontal with a
 // 50 deg vertical FOV — the sky cannot enter. Rule, in order:
 // camAlt = max(targetY + dist·sin(pitchBase), CAM_ALT_MIN); then
 // pitch = asin((camAlt − targetY) / dist); if pitch > PITCH_MAX, grow dist,
 // never lower camAlt.
-export const PITCH_MAX = 20; // deg: script pitch ceiling after the altitude rule
+export const PITCH_MAX = 16; // deg (was 20): the five sky acts sit at 8.8-14.7 %, this puts them in range
 export const CAM_ALT_MIN = 2950; // m: absolute camera altitude floor (valley floor ~1400 m + relief)
 export const SKY_FRACTION_MIN = 0.15; // G12: sky occupies 15-35% of frame height in all seven acts
 export const SKY_FRACTION_MAX = 0.35; // measured with the G11 framebuffer sampler, pixels above the geometric horizon

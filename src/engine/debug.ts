@@ -56,6 +56,9 @@ export interface BootQuery {
   s: number | null;
   act: string | null;
   orbit: boolean;
+  /** BLOQUEANTE isolation probe: draw the whole track (uProgressDist =
+   * lengthM) without touching anything else. Answers geometry-vs-cut. */
+  trackAll: boolean;
 }
 
 function parseSParam(raw: string | null): number | null {
@@ -83,6 +86,7 @@ export function parseBootQuery(): BootQuery {
     s: parseSParam(q.get("s")),
     act: q.get("act"),
     orbit: q.has("orbit"),
+    trackAll: q.get("track") === "all",
   };
 }
 

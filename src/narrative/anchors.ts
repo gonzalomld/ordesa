@@ -21,8 +21,10 @@ import {
   A9_S,
   A9_YAW_UNWRAPPED,
   BRIEF_LENGTH_M,
+  CAM_ALT_MIN,
   CAMERA_ANCHORS,
   COLLIDE_MARGIN_M,
+  PITCH_MAX,
   ROUTE_DIVERGE_PCT,
   S_TO_D_ANCHORS,
   SUNSET_ELEV_DEG,
@@ -47,6 +49,10 @@ export interface RouteLike {
   /** SINGLE climb series (R2): smoothed-Z accumulation, the published +815 m.
    * route.json writes it as cumClimb; the raw drape never had its own. */
   cumClimb: ArrayLike<number>;
+  /** BLOQUEANTE NUEVO: RAW drape Z per sample (route.z is the smoothed-Z
+   * drape since the S7 pipeline change — slope must run on the raw, window
+   * the only smoothing). Absent in old fixtures: falls back to z. */
+  zRaw?: ArrayLike<number>;
 }
 
 export interface ResolvedAnchors {
@@ -80,8 +86,8 @@ function num(a: ArrayLike<number>, i: number): number {
 }
 
 /** Linear track sample at distance d (route.json is already ~5 m: plenty).
- * climb comes from the SINGLE smoothed series (R2: the published +815 m);
- * Z stays the raw drape everywhere else. */
+ * climb comes from the SINGLE smoothed series (R2: the published +815 m).
+ * z is the route drape as stored (see zRawAt for the raw series). */
 export function trackAt(
   route: RouteLike,
   d: number,
@@ -116,6 +122,28 @@ export function trackAt(
     z: num(route.z, lo) + (num(route.z, hi) - num(route.z, lo)) * f,
     climb: num(climbArr, lo) + (num(climbArr, hi) - num(climbArr, lo)) * f,
   };
+}
+
+/** BLOQUEANTE NUEVO: raw drape Z at distance d (linear interp over zRaw,
+ * falls back to z when the fixture predates the raw series). The windowed
+ * slope runs on THIS — window the only smoothing, never S7-on-S7. */
+export function zRawAt(route: RouteLike, d: number): number {
+  const arr = route.zRaw ?? route.z;
+  const n = route.n;
+  const dd = route.d;
+  if (d <= (num(dd, 0) as number)) return num(arr, 0);
+  if (d >= (num(dd, n - 1) as number)) return num(arr, n - 1);
+  let lo = 0;
+  let hi = n - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (d < (num(dd, mid) as number)) hi = mid;
+    else lo = mid;
+  }
+  const d0 = num(dd, lo);
+  const d1 = num(dd, hi);
+  const f = d1 > d0 ? (d - d0) / (d1 - d0) : 0;
+  return num(arr, lo) + (num(arr, hi) - num(arr, lo)) * f;
 }
 
 /** Smoothed track bearing at d, degrees from north, clockwise. C8: if the
@@ -513,6 +541,10 @@ export function applyYawBranches(res: ResolvedAnchors, inp: YawBranchInput): Res
 
 /** E5.2 decision, once at load: per consecutive yaw-anchor pair, which
  * branch (direct vs +180) keeps line-of-sight open at more of 40 samples.
+ * TEMBLOR follow-up: the decision runs on the E1-ter POSE (altitude rule +
+ * pitch cap applied, same as the rig's rawPose) — deciding on the unruled
+ * script pose votes for a camera that never exists (e.g. A8->A9 14/40 with
+ * pitch 33, while the ruled pitch 16-20 flies a different ray).
  * Returns the per-pair verdicts AND the (possibly flipped) unwrapped series.
  * Callers print yawBranch in doctor; the rig consumes yawS/yawUnwrapped. */
 export function chooseYawBranches(
@@ -533,6 +565,26 @@ export function chooseYawBranches(
   const fP = buildPchip(camS, camPitch, "cam-pitch-nb2");
   const fH = buildPchip(camS, camHTarget, "cam-h-nb2");
   const D2R = Math.PI / 180;
+  // TEMBLOR: the E1-ter altitude rule, same as the rig's rawPose — the vote
+  // must run on the pose that actually flies (ruled pitch/dist), not the
+  // unruled script values.
+  const rulePose = (s: number): { dist: number; pitch: number } => {
+    const d = fSD(s);
+    const p = trackAt(route, d);
+    const ty = p.z + fH(s);
+    let dist = fD(s);
+    let pitch = fP(s);
+    const sinBase = Math.sin(pitch * D2R);
+    const camAlt = Math.max(ty + dist * sinBase, CAM_ALT_MIN);
+    const sinNeed = Math.min(1, (camAlt - ty) / Math.max(1e-6, dist));
+    pitch = (Math.asin(Math.min(1, Math.max(-1, sinNeed))) * 180) / Math.PI;
+    if (pitch > PITCH_MAX) {
+      const sinMax = Math.sin((PITCH_MAX * Math.PI) / 180);
+      dist = (camAlt - ty) / Math.max(1e-6, sinMax);
+      pitch = PITCH_MAX;
+    }
+    return { dist, pitch };
+  };
   const N = YAW_BRANCH_SAMPLES;
   const verdicts: ResolvedAnchors["yawBranch"] = [];
   // work on a mutable copy; flipping pair k adds +180 to yaw[k+1..] so the
@@ -561,8 +613,9 @@ export function chooseYawBranches(
       const tz = -(p.y - cy);
       const hT = fH(s);
       const ty = p.z + hT;
-      const dist = fD(s);
-      const pitch = fP(s);
+      const ruled = rulePose(s);
+      const dist = ruled.dist;
+      const pitch = ruled.pitch;
       const place = (yw: number): [number, number, number] => {
         const yr = yw * D2R;
         const pr = pitch * D2R;

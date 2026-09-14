@@ -1,16 +1,17 @@
-// collision.ts — E5: collision REPOSITIONS, never dollies. Pure (no three,
-// no DOM): the rig and verify:3a share this exact policy, no mirrors.
+// collision.ts — E5: collision REPOSITIONS, never dollies-in. Pure (no
+// three, no DOM): the rig and verify:3a share this exact policy, no mirrors.
 //
-// Response order on impact (script pose first):
+// Response order on impact, BLOQUEANTE revision (distance before pitch):
+// tilting to 35° sent the horizon out of frame at the cirque (SKY 0 %),
+// while dollying preserves the framing and the cirque has room (1242 m).
 //  1. script pose (dist/yaw/pitch as choreographed)
 //  2. yaw + 180 deg (opposite slope), same dist, same pitch
-//  3. pitch up to PITCH_MAX_HARD, dist untouched (direct branch first —
-//     less rotation from script — then the flipped branch; the brief's
-//     chain tries flip+up only, this superset never shortens while a
-//     same-ray pitch-up would clear)
-//  4. shorten LAST, floored at max(DIST_MIN_M, 0.5 x script dist).
-// Shortening was the zoom; now it is the last resort.
+//  3. grow dist up to COLLIDE_DOLLY_MULT x script, pitch held
+//  4. pitch up to PITCH_MAX_HARD (= 26), dist untouched (direct branch
+//     first — less rotation from script — then the flipped branch)
+//  5. shorten LAST, floored at max(DIST_MIN_M, 0.5 x script dist).
 import {
+  COLLIDE_DOLLY_MULT,
   COLLIDE_MARGIN_M,
   COLLIDE_SHORTEN_FLOOR_FRAC,
   DIST_MIN_M,
@@ -74,7 +75,7 @@ function march(
   return { blocked: false, safeDist: dist };
 }
 
-export type PoseMode = "direct" | "flip" | "pitchup" | "shorten";
+export type PoseMode = "direct" | "flip" | "dolly" | "pitchup" | "shorten";
 
 export interface ResolvedPose {
   dist: number;
@@ -105,6 +106,48 @@ export function resolvePosePure(
   const p1 = placeCamera(tx, ty, tz, distRaw, yawFlip, pitchRaw);
   if (!march(sample, cx, cy, tx, ty, tz, p1[0], p1[1], p1[2]).blocked) {
     return { dist: distRaw, yaw: yawFlip, pitch: pitchRaw, mode: "flip" };
+  }
+  return dollyOrPitchup(sample, cx, cy, tx, ty, tz, distRaw, yawRaw, yawFlip, pitchRaw, floor, p1);
+}
+
+/** Steps 3-5 of the ladder, shared by both entry paths (direct blocked +
+ * flip blocked, or flip skipped as a dead escape — see caller). */
+function dollyOrPitchup(
+  sample: Sampler,
+  cx: number,
+  cy: number,
+  tx: number,
+  ty: number,
+  tz: number,
+  distRaw: number,
+  yawRaw: number,
+  yawFlip: number,
+  pitchRaw: number,
+  floor: number,
+  p1: [number, number, number],
+): ResolvedPose {
+  // Step 3 (BLOQUEANTE): dolly out before tilting — same rays, dist grown
+  // geometrically (4 probes) up to COLLIDE_DOLLY_MULT x script. Direct
+  // branch first, then flipped; first clear ray wins at its distance.
+  for (const [ry, tag] of [[yawRaw, 0], [yawFlip, 1]] as [number, number][]) {
+    void tag;
+    let loD = distRaw;
+    let hiD = distRaw * COLLIDE_DOLLY_MULT;
+    // probe outward: doubling steps, keep the FIRST clear distance
+    for (let k = 0; k < 4; k++) {
+      const probe = distRaw * (1 + ((COLLIDE_DOLLY_MULT - 1) * (k + 1)) / 4);
+      const pp = placeCamera(tx, ty, tz, probe, ry, pitchRaw);
+      if (!march(sample, cx, cy, tx, ty, tz, pp[0], pp[1], pp[2]).blocked) {
+        hiD = probe;
+        break;
+      }
+      loD = probe;
+    }
+    void loD;
+    const pBest = placeCamera(tx, ty, tz, hiD, ry, pitchRaw);
+    if (!march(sample, cx, cy, tx, ty, tz, pBest[0], pBest[1], pBest[2]).blocked && hiD > distRaw + 1e-9) {
+      return { dist: hiD, yaw: ry, pitch: pitchRaw, mode: "dolly" };
+    }
   }
   const pitchUp = Math.max(pitchRaw, PITCH_MAX_HARD);
   if (pitchUp > pitchRaw + 1e-9) {

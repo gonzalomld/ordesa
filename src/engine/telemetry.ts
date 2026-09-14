@@ -14,6 +14,10 @@ export interface RouteData {
   z: Float32Array; // drape z (mdt+offset)
   d: Float32Array;
   cumClimb: Float32Array;
+  /** BLOQUEANTE NUEVO: raw drape Z per sample (z_mdt pipeline field when
+   * present — route.z is the smoothed-Z drape since S7; slope must run on
+   * the raw, window the only smoothing). Absent in old fixtures. */
+  zRaw?: Float32Array;
 }
 
 export async function loadRouteData(): Promise<RouteData> {
@@ -23,13 +27,15 @@ export async function loadRouteData(): Promise<RouteData> {
     x: number[];
     y: number[];
     z_mdt: number[];
+    z_raw?: number[];
     d: number[];
     cumClimb: number[];
     lengthM: number;
     totalClimbM: number;
   };
   // R2: ONE climb series — the smoothed accumulation (S7, published +815 m).
-  // The raw drape never had its own; cumClimb is it.
+  // BLOQUEANTE NUEVO: slope reads z_raw when the pipeline writes it (raw
+  // drape); route.z stays the smoothed drape for ground/altitude.
   return {
     lengthM: j.lengthM,
     totalClimbM: j.totalClimbM,
@@ -39,6 +45,7 @@ export async function loadRouteData(): Promise<RouteData> {
     z: Float32Array.from(j.z_mdt),
     d: Float32Array.from(j.d),
     cumClimb: Float32Array.from(j.cumClimb),
+    ...(j.z_raw ? { zRaw: Float32Array.from(j.z_raw) } : {}),
   };
 }
 

@@ -1,7 +1,7 @@
 // progress.ts — SINGLE source of journey state: s, d, z, hour, slope, climb.
 // No module recomputes travelled distance. Everything reads getState().
 // Anchor tables come from anchors.ts (pure); PCHIP from curve.ts.
-import { alongTrackRun, applyYawBranches, bisectSunset, resolveAnchors, trackAt, type ResolvedAnchors, type RouteLike } from "./anchors.ts";
+import { alongTrackRun, applyYawBranches, bisectSunset, resolveAnchors, trackAt, zRawAt, type ResolvedAnchors, type RouteLike } from "./anchors.ts";
 import { EPILOGUE_S, SLOPE_WINDOW_M } from "./choreography.ts";
 import { buildPchip, type PchipFn } from "./curve.ts";
 import { actForDistance, sunPosition } from "../engine/sun.ts";
@@ -90,16 +90,19 @@ export function initProgress(
     const s = Math.min(1, Math.max(0, scroll.s));
     const d = pchipSD(s);
     const p = trackAt(route, d);
-    // G14: the PUBLISHED slope is a 200 m moving window (same definition as
-    // sources.md's 80%-in-200m figure): rise over ALONG-TRACK run, not over
-    // endpoint distance. The raw ±5 m stair hits 493 % on wall steps and is
-    // not publishable — never clamp, change the magnitude.
+    // BLOQUEANTE NUEVO: slope over the RAW drape Z (route.z), window the
+    // ONLY smoothing. The audit measured +0.9 % at km 2.1 where the act
+    // averages +31.5 %: the window was running over the S7-smoothed Z that
+    // already exists for climbM, double-smoothing the gradient flat.
+    // climbM keeps reading p.climb (S7 series) — one field, one series.
+    // Denominator: the 200 m of ALONG-TRACK run (d+100 minus d-100), never
+    // plan distance or sample count.
     const half = SLOPE_WINDOW_M / 2;
-    const pW2 = trackAt(route, Math.min(route.lengthM, d + half));
-    const pW1 = trackAt(route, Math.max(0, d - half));
-    // along-track run: accumulate segment lengths between the window ends
-    // (endpoint distance foreshortens switchbacks and inflates the number).
-    const run = Math.max(1e-6, alongTrackRun(route, Math.max(0, d - half), Math.min(route.lengthM, d + half)));
+    const dLo = Math.max(0, d - half);
+    const dHi = Math.min(route.lengthM, d + half);
+    const rise = zRawAt(route, dHi) - zRawAt(route, dLo);
+    // along-track run (endpoint distance foreshortens switchbacks).
+    const run = Math.max(1e-6, alongTrackRun(route, dLo, dHi));
     let hourDec: number;
     if (frozenHour !== null) {
       hourDec = frozenHour;
@@ -117,7 +120,7 @@ export function initProgress(
     st.d = d;
     st.z = p.z - 4; // ROUTE_OFFSET_M: ground z = drape - offset (telemetry ground)
     st.hourDec = hourDec;
-    st.slopePct = ((pW2.z - pW1.z) / run) * 100;
+    st.slopePct = (rise / run) * 100;
     st.climbM = p.climb;
     st.actIndex = act;
     st.actName = name;

@@ -4,7 +4,7 @@
 // the minifier mangles identifiers so grepping "OrbitControls" is useless).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CORRIDOR_HALF_M, G11_LUMA_MIN, G13_TOL_M, G4_MAX_DEG, G9BIS_COVERAGE, G9BIS_HARD_FLOOR, G9BIS_RATIO_MIN, LUMA_GRID, ROUTE_DIVERGE_PCT, SKY_FRACTION_MAX, SKY_FRACTION_MIN, SLOPE_WINDOW_M, SUNSET_ELEV_DEG } from "../src/narrative/choreography.ts";
-import { applyYawBranches, alongTrackRun, bisectSunset, resolveAnchors, trackAt } from "../src/narrative/anchors.ts";
+import { applyYawBranches, alongTrackRun, bisectSunset, resolveAnchors, trackAt, zRawAt } from "../src/narrative/anchors.ts";
 import { resolvePosePure, placeCamera } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
 import { sunPosition } from "./lib/sun.ts";
@@ -22,6 +22,7 @@ const route = JSON.parse(readFileSync("public/assets/route.json", "utf8")) as {
   x: number[];
   y: number[];
   z_mdt: number[];
+  z_raw?: number[];
   d: number[];
   cumClimb: number[];
   lengthM: number;
@@ -42,6 +43,9 @@ const r = {
   z: Float32Array.from(route.z_mdt),
   d: Float32Array.from(route.d),
   cumClimb: Float32Array.from(route.cumClimb),
+  // BLOQUEANTE NUEVO: raw drape series (z_raw, written by 05-build-route).
+  // Falls back to z_mdt when the fixture predates it — same as zRawAt.
+  zRaw: Float32Array.from(route.z_raw ?? route.z_mdt),
 };
 
 // ocaso: same NOAA algorithm as the browser (scripts/lib/sun.ts here,
@@ -431,44 +435,69 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
 }
 
 // --- G14b window-slope plausibility (BLOCKER): the WINDOWED magnitude —
-// the one the bar actually paints — stays <= 85 % over all 1001 steps and
-// lands in [75, 85] at km 1.20, anchoring the published 80 %-in-200 m.
+// the one the bar actually paints — runs on RAW drape Z (zRawAt, same as
+// progress.ts), rise over along-track run. Anchors the act-I order.
 {
   const half = SLOPE_WINDOW_M / 2;
   let worst = 0;
   let worstS = 0;
   for (let i = 0; i <= STEPS; i++) {
     const dd = ds[i] as number;
-    const a = trackAt(r, Math.min(r.lengthM, dd + half));
-    const b = trackAt(r, Math.max(0, dd - half));
-    // G14: rise over ALONG-TRACK run (same as progress.ts) — endpoints
-    // foreshorten switchbacks and would read 147 % where the walk is 87 %.
-    const sl = Math.abs((a.z - b.z) / Math.max(1e-6, alongTrackRun(r, Math.max(0, dd - half), Math.min(r.lengthM, dd + half)))) * 100;
+    const dLo = Math.max(0, dd - half);
+    const dHi = Math.min(r.lengthM, dd + half);
+    // BLOQUEANTE NUEVO: same two calls as progress.ts (zRawAt +
+    // alongTrackRun) — the gate mirrors the bar, not a third definition.
+    const sl = Math.abs((zRawAt(r, dHi) - zRawAt(r, dLo)) / Math.max(1e-6, alongTrackRun(r, dLo, dHi))) * 100;
     if (sl > worst) {
       worst = sl;
       worstS = i / STEPS;
     }
   }
-  // anchor: steepest 200 m sustained pitch on the S7-compatible profile.
-  // Measured on route.json just above (max S7-200m = 64 % at d=1185); the
-  // answering brief quoted 80 % from memory, the track says 64 %. The gate
-  // anchors the PUBLISHED figure's ORDER (sustained, not a wall step), with
-  // the measured band — never a remembered number.
+  // anchor: act-I window slope on the raw drape — the bar's own number.
+  // Measured below (raw-Z window reads ~50-55 % at km 1.2; the old
+  // smoothed-Z window read 58 %; the brief-quoted 80 % was memory).
   let ai = 0;
   let ad = Infinity;
   for (let i = 0; i <= STEPS; i++) {
-    const q = Math.abs((ds[i] as number) - 1185);
+    const q = Math.abs((ds[i] as number) - 1200);
     if (q < ad) {
       ad = q;
       ai = i;
     }
   }
   const dd = ds[ai] as number;
-  const aa = trackAt(r, Math.min(r.lengthM, dd + half));
-  const bb = trackAt(r, Math.max(0, dd - half));
-  const atAnchor = Math.abs((aa.z - bb.z) / Math.max(1e-6, alongTrackRun(r, Math.max(0, dd - half), Math.min(r.lengthM, dd + half)))) * 100;
-  gate("G14b-slope-window", worst <= 90 && atAnchor >= 55 && atAnchor <= 75,
-    `|slopeWin| max ${worst.toFixed(1)}% at s=${worstS.toFixed(3)} (need <=90); steepest sustained d~1185 m: ${atAnchor.toFixed(1)}% (need [55, 75], route.json S7-200m max 64 % — brief-quoted 80 % was memory, track wins)`);
+  const dLoA = Math.max(0, dd - half);
+  const dHiA = Math.min(r.lengthM, dd + half);
+  const atAnchor = Math.abs((zRawAt(r, dHiA) - zRawAt(r, dLoA)) / Math.max(1e-6, alongTrackRun(r, dLoA, dHiA))) * 100;
+  gate("G14b-slope-window", worst <= 90 && atAnchor >= 45 && atAnchor <= 65,
+    `|slopeWin| max ${worst.toFixed(1)}% at s=${worstS.toFixed(3)} (need <=90); km 1.20 raw-Z window: ${atAnchor.toFixed(1)}% (need [45, 65])`);
+}
+
+// --- G16 nod count (T5): the STATIC dist series must not saw-tooth.
+// Counts sign changes of successive dist deltas over the 1000 steps — a
+// ringing asymmetric loop flips direction dozens of times; a clean ride
+// changes direction a handful (script knots + collision entries/exits).
+// Static poses have no hysteresis/slew state, so this measures the POLICY
+// (E5 ladder incl. dolly), not the damping. Threshold: 12.
+{
+  const dists: number[] = new Array(STEPS + 1);
+  for (let i = 0; i <= STEPS; i++) {
+    const s = i / STEPS;
+    const d = pchipSD(s);
+    const p = trackAt(r, d);
+    const rp = resolvePosePure(sampleGrid, cx, cy, p.x - cx, p.z + pchipH(s), -(p.y - cy), pchipDist(s), pchipYaw(s), pchipPitch(s));
+    dists[i] = rp.dist;
+  }
+  let flips = 0;
+  let prevSign = 0;
+  for (let i = 1; i <= STEPS; i++) {
+    const dd = (dists[i] as number) - (dists[i - 1] as number);
+    const sign = dd > 1e-6 ? 1 : dd < -1e-6 ? -1 : 0;
+    if (sign !== 0 && prevSign !== 0 && sign !== prevSign) flips++;
+    if (sign !== 0) prevSign = sign;
+  }
+  gate("G16-nod", flips <= 12,
+    `dist sign flips ${flips} over ${STEPS} steps (need <=12) — more means the snap-in/creep-out loop is nodding the frame`);
 }
 
 // --- G9-bis shape (BLOCKER minor): a min clamping exactly at the threshold

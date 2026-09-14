@@ -4,8 +4,8 @@
 // LineGeometry is instanced — one segment = one instance, so the attribute
 // is instanced and the vertex picks its end via position.y) compared
 // against uProgressDist. E2: the road ahead does not exist — pending alpha
-// is 0 with a 40 m soft tip; the epilogue (s>=0.98) raises uProgressDist to
-// lengthM so the whole loop draws. E3: width follows camera-target
+// is 0 with a TRACK_FADE_M tip; the epilogue (s>=0.98) raises uProgressDist
+// to lengthM so the whole loop draws. E3: width follows camera-target
 // distance (2 px far .. 7 px near) + an additive x3 halo gated by uGlow
 // near A3/A7/A8. All three passes share the geometry and the uniforms.
 import * as THREE from "three";
@@ -21,7 +21,7 @@ import {
   LINE_W_NEAR,
   TRACK_DIM_FUTURE,
   TRACK_DIM_PAST,
-  TRACK_TIP_FADE_M,
+  TRACK_FADE_M,
 } from "../narrative/choreography.ts";
 import { epsgToWorld, sampleGrid, type World } from "./terrain.ts";
 import type { RouteData } from "./telemetry.ts";
@@ -32,6 +32,8 @@ export interface RouteLine {
   setProgressDist(dM: number): void;
   /** E3: call every frame — width from camera distance, glow from journey s. */
   setFraming(camDistM: number, glow01: number): void;
+  /** BLOQUEANTE isolation probe: expose the shared uniform for tests. */
+  debugProgressDist(): number;
 }
 
 export function buildRouteLine(
@@ -89,7 +91,7 @@ export function buildRouteLine(
   const uProgressDist = { value: 0 };
   const uDimPast = { value: TRACK_DIM_PAST };
   const uDimFuture = { value: TRACK_DIM_FUTURE };
-  const uTipFade = { value: TRACK_TIP_FADE_M };
+  const uTipFade = { value: TRACK_FADE_M };
   const patchLine = (m: LineMaterial): void => {
     const prev = m.onBeforeCompile.bind(m);
     m.onBeforeCompile = (shader: { uniforms: Record<string, unknown>; vertexShader: string; fragmentShader: string }) => {
@@ -118,8 +120,9 @@ varying float vDist; uniform float uProgressDist; uniform float uDimPast; unifor
         )
         .replace(
           "float alpha = opacity;",
-          // E2: ahead does not exist (uDimFuture = 0); 40 m soft tip so the
-          // head is a fade, not a chop. Ghost + solid share the rule.
+          // E2: ahead does not exist (uDimFuture = 0); the tip fade is the
+          // visible head (TRACK_FADE_M, audit: 180 m at drone distance).
+          // Ghost + solid share the rule.
           `float head = 1.0 - smoothstep( uProgressDist - uTipFade, uProgressDist, vDist );
 float alpha = opacity * mix( uDimFuture, uDimPast * head, step( vDist, uProgressDist ) );`,
         );
@@ -167,6 +170,9 @@ float alpha = opacity * mix( uDimFuture, uDimPast * head, step( vDist, uProgress
     },
     setProgressDist(dM: number) {
       uProgressDist.value = dM;
+    },
+    debugProgressDist() {
+      return uProgressDist.value;
     },
     setFraming(camDistM: number, glow01: number) {
       // E3: 2 px beyond 1200 m, 7 px under 400 m, smoothstep between.

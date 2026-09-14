@@ -134,4 +134,17 @@ console.log(
   const sunset = bisectSunset((h) => nodeSun(42.645, -0.055, 2026, 8, 16, h, 120).elevationDeg);
   const e = nodeSun(42.645, -0.055, 2026, 8, 16, sunset, 120).elevationDeg;
   console.log(`  sunset: ${hhmmss(sunset)} local, elev(sunset)=${e.toFixed(3)} deg (need -0.833 +/-0.005)`);
+  // BLOQUEANTE suspicion: vDist garbage kills the whole line. Print the
+  // real instanced-attribute range next to lengthM — if max != ~18126,
+  // the cut, not the geometry, is the killer.
+  {
+    let mn = Infinity;
+    let mx = -Infinity;
+    for (let i = 0; i < routeJ.d.length; i++) {
+      const v = routeJ.d[i] as number;
+      if (v < mn) mn = v;
+      if (v > mx) mx = v;
+    }
+    console.log(`  track-dist attr: min=${mn.toFixed(1)} max=${mx.toFixed(1)} lengthM=${routeJ.lengthM} (route.d feeds instanceDistStart/End 1:1)`);
+  }
 }

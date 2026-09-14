@@ -162,6 +162,12 @@ const out = smoothed.map((p, i) => {
     x: round1(p.x),
     y: round1(p.y),
     z_mdt: round1(zMdt + ROUTE_OFFSET_M),
+    // BLOQUEANTE NUEVO: raw drape Z is ALSO the smoothed-Z drape here —
+    // zS is sampled per-point from the DEM (no Z smoothing: only XY is
+    // smoothed above, and zC exists solely for the climb hysteresis).
+    // z_raw documents that identity so the slope reader (zRawAt) never
+    // has to guess which series route.z holds.
+    z_raw: round1(zMdt + ROUTE_OFFSET_M),
     z_gpx: round1(p.zGpx),
     d: round1((total * i) / n),
   };
@@ -188,6 +194,7 @@ writeFileSync(
     x: out.map((p) => p.x),
     y: out.map((p) => p.y),
     z_mdt: out.map((p) => p.z_mdt),
+    z_raw: out.map((p) => p.z_raw),
     z_gpx: out.map((p) => p.z_gpx),
     d: out.map((p) => p.d),
     cumClimb,
