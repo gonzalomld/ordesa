@@ -18,6 +18,8 @@ import {
   LINE_W_D_NEAR,
   LINE_W_FAR,
   LINE_W_NEAR,
+  TRACK_COL_FUTURE,
+  TRACK_COL_PAST,
   TRACK_DIM_FUTURE,
   TRACK_DIM_PAST,
   TRACK_FADE_M,
@@ -148,6 +150,8 @@ export function buildRouteLine(
   const uLengthM = { value: route.lengthM };
   const uTrackDist = { value: 0 };
   const uStepM = { value: route.stepM };
+  const uColPast = { value: new THREE.Color(TRACK_COL_PAST) };
+  const uColFuture = { value: new THREE.Color(TRACK_COL_FUTURE) };
   const patchLine = (m: LineMaterial): void => {
     const prev = m.onBeforeCompile.bind(m);
     m.onBeforeCompile = (shader: { uniforms: Record<string, unknown>; vertexShader: string; fragmentShader: string }) => {
@@ -160,6 +164,8 @@ export function buildRouteLine(
       uniforms["uLengthM"] = uLengthM;
       uniforms["uTrackDist"] = uTrackDist;
       uniforms["uStepM"] = uStepM;
+      uniforms["uColPast"] = uColPast;
+      uniforms["uColFuture"] = uColFuture;
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
@@ -175,22 +181,23 @@ vDist = float( gl_InstanceID ) * uStepM;`,
         .replace(
           "#include <common>",
           `#include <common>
-varying float vDist; uniform float uProgressDist; uniform float uDimPast; uniform float uDimFuture; uniform float uTipFade; uniform float uLengthM; uniform float uTrackDist;`,
+varying float vDist; uniform float uProgressDist; uniform float uDimPast; uniform float uDimFuture; uniform float uTipFade; uniform float uLengthM; uniform float uTrackDist; uniform vec3 uColPast; uniform vec3 uColFuture;`,
         )
         .replace(
           "float alpha = opacity;",
-          // E2: ahead does not exist (uDimFuture = 0); the tip fade is the
-          // visible head (TRACK_FADE_M, audit: 180 m at drone distance).
+          // §1 cinta: the head fades cream -> acqua-green over TRACK_FADE_M
+          // (180 m), never to transparent. pastFactor: 1 walked, 0 pending.
           // Ghost + solid + ID share the rule.
           `float head = 1.0 - smoothstep( uProgressDist - uTipFade, uProgressDist, vDist );
-float alpha = opacity * mix( uDimFuture, uDimPast * head, step( vDist, uProgressDist ) );`,
+float pastFactor = step( vDist, uProgressDist );
+float alpha = opacity * mix( uDimFuture, uDimPast * head, pastFactor );`,
         )
         .replace(
           "vec4 diffuseColor = vec4( diffuse, alpha );",
-          // ?debug=trackdist: gradient probe on its OWN line (diffuseColor
-          // is declared HERE, not at `float alpha` — injecting there never
-          // compiled). Blue Pradera → red Cola → blue on return.
-          `vec4 diffuseColor = vec4( diffuse, alpha );
+          // §1 cinta: cream walked, acqua-green pending. The trackdist and
+          // ghost probes win over the paint (declared HERE, like the probe).
+          `vec3 baseCol = mix( uColFuture, uColPast, pastFactor );
+vec4 diffuseColor = vec4( baseCol, alpha );
 if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - vDist / uLengthM ); }`,
         );
     };
@@ -198,7 +205,7 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
   };
   const mk = (depthFunc: THREE.DepthFunctions, opacity: number): LineMaterial => {
     const m = new LineMaterial({
-      color: 0xefe3c8,
+      color: TRACK_COL_PAST,
       linewidth: 2.75,
       worldUnits: false,
       alphaToCoverage: false,
@@ -213,8 +220,12 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
     return m;
   };
   const ghostMat = mk(THREE.GreaterDepth, 0.25);
+  // §1 cinta: nothing additive — additive is what summed round-cap overlaps
+  // into beads. Walked alpha is 1, so src-over cap overlap is idempotent.
+  ghostMat.blending = THREE.NormalBlending;
   const ghostCream = ghostMat.color.clone();
   const solidMat = mk(THREE.LessEqualDepth, 1);
+  solidMat.blending = THREE.NormalBlending;
   const ghost = new Line2(geo, ghostMat);
   const solid = new Line2(geo, solidMat);
   ghost.frustumCulled = false;
@@ -245,12 +256,15 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
   const idBuf = new Uint8Array(256 * 144 * 4);
   let ghostProbe = false;
   let drapedStep = meshStep;
+  // §1 cinta: setFraming owns halo.visible (glow 0 => no draw at all);
+  // setDim only scales opacities, never re-enables the draw.
+  let lastGlow = 0;
   return {
     group,
     setDim(f: number) {
       ghostMat.opacity = (ghostProbe ? 1 : 0.25) * f;
       solidMat.opacity = 1 * f;
-      haloMat.opacity = GLOW_ALPHA * f;
+      haloMat.opacity = GLOW_ALPHA * lastGlow * f;
     },
     setProgressDist(dM: number) {
       uProgressDist.value = dM;
@@ -286,16 +300,20 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
         (rr, gg, bb) => rr > 4 || gg > 4 || bb > 4);
     },
     setFraming(camDistM: number, glow01: number) {
-      // E3 drone revision (pasada rig puro): 2 px beyond 2000 m, 3 px under
-      // 600 m. The far line stays thin; only the immediate foreground fattens.
+      // §1 cinta: ONE width (3.5 px under 600 m, 2 px beyond 2000 m) for
+      // walked + pending — no geometry split, pending reads via colour+alpha.
       const f = Math.min(1, Math.max(0, (LINE_W_D_FAR - camDistM) / (LINE_W_D_FAR - LINE_W_D_NEAR)));
       const s = f * f * (3 - 2 * f);
       const w = LINE_W_FAR + (LINE_W_NEAR - LINE_W_FAR) * s;
       solidMat.linewidth = w;
       ghostMat.linewidth = w;
       haloMat.linewidth = w * GLOW_MULT;
+      // §1 cinta: outside the milestone window the halo does not draw at
+      // all (visible=false), it does not just fade to opacity 0.
       const g = Math.min(1, Math.max(0, glow01));
+      lastGlow = g;
       haloMat.opacity = GLOW_ALPHA * g;
+      halo.visible = g > 0.001;
     },
   };
 }
