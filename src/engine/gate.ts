@@ -113,7 +113,11 @@ export function buildGate(onEnter: (silent: boolean) => void): {
 }
 
 export function nextFrame(): Promise<void> {
-  return new Promise((r) => requestAnimationFrame(() => r()));
+  // Higiene: ceder con setTimeout(0), nunca con rAF. Los pasos de carga se
+  // encadenan con promesas; con la pestaña oculta Chrome no entrega frames
+  // y la carga se quedaba al 11 % tras heightmap.png. El rAF arranca solo
+  // cuando la escena está lista (setAnimationLoop en viewer.ts).
+  return new Promise((r) => window.setTimeout(() => r(), 0));
 }
 
 export const STAGE_COUNT = STAGES.length;

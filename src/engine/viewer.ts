@@ -280,7 +280,6 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       const dead = progs.filter((p) => p.diagnostics && p.diagnostics.runnable === false);
       if (dead.length > 0) {
         for (const p of dead) {
-          // eslint-disable-next-line no-console
           console.error(`[ordesa] dead GL program ${p.name ?? "shader"}:\n${p.infoLog ?? "(no log)"}`);
         }
         return `Error de gráficos. Recarga; si persiste, prueba otro navegador.`;
@@ -297,10 +296,36 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     window.scrollTo(0, 0);
     scroll?.start();
   });
-  const watchdog = window.setTimeout(() => {
-    gate.fail("la carga está tardando demasiado; comprueba tu conexión y recarga");
-  }, 45000);
-  const clearWatchdog = (): void => window.clearTimeout(watchdog);
+  // Higiene: el vigilante se pausa con la pestaña oculta — acusar a la
+  // conexión cuando nadie mira no tiene sentido. 45 s VISIBLES, no 45 s de
+  // reloj: cada tramo oculto deja de descontar hasta volver a primer plano.
+  // (El removeEventListener nominal no desengancha la closure anónima; el
+  // flag entered la neutraliza, que es lo que importa.)
+  const enteredRef = { entered: false };
+  let watchdogSlack = 45000;
+  let watchdogStart = performance.now();
+  let watchdog: number | undefined;
+  const armWatchdog = (): void => {
+    window.clearTimeout(watchdog);
+    watchdog = window.setTimeout(() => {
+      gate.fail("la carga está tardando demasiado; comprueba tu conexión y recarga");
+    }, watchdogSlack);
+    watchdogStart = performance.now();
+  };
+  const pauseWatchdog = (): void => {
+    window.clearTimeout(watchdog);
+    watchdogSlack = Math.max(0, watchdogSlack - (performance.now() - watchdogStart));
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (enteredRef.entered) return;
+    if (document.hidden) pauseWatchdog();
+    else armWatchdog();
+  });
+  armWatchdog();
+  const clearWatchdog = (): void => {
+    enteredRef.entered = true;
+    window.clearTimeout(watchdog);
+  };
   const totalBytes =
     (sizes["terrain-base-2048"] ?? 700_000) +
     (meta.width * meta.height * 0.4) +
@@ -843,16 +868,24 @@ float wgrain(vec2 lp){
     void hourTick;
     // Rastro gl_InstanceID: HUD audit — uStepM + instance count + Line2
     // census (no attribute left to sample; the index IS the distance).
+    // Feedback-loop guard (auditoría rastro): getError() after the main
+    // render — INVALID_OPERATION here means an instrument broke the frame
+    // (the trackdist ×3-draw discard class of bug), and the HUD says so in
+    // red instead of waiting for someone to open the console.
     const trackLab = el("div", "hud-label", "track …");
     hud.append(trackLab);
+    const glProbe = renderer.getContext() as WebGL2RenderingContext;
     const trackTick = window.setInterval(() => {
       const ids = line.debugIds();
       let nLine2 = 0;
       scene.traverse((o) => {
         if ((o as unknown as { isLine2?: boolean }).isLine2 === true) nLine2++;
       });
-      const label = `track uStepM=${ids.stepM} instances=${ids.count} line2=${nLine2} uProg=${line.debugProgressDist().toFixed(1)}`;
+      const err = glProbe.getError();
+      const glTxt = err === glProbe.NO_ERROR ? "" : ` GL_ERR=${err === glProbe.INVALID_OPERATION ? "INVALID_OPERATION(feedback?)" : err}`;
+      const label = `track uStepM=${ids.stepM} instances=${ids.count} line2=${nLine2} uProg=${line.debugProgressDist().toFixed(1)}${glTxt}`;
       if (trackLab.textContent !== label) trackLab.textContent = label;
+      trackLab.style.color = err === glProbe.NO_ERROR ? "" : "#ff6b6b";
     }, 500);
     void trackTick;
   }
@@ -1035,6 +1068,12 @@ float wgrain(vec2 lp){
         );
       }
     }
+    // Rastro/feedback-loop: FIXED FRAME ORDER, never interleaved.
+    // 1. render(scene) to canvas FIRST (the user frame — nothing bound).
+    // 2. probes (occluder / ID) only AFTER, each restoring setRenderTarget(null).
+    // 3. readPixels inside the probe call (R1: same task, never next frame).
+    // trackdist is LOOK-only: it skips every probe (see below) so nothing
+    // can steal the canvas between the line passes and the screen.
     // T1 (mandatory order): the rig already wrote position/quaternion above;
     // refresh the world matrix, render, then project the labels with the
     // SAME matrix that just rendered. Projecting before rig.update() trails
@@ -1051,11 +1090,13 @@ float wgrain(vec2 lp){
     // grid, every 30th frame, only with ?luma=1 (a per-frame readPixels
     // stall would eat the budget it is meant to protect). R1: sampled AFTER
     // renderer.render() — the presented frame, never the previous one.
-    // G12 (E1): same pass counts sky rows — pixels whose NDC ray points
-    // above the geometric horizon from the camera position.
-    // G15 (BLOQUEANTE): same pass counts track-cream pixels (0xefe3c8) —
-    // the trail must paint >0 pixels at s>=0.05.
-    if ((lumaOn || skyfracOn || trackpxOn) && frames % 30 === 5) {
+    // trackdist LOOK-only (auditoría rastro): with the gradient flag, ALL
+    // probes are skipped — there is nothing to measure, only to see, and
+    // any extra render between the line passes and the screen risks the
+    // feedback loop again.
+    // G15 (?trackpx=1 -> window.__trackpx): offscreen ID pass — the solid
+    // Line2 alone into 256x144, non-null pixels counted. Threshold: >= 40 px.
+    if ((lumaOn || skyfracOn || trackpxOn) && !boot.trackDist && frames % 30 === 5) {
       const g = LUMA_GRID;
       const w = Math.max(1, Math.floor(renderer.domElement.width / 2));
       const h = Math.max(1, Math.floor(renderer.domElement.height / 2));

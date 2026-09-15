@@ -43,7 +43,12 @@ export interface RouteLine {
 }
 
 /** Shared offscreen counter: one target, one readPixels, one loop.
- * Used by G12 (sky/void occluder pass) and G15 (track ID pass). */
+ * Used by G12 (sky/void occluder pass) and G15 (track ID pass).
+ * Feedback-loop guard (auditoría rastro): the render target is UNBOUND
+ * (setRenderTarget(null)) AND its texture unit cleared before returning —
+ * three keeps the last-bound texture active on the unit, and the NEXT main
+ * pass with the line materials samples a framebuffer-attached texture as
+ * input (×3 draws = fantasma/sólido/halo discarded by the driver). */
 export function renderCount(
   renderer: THREE.WebGLRenderer,
   target: THREE.WebGLRenderTarget,
@@ -54,13 +59,30 @@ export function renderCount(
   h: number,
   isHit: (r: number, g: number, b: number) => boolean,
 ): number {
-  const prev = renderer.getRenderTarget();
   renderer.setRenderTarget(target);
   renderer.setClearColor(0x000000, 1);
   renderer.clear(true, true, false);
   renderer.render(scene, camera);
   renderer.readRenderTargetPixels(target, 0, 0, w, h, buf);
-  renderer.setRenderTarget(prev);
+  // Full state restore: back to canvas + scrub the target texture from all
+  // units so the next main pass never samples an attached framebuffer.
+  renderer.setRenderTarget(null);
+  const gl = renderer.getContext() as WebGL2RenderingContext & {
+    activeTexture?: (t: number) => void;
+    bindTexture?: (t: number, x: unknown) => void;
+  };
+  try {
+    const tex = renderer.properties.get(target.texture)?.__webglTexture as unknown;
+    if (tex !== undefined && typeof gl.activeTexture === "function" && typeof gl.bindTexture === "function") {
+      for (let u = 0; u < 8; u++) {
+        gl.activeTexture(gl.TEXTURE0 + u);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+      }
+      gl.activeTexture(gl.TEXTURE0);
+    }
+  } catch {
+    /* belt-and-braces: setRenderTarget(null) already restored the canvas */
+  }
   let n = 0;
   for (let i = 0; i < w * h; i++) {
     if (isHit(buf[i * 4] as number, buf[i * 4 + 1] as number, buf[i * 4 + 2] as number)) n++;
