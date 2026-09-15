@@ -358,14 +358,15 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     hasProbe ? `probe in viewer (?luma=1 -> window.__luma), threshold ${G11_LUMA_MIN}, grid ${LUMA_GRID}x${LUMA_GRID} — measure at ?s=0.10` : "no __luma probe in viewer.ts");
 }
 
-// --- G12 sky band contract (FOLLOW, rescaled §3): [0.12, 0.30].
-// Node checks the probe contract (same sampler as G11 + horizon test);
-// the fractions themselves are measured in-browser on the seven captures.
+// --- G12 sky band contract (FOLLOW, píxeles): [0.12, 0.30] por pase de
+// oclusores (?skyfrac=1 -> window.__skyFrac = negros/total; solo el terreno
+// tapa — ni cúpula, ni nubes, ni trazado). Node verifica el contrato; la
+// fracción vive en navegador sobre las siete capturas.
 {
   const src = readFileSync("src/engine/viewer.ts", "utf8");
-  const hasSky = src.includes("__skyFrac") && src.includes("skyfrac");
+  const hasSky = src.includes("__skyFrac") && src.includes("skyfrac") && src.includes("occTarget");
   gate("G12-sky-probe", hasSky && G12_SKY_MIN === 0.12 && G12_SKY_MAX === 0.3,
-    hasSky ? `probe in viewer (?skyfrac=1 -> window.__skyFrac), band [${G12_SKY_MIN}, ${G12_SKY_MAX}] — measure on the seven act captures` : "no __skyFrac probe in viewer.ts");
+    hasSky ? `occluder pass in viewer (?skyfrac=1 -> window.__skyFrac + __voidPx), band [${G12_SKY_MIN}, ${G12_SKY_MAX}] — measure on the seven act captures` : "no occluder sampler in viewer.ts");
 }
 
 // --- G13 line-vs-mesh (E4): |z_line - z_meshLOD| <= 1.0 m over 1000 steps.
@@ -641,16 +642,41 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
       : `terrain EXCEEDS sightline+100 by ${rimWorst.toFixed(0)} m at s=${(rimAt / STEPS).toFixed(4)} — wall through the frame`);
 }
 
-// --- G17 void (FOLLOW): placeholder in Node — the void test needs the
-// framebuffer (fog colour under the geometric horizon). Contract: the
-// browser probe (?skyfrac=1 -> window.__skyFrac path) doubles as the void
-// probe — void pixels are fog-coloured pixels BELOW the horizon row band.
-// Measured in-browser on the seven captures; Node asserts the probe exists.
+// --- G17 void (FOLLOW): píxeles negros en la MITAD INFERIOR del pase de
+// oclusores (?skyfrac=1 -> window.__voidPx). Exacta y gratis con G12 —
+// sustituye la aproximación color-bajo-horizonte. Necesidad: 0.
 {
   const src = readFileSync("src/engine/viewer.ts", "utf8");
-  const hasProbe = src.includes("__skyFrac") && src.includes("skyfrac");
+  const hasProbe = src.includes("__voidPx");
   gate("G17-void-probe", hasProbe,
-    hasProbe ? "void = fog-colour pixels below horizon band, same sampler as G12 — measure on the seven act captures (need = 0)" : "no skyfrac/void sampler in viewer.ts");
+    hasProbe ? "void = black pixels in lower half of occluder pass (?skyfrac=1 -> __voidPx), need = 0" : "no __voidPx probe in viewer.ts");
+}
+
+// --- G15 track (auditoría rastro): el pase ID comparte el corte
+// (idMat parcheado con uProgressDist). Contrato: __trackpx >= 40 px en
+// 20 valores s >= 0.05 (?trackpx=1). Con idMat sin parche daba 97 con el
+// recorrido invisible — ese PASS de chiripa ya no puede repetirse.
+{
+  const src = readFileSync("src/engine/route-line.ts", "utf8");
+  const idPatched = src.includes("patchLine(idMat)");
+  const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
+  const hasPx = viewerSrc.includes("__trackpx") && viewerSrc.includes("countIdPixels");
+  gate("G15-track", idPatched && hasPx,
+    idPatched && hasPx ? "ID pass shares uProgressDist cut (?trackpx=1 -> __trackpx >= 40 px, 20 values s>=0.05)" : "idMat unpatched or no __trackpx probe — G15 would PASS with the trail invisible");
+}
+
+// --- uGlow == 0 fuera de hitos (auditoría halo): la rampa glowNear(s, c)
+// con GLOW_S_WINDOW = 0.02 vale exactamente 0 en s = 0 y s = 0.14 (lejos de
+// A3/A7/A8). Aritmética pura, sin DOM.
+{
+  const { GLOW_S_WINDOW } = await import("../src/narrative/choreography.ts");
+  const glowNear = (s: number, c: number): number =>
+    Math.min(1, Math.max(0, (GLOW_S_WINDOW - Math.abs(s - c)) / GLOW_S_WINDOW));
+  const samples: [number, number][] = [[0, 0.3], [0, 0.745], [0, 0.86], [0.14, 0.3], [0.14, 0.745], [0.14, 0.86], [0.3, 0.3], [0.745, 0.745], [0.86, 0.86]];
+  const offOk = samples.slice(0, 6).every(([s, c]) => glowNear(s, c) === 0);
+  const onOk = samples.slice(6).every(([s, c]) => glowNear(s, c) === 1);
+  gate("uGlow-gate", offOk && onOk,
+    offOk && onOk ? `uGlow 0 at s=0/0.14 (non-milestones), 1 at A3/A7/A8 (window ${GLOW_S_WINDOW})` : "uGlow leaks outside milestone windows");
 }
 
 // --- G9-bis shape (follow replan): plan-dist percentiles replace the

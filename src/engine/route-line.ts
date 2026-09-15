@@ -34,10 +34,40 @@ export interface RouteLine {
   setFraming(camDistM: number, glow01: number): void;
   /** BLOQUEANTE isolation probe: expose the shared uniform for tests. */
   debugProgressDist(): number;
+  /** ?debug=trackdist: gradient probe (blue Pradera → red Cola). */
+  setTrackDistMode(on: boolean): void;
+  /** HUD audit: first/last vDist sample + instance count. */
+  debugIds(): { first: number; last: number; count: number };
   /** G15 (pasada rig puro): offscreen ID pass — render ONLY the solid Line2
    * (no terrain, no halo, flat unlit colour) into a 256x144 target and count
    * non-null pixels. A 1088-point grid cannot see a 2 px line; this can. */
   countIdPixels(renderer: THREE.WebGLRenderer, camera: THREE.Camera): number;
+}
+
+/** Shared offscreen counter: one target, one readPixels, one loop.
+ * Used by G12 (sky/void occluder pass) and G15 (track ID pass). */
+export function renderCount(
+  renderer: THREE.WebGLRenderer,
+  target: THREE.WebGLRenderTarget,
+  buf: Uint8Array,
+  scene: THREE.Scene,
+  camera: THREE.Camera,
+  w: number,
+  h: number,
+  isHit: (r: number, g: number, b: number) => boolean,
+): number {
+  const prev = renderer.getRenderTarget();
+  renderer.setRenderTarget(target);
+  renderer.setClearColor(0x000000, 1);
+  renderer.clear(true, true, false);
+  renderer.render(scene, camera);
+  renderer.readRenderTargetPixels(target, 0, 0, w, h, buf);
+  renderer.setRenderTarget(prev);
+  let n = 0;
+  for (let i = 0; i < w * h; i++) {
+    if (isHit(buf[i * 4] as number, buf[i * 4 + 1] as number, buf[i * 4 + 2] as number)) n++;
+  }
+  return n;
 }
 
 export function buildRouteLine(
@@ -98,6 +128,8 @@ export function buildRouteLine(
   const uDimPast = { value: TRACK_DIM_PAST };
   const uDimFuture = { value: TRACK_DIM_FUTURE };
   const uTipFade = { value: TRACK_FADE_M };
+  const uLengthM = { value: route.lengthM };
+  const uTrackDist = { value: 0 };
   const patchLine = (m: LineMaterial): void => {
     const prev = m.onBeforeCompile.bind(m);
     m.onBeforeCompile = (shader: { uniforms: Record<string, unknown>; vertexShader: string; fragmentShader: string }) => {
@@ -107,6 +139,8 @@ export function buildRouteLine(
       uniforms["uDimPast"] = uDimPast;
       uniforms["uDimFuture"] = uDimFuture;
       uniforms["uTipFade"] = uTipFade;
+      uniforms["uLengthM"] = uLengthM;
+      uniforms["uTrackDist"] = uTrackDist;
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
@@ -122,15 +156,18 @@ vDist = ( position.y < 0.5 ) ? instanceDistStart : instanceDistEnd;`,
         .replace(
           "#include <common>",
           `#include <common>
-varying float vDist; uniform float uProgressDist; uniform float uDimPast; uniform float uDimFuture; uniform float uTipFade;`,
+varying float vDist; uniform float uProgressDist; uniform float uDimPast; uniform float uDimFuture; uniform float uTipFade; uniform float uLengthM; uniform float uTrackDist;`,
         )
         .replace(
           "float alpha = opacity;",
           // E2: ahead does not exist (uDimFuture = 0); the tip fade is the
           // visible head (TRACK_FADE_M, audit: 180 m at drone distance).
           // Ghost + solid share the rule.
+          // ?debug=trackdist: gradient probe INSTEAD of the cut — blue
+          // Pradera, red Cola, blue again on return. One load, one answer.
           `float head = 1.0 - smoothstep( uProgressDist - uTipFade, uProgressDist, vDist );
-float alpha = opacity * mix( uDimFuture, uDimPast * head, step( vDist, uProgressDist ) );`,
+float alpha = opacity * mix( uDimFuture, uDimPast * head, step( vDist, uProgressDist ) );
+if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - vDist / uLengthM ); alpha = opacity; }`,
         );
     };
     m.customProgramCacheKey = () => "ordesa-route-progress";
@@ -168,9 +205,13 @@ float alpha = opacity * mix( uDimFuture, uDimPast * head, step( vDist, uProgress
   halo.renderOrder = 4;
   group.add(halo);
   // G15 ID pass: the SAME solid Line2, flat unlit material, rendered alone
-  // into a 256x144 target. No terrain, no halo, no lighting — line or void.
+  // into a 256x144 target. Patched with the SAME cut (uProgressDist shared)
+  // — the ID pass answers "does the user see the path?", not "does the
+  // geometry paint". Without the cut it always drew the whole line (97 px
+  // with the trail invisible on screen).
   const idMat = new LineMaterial({ color: 0xffffff, linewidth: 2, worldUnits: false, alphaToCoverage: false });
   idMat.resolution.set(256, 144);
+  patchLine(idMat);
   const idLine = new Line2(geo, idMat);
   idLine.frustumCulled = false;
   const idScene = new THREE.Scene();
@@ -190,28 +231,24 @@ float alpha = opacity * mix( uDimFuture, uDimPast * head, step( vDist, uProgress
     debugProgressDist() {
       return uProgressDist.value;
     },
+    setTrackDistMode(on: boolean) {
+      uTrackDist.value = on ? 1 : 0;
+    },
+    debugIds() {
+      const attr = geo.getAttribute("instanceDistEnd") as THREE.InstancedBufferAttribute | undefined;
+      const arr = attr?.array as ArrayLike<number> | undefined;
+      if (!attr || !arr || arr.length === 0) return { first: NaN, last: NaN, count: 0 };
+      return { first: arr[0] as number, last: arr[arr.length - 1] as number, count: attr.count };
+    },
     countIdPixels(renderer: THREE.WebGLRenderer, camera: THREE.Camera) {
-      // G15: solid-only ID pass. The idLine shares geo (hence the same
-      // progress cut via its own material? NO — idMat is unpatched, so it
-      // always draws the WHOLE line: the ID pass answers "geometry paints",
-      // the cut is answered by ?track=all vs progressive in the main pass.
-      const prev = renderer.getRenderTarget();
-      renderer.setRenderTarget(idTarget);
-      renderer.setClearColor(0x000000, 1);
-      renderer.clear(true, true, false);
-      renderer.render(idScene, camera);
-      renderer.readRenderTargetPixels(idTarget, 0, 0, 256, 144, idBuf);
-      renderer.setRenderTarget(prev);
-      let n = 0;
-      for (let i = 0; i < 256 * 144; i++) {
-        if ((idBuf[i * 4] as number) > 4 || (idBuf[i * 4 + 1] as number) > 4 || (idBuf[i * 4 + 2] as number) > 4) n++;
-      }
-      return n;
+      // G15: ID pass WITH the progress cut (idMat shares uProgressDist).
+      // Shared helper: one target, one readPixels, one loop.
+      return renderCount(renderer, idTarget, idBuf, idScene, camera, 256, 144,
+        (rr, gg, bb) => rr > 4 || gg > 4 || bb > 4);
     },
     setFraming(camDistM: number, glow01: number) {
-      // E3 drone revision: 2 px beyond 2600 m, 5 px under 1200 m, smoothstep
-      // between. Halo width tracks x3; its opacity tracks uGlow (0 away
-      // from milestones — the audit caught it lit at s=0/0.14).
+      // E3 drone revision (pasada rig puro): 2 px beyond 2000 m, 3 px under
+      // 600 m. The far line stays thin; only the immediate foreground fattens.
       const f = Math.min(1, Math.max(0, (LINE_W_D_FAR - camDistM) / (LINE_W_D_FAR - LINE_W_D_NEAR)));
       const s = f * f * (3 - 2 * f);
       const w = LINE_W_FAR + (LINE_W_NEAR - LINE_W_FAR) * s;

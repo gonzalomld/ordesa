@@ -43,7 +43,7 @@ import {
   updateLabels,
   type LabelDef,
 } from "./labels.ts";
-import { buildRouteLine } from "./route-line.ts";
+import { buildRouteLine, renderCount } from "./route-line.ts";
 import { lightingAt, sunPosition } from "./sun.ts";
 import {
   driveTelemetry,
@@ -639,6 +639,12 @@ float wgrain(vec2 lp){
   );
   const line = buildRouteLine(route, world, elev, meta, res2, (x, y) => meshHeightAtStep2(elev, meta, x, y));
   group.add(line.group);
+  // Rastro invertido, instrumento primero: ?debug=trackdist wins over
+  // ?track=all (the gradient needs uProgressDist = lengthM anyway).
+  if (boot.trackDist) {
+    line.setTrackDistMode(true);
+    line.setProgressDist(route.lengthM);
+  }
   applyLighting(progress.getState().hourDec);
   renderer.compile(scene, camera);
   skyCap = createSkyCapture(renderer, scene, camera);
@@ -830,6 +836,21 @@ float wgrain(vec2 lp){
       if (timeLab.textContent !== label) timeLab.textContent = label;
     }, 500);
     void hourTick;
+    // Rastro invertido: HUD audit — vDist samples + instance count + Line2
+    // census. One load answers geometry-vs-cut (suspect 1: a second
+    // buildRouteLine alive from E4 would show line2 != 4).
+    const trackLab = el("div", "hud-label", "track …");
+    hud.append(trackLab);
+    const trackTick = window.setInterval(() => {
+      const ids = line.debugIds();
+      let nLine2 = 0;
+      scene.traverse((o) => {
+        if ((o as unknown as { isLine2?: boolean }).isLine2 === true) nLine2++;
+      });
+      const label = `track vDist[0]=${Number.isNaN(ids.first) ? "EMPTY" : ids.first.toFixed(1)} vDist[n-1]=${Number.isNaN(ids.last) ? "EMPTY" : ids.last.toFixed(1)} instances=${ids.count} line2=${nLine2} uProg=${line.debugProgressDist().toFixed(1)}`;
+      if (trackLab.textContent !== label) trackLab.textContent = label;
+    }, 500);
+    void trackTick;
   }
 
   // ?debug=path instrument (3-panel overlay, lazy import keeps it out of the
@@ -838,15 +859,25 @@ float wgrain(vec2 lp){
     const { mountPathOverlay } = await import("../narrative/debug-path.ts");
     mountPathOverlay({ route, world, elev, meta, progress, rig });
   }
+  // G12/G17 occluder pass (respuesta G12): terrain ONLY — no dome, no
+  // clouds, no track, no labels. overrideMaterial flat white, clear black:
+  // black pixels ARE sky (nothing occludes). Clouds are not occluders
+  // (cloudy sky is still sky for framing); fog is off (flat material has
+  // none — far terrain reads white, correctly NOT sky). Same camera incl.
+  // setViewOffset so the crop matches the user frame. Target persists.
+  const occScene = new THREE.Scene();
+  let occMesh: THREE.Mesh | null = null;
+  const occTarget = new THREE.WebGLRenderTarget(256, 144, { depthBuffer: true });
+  const occBuf = new Uint8Array(256 * 144 * 4);
+  const occMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   // G11 probe flag (?luma=1 with ?s=0.10): luminance sampling in the loop.
   // The threshold lives in choreography.ts; the loop exposes window.__luma
   // and the HUD line so the audit reads a number, not an impression.
-  // G12 rides the same sampler (?skyfrac=1 -> window.__skyFrac): fraction
-  // of sampled rows above the geometric horizon (sky pixels / total).
-  // G15 (?trackpx=1 -> window.__trackpx): offscreen ID pass — the solid
-  // Line2 alone into 256x144, non-null pixels counted. The old cream-grid
-  // sampler (9/1088 on a full screen of line) could not see a 2 px line and
-  // PASSed by luck; this measures what it claims. Threshold: >= 40 px.
+  // G12 rides the occluder pass (?skyfrac=1 -> window.__skyFrac): black
+  // pixels ARE sky (only terrain occludes). G17 rides free: black pixels
+  // in the LOWER half are void under the horizon.
+  // G15 (?trackpx=1 -> window.__trackpx): ID pass WITH the cut — the solid
+  // Line2 alone into 256x144, non-null pixels counted. Threshold: >= 40 px.
   const lumaOn = new URLSearchParams(location.search).has("luma");
   const skyfracOn = new URLSearchParams(location.search).has("skyfrac");
   const trackpxOn = new URLSearchParams(location.search).has("trackpx");
@@ -1045,32 +1076,30 @@ float wgrain(vec2 lp){
       }
       (window as unknown as { __luma?: number }).__luma = cnt > 0 ? sum / cnt : 0;
       if (boot.debug) metrics.luma = (window as unknown as { __luma?: number }).__luma ?? -1;
-      // G12: sky fraction — rows whose centre ray clears the horizon.
-      // Horizon test in world space: a level ray from the camera travels
-      // straight; terrain above it means ground, below it means sky. We
-      // approximate per sampled pixel with the camera pitch + NDC offset:
-      // pixel is sky iff its view elevation exceeds the depression of the
-      // farthest visible terrain (~0 for drone framing at 30 deg pitch).
-      if (skyfracOn) {
-        let sky = 0;
-        let tot = 0;
-        const fovV = (camera.fov * Math.PI) / 180;
-        // camera pitch: angle of the forward axis above horizontal
-        const fwd = new THREE.Vector3();
-        camera.getWorldDirection(fwd);
-        const camPitch = Math.asin(Math.min(1, Math.max(-1, fwd.y)));
-        for (let yy = 0; yy < h; yy += sy) {
-          const ndcY = 1 - (2 * (yy + 0.5)) / h;
-          const elev = camPitch + Math.atan(ndcY * Math.tan(fovV / 2));
-          for (let xx = 0; xx < w; xx += sx) {
-            void xx;
-            tot++;
-            // geometric horizon from this altitude: depression ~ sqrt(2h/R)
-            const dep = Math.sqrt((2 * Math.max(1, camera.position.y)) / 6371000);
-            if (elev > -dep) sky++;
+      // G12/G17: occluder pass — terrain only, flat white, clear black.
+      // Black = sky (nothing occludes). Lower-half black = void (G17).
+      // readPixels immediately after render (R1 lesson), same camera.
+      if (skyfracOn && terrain) {
+        if (!occMesh) {
+          occMesh = new THREE.Mesh(terrain.geometry, occMat);
+          occMesh.frustumCulled = false;
+          occScene.add(occMesh);
+        } else if (occMesh.geometry !== terrain.geometry) {
+          occMesh.geometry = terrain.geometry;
+        }
+        const sky = renderCount(renderer, occTarget, occBuf, occScene, camera, 256, 144,
+          (rr, gg, bb) => rr < 8 && gg < 8 && bb < 8);
+        (window as unknown as { __skyFrac?: number }).__skyFrac = sky / (256 * 144);
+        // G17 free: black pixels in the LOWER half (rows 0..71) = void under
+        // the horizon. Same buffer just read — no second render.
+        let voidPx = 0;
+        for (let yy = 0; yy < 72; yy++) {
+          for (let xx = 0; xx < 256; xx++) {
+            const o = (yy * 256 + xx) * 4;
+            if ((occBuf[o] as number) < 8 && (occBuf[o + 1] as number) < 8 && (occBuf[o + 2] as number) < 8) voidPx++;
           }
         }
-        (window as unknown as { __skyFrac?: number }).__skyFrac = tot > 0 ? sky / tot : 0;
+        (window as unknown as { __voidPx?: number }).__voidPx = voidPx;
       }
       // G15: offscreen ID pass (solid Line2 alone, 256x144). Runs on the
       // same 30-frame cadence as G11/G12; result in window.__trackpx.

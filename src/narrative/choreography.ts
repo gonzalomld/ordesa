@@ -169,9 +169,9 @@ export const SUBJECT_X = 0.5; // NDC x of the aim point (setViewOffset, not a ro
 // uGlow MUST read 0 outside the A3/A7/A8 windows (audit: lit at s=0/0.14,
 // which are not milestones) — verify:3a asserts the gate math on worn paths.
 export const LINE_W_FAR = 2; // px above LINE_W_D_FAR (sober line)
-export const LINE_W_NEAR = 5; // px below LINE_W_D_NEAR (was 7: tube, not rope)
-export const LINE_W_D_FAR = 2600; // m: smoothstep upper edge (was 1200)
-export const LINE_W_D_NEAR = 1200; // m: smoothstep lower edge (was 400)
+export const LINE_W_NEAR = 3; // px below LINE_W_D_NEAR (was 5: tube at drone distance; far line stays thin)
+export const LINE_W_D_FAR = 2000; // m: smoothstep upper edge (was 2600)
+export const LINE_W_D_NEAR = 600; // m: smoothstep lower edge (was 1200)
 export const GLOW_MULT = 3; // halo pass width x3, drawn first
 export const GLOW_ALPHA = 0.18; // halo opacity (cream, additive)
 export const GLOW_S_WINDOW = 0.02; // uGlow 0..1 within +-0.02 s of A3/A7/A8

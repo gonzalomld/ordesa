@@ -61,6 +61,9 @@ export interface BootQuery {
   /** BLOQUEANTE isolation probe: draw the whole track (uProgressDist =
    * lengthM) without touching anything else. Answers geometry-vs-cut. */
   trackAll: boolean;
+  /** Rastro invertido: vDist gradient probe (?debug=trackdist). One load,
+   * one answer — blue Pradera / red Cola, or the inverse, or flat. */
+  trackDist: boolean;
 }
 
 function parseSParam(raw: string | null): number | null {
@@ -89,6 +92,7 @@ export function parseBootQuery(): BootQuery {
     act: q.get("act"),
     orbit: q.has("orbit"),
     trackAll: q.get("track") === "all",
+    trackDist: q.get("debug") === "trackdist",
   };
 }
 
