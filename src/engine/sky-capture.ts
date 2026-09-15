@@ -41,19 +41,10 @@ export function createSkyCapture(
     renderer.toneMapping = THREE.NoToneMapping;
     renderer.setRenderTarget(rt);
     renderer.render(scene, camera);
-    // Same feedback-loop guard as renderCount (route-line.ts): back to
-    // canvas + scrub the capture texture from all units.
+    // Feedback-loop guard: back to canvas. setRenderTarget(null) unbinds
+    // the framebuffer through the renderer so three's GL-state cache stays
+    // in sync — never touch raw GL here.
     renderer.setRenderTarget(null);
-    try {
-      const gl = renderer.getContext() as WebGL2RenderingContext;
-      for (let u = 0; u < 8; u++) {
-        gl.activeTexture(gl.TEXTURE0 + u);
-        gl.bindTexture(gl.TEXTURE_2D, null);
-      }
-      gl.activeTexture(gl.TEXTURE0);
-    } catch {
-      /* setRenderTarget(null) already restored the canvas */
-    }
     renderer.toneMapping = prevTone;
     for (const o of hidden) o.visible = true;
   }
