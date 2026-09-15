@@ -64,7 +64,8 @@ export const SHADOW_MOVE_EPS_M = 150; // shadow needsUpdate also fires when the 
 export const SKY_EPS_DEG = 0.5; // sky-capture + fog colour refresh only when solar elevation changed more than this
 
 export const TRACK_DIM_PAST = 1.0; // walked stretch opacity (full)
-export const TRACK_DIM_FUTURE = 0.0; // E2: the road ahead does not exist; the line ends at the walker (was 0.35)
+export const TRACK_DIM_FUTURE = 0.45; // E2 corregido: the road ahead draws thin and faint (was 0.0)
+export const TRACK_W_FUTURE = 0.6; // E2: width factor of the pending stretch over the current one — RESERVED (one Line2 geometry cannot do per-segment width; unused until a split is decided, no geometry split in this change)
 export const TRACK_TIP_FADE_M = 40; // E2: soft tip before the cut so the head is not a chop (audit: 180 reads better at drone distance — see TRACK_FADE_M below)
 export const TRACK_FADE_M = 180; // BLOQUEANTE audit: 150-200 m of path in the tip fade (40 m is sub-pixel at 2.6-4.8 km camera distance)
 export const EPILOGUE_S = 0.98; // E2/R3: epilogue transition; the full loop draws over s in [0.98, 1.00]
@@ -133,6 +134,7 @@ export const FOLLOW_H_CAM = 450; // m over the support point (default; the per-a
 export const FOLLOW_LOOK_M = 600; // m of path ahead (default)
 export const FOLLOW_BACK_M = 500; // m of path behind (default)
 export const FOLLOW_H_AIM = 40; // m of aim height over the ground
+export const WALKER_NDC_Y = 0.45; // framing: the walker at -0.45 NDC (lower quarter); pitch offset = WALKER_NDC_Y · (vFOV/2)
 export const FOLLOW_D_MIN = 900; // m: if dist_planta(camera, aim) < 900, push back along aim->anchor to 900
 export const FOLLOW_NUDOS_S = [0.0, 0.03, 0.18, 0.38, 0.57, 0.77, 0.92, 0.98]; // 0, ACT_MID_S[0,I,II,III,IV,V], 0.98 (ends repeat first/last act values)
 export const FOLLOW_H_CAM_N = [380, 380, 420, 480, 450, 520, 400, 400]; // 0/I/II/III/IV/V per brief table

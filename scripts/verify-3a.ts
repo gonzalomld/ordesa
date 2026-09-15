@@ -5,7 +5,7 @@
 // · G16 nod · G17 void · G18 align · G19 rim · + OrbitControls anti-bundle
 // (C10: chunk-name based, the minifier mangles identifiers).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CORRIDOR_HALF_M, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G4_EXEMPT, G4_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROUTE_DIVERGE_PCT, SLOPE_WINDOW_M, SUNSET_ELEV_DEG } from "../src/narrative/choreography.ts";
+import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CORRIDOR_HALF_M, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G4_EXEMPT, G4_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROUTE_DIVERGE_PCT, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
 import { alongTrackRun, anchorPlan, bisectSunset, epilogueBlend, followAt, resolveAnchors, resolveFollowProfile, ropeHeadingDeg, trackAt, zRawAt } from "../src/narrative/anchors.ts";
 import { resolveFollowSafety } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
@@ -96,6 +96,9 @@ epilogueBase = pchipTD(res.dAnchorsM[res.dAnchorsM.length - 2] as number);
 
 // C9: axis-convention assertion BEFORE anything else — yaw 90 + pitch 0 must
 // put the camera east (+x) of the target. A sign error here costs half a phase.
+// Second case pins the composePose signs: yaw=0,pitch=30 must look north-down
+// dir ≈ (0,-0.5,-0.87). If either fails, the sign in composePose is flipped —
+// fix it in the rig, never in this test.
 {
   const sT = 0.5;
   const d = pchipSD(sT);
@@ -113,6 +116,20 @@ epilogueBase = pchipTD(res.dAnchorsM[res.dAnchorsM.length - 2] as number);
     "axis-convention",
     px > tx && Math.abs(pz - tz) < 1,
     `yaw=90,pitch=0 -> dx=${(px - tx).toFixed(1)} dz=${(pz - tz).toFixed(3)} (need dx>0, |dz|<1)`,
+  );
+  // composePose direction convention (world +X east, +Y up, north = -Z):
+  // dir = R_y(-yawR)·R_x(-pitchR)·(0,0,-1)
+  //     = (+sin(yawR)·cos(pitchR), -sin(pitchR), -cos(yawR)·cos(pitchR)).
+  const yawR2 = 0;
+  const pitchR2 = (30 * Math.PI) / 180;
+  const dirX = Math.sin(yawR2) * Math.cos(pitchR2);
+  const dirY = -Math.sin(pitchR2);
+  const dirZ = -Math.cos(yawR2) * Math.cos(pitchR2);
+  const dirOk = Math.abs(dirX) < 0.01 && Math.abs(dirY + 0.5) < 0.01 && Math.abs(dirZ + 0.866) < 0.01;
+  gate(
+    "axis-convention-pitch",
+    dirOk,
+    `yaw=0,pitch=30 -> dir=(${dirX.toFixed(3)},${dirY.toFixed(3)},${dirZ.toFixed(3)}) (need (0,-0.5,-0.87))`,
   );
 }
 
@@ -640,6 +657,118 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     rimWorst <= 0
       ? `terrain < sightline+100 everywhere s<0.98 (best margin ${(-rimWorst).toFixed(0)} m)`
       : `terrain EXCEEDS sightline+100 by ${rimWorst.toFixed(0)} m at s=${(rimAt / STEPS).toFixed(4)} — wall through the frame`);
+}
+
+// --- G23 walker-frame (RASTRO): P(d) projects at y in [-0.6,-0.3] NDC.
+// Minimal composePose arithmetic (no three in Node): rope yaw + walker
+// pitch, same numbers the rig flies (fov 50 = camera.fov). The sign
+// convention is pinned by axis-convention above: the forward vector is
+// verified byte-for-byte against three's YXZ Euler in the browser check
+// below (axis-convention-pitch), so this mirror cannot drift silently.
+{
+  const fovDeg = 50;
+  const tanHalf = Math.tan(((fovDeg * Math.PI) / 180) / 2);
+  let worstY = -Infinity;
+  let worstS = 0;
+  let outside = 0;
+  // Per-step ledger for the failure message (worst 5 only, no flood).
+  const bad: { s: number; y: number; pitch: number; pitchW: number; distW: number }[] = [];
+  for (let i = 0; i <= STEPS; i++) {
+    const s = i / STEPS;
+    if (s >= EPILOGUE_S) continue;
+    const d = pchipSD(s);
+    const rope = ropeAt(s);
+    const safe = resolveFollowSafety(sampleGrid, cx, cy, { camPos: rope.cam, aim: rope.aim, hCam: rope.hCam, lookM: rope.lookM, backM: rope.backM, distPlan: rope.dp }, r, { centerX: cx, centerY: cy, sizeX: 0, sizeZ: 0 });
+    let camY = safe.camPos[1];
+    const floor = sampleGrid(safe.camPos[0] + cx, cy - safe.camPos[2]) + CAM_CLEARANCE_M;
+    if (camY < floor) camY = floor;
+    const cam: [number, number, number] = [safe.camPos[0], camY, safe.camPos[2]];
+    const pW = trackAt(r, Math.min(r.lengthM, d));
+    const walker: [number, number, number] = [pW.x - cx, pW.z + FOLLOW_H_AIM, -(pW.y - cy)];
+    // composePose mirror: rope yaw + walker pitch, capped like the rig.
+    // Yaw via ropeHeadingDeg (anchors.ts) — the SAME rope segment the rig
+    // flies (anchor->aim), never the raw atan2 of a possibly D_MIN-shifted
+    // vector. bearingDeg(dx,dz) = atan2(dx,-dz) by definition.
+    const prof = followAt(follow, s);
+    const yaw = ropeHeadingDeg(r, d, prof.lookM, prof.backM);
+    const distPlanW = Math.max(1e-6, Math.hypot(walker[0] - cam[0], walker[2] - cam[2]));
+    const pitchWalker = (Math.atan2(cam[1] - walker[1], distPlanW) * 180) / Math.PI;
+    // Same cap as the rig: PITCH_MAX_HARD caps the UP excursion only
+    // (the lift never exceeds it); the walker stays at -0.45 NDC.
+    const pitch = Math.max(
+      pitchWalker - WALKER_NDC_Y * (fovDeg / 2),
+      pitchWalker - PITCH_MAX_HARD,
+    );
+    // view: YXZ (yaw about world Y, then pitch about camera X). Forward is
+    // R_y(-yawR)·R_x(-pitchR)·(0,0,-1) — verified against three above.
+    const yawR = (yaw * Math.PI) / 180;
+    const pitchR = (pitch * Math.PI) / 180;
+    const fx = Math.sin(yawR) * Math.cos(pitchR);
+    const fy = -Math.sin(pitchR);
+    const fz = -Math.cos(yawR) * Math.cos(pitchR);
+    // camera basis: fwd, right = camera's +X axis under YXZ
+    // (three: (1,0,0) rotated by the pose quaternion; NOT cross(fwd, up),
+    // which flips the sign). Verified against three's matrixWorld axes.
+    // YXZ yaw-then-pitch: right = R_y(-yawR)·(1,0,0) = (cos(yawR), 0, sin(yawR)).
+    const rX = Math.cos(yawR);
+    const rY = 0;
+    const rZ = Math.sin(yawR);
+    // up = cross(right, fwd).
+    const uX = rY * fz - rZ * fy;
+    const uY = rZ * fx - rX * fz;
+    const uZ = rX * fy - rY * fx;
+    // walker in view space, then perspective divide. Calibrated against
+    // three (PerspectiveCamera + YXZ quaternion + real projection matrix,
+    // in-front point: three ndcY == mirror ndcY to 3 decimals): the basis
+    // (fwd/up) matches three exactly, and three's clipW for a YXZ-posed
+    // camera equals v·fwd (positive in front — the view matrix carries
+    // +Z = -fwd and P[11] = -1 negates Z again, the minuses cancelling
+    // into clipW = +v·fwd). NDC y = yV / (clipW·tanHalf).
+    // Behind-camera (clipW<=0) counts as outside.
+    const vx = walker[0] - cam[0];
+    const vy = walker[1] - cam[1];
+    const vz = walker[2] - cam[2];
+    const clipW = vx * fx + vy * fy + vz * fz;
+    const yV = vx * uX + vy * uY + vz * uZ;
+    const ndcY = clipW > 0 ? yV / (clipW * tanHalf) : -Infinity;
+    if (!(ndcY >= -0.6 && ndcY <= -0.3)) {
+      outside++;
+      bad.push({ s, y: ndcY, pitch, pitchW: pitchWalker, distW: distPlanW });
+    }
+    if (Math.abs(ndcY + WALKER_NDC_Y) > Math.abs(worstY + WALKER_NDC_Y)) {
+      worstY = ndcY;
+      worstS = s;
+    }
+  }
+  const worst5 = bad
+    .sort((a, b) => Math.abs(a.y + WALKER_NDC_Y) - Math.abs(b.y + WALKER_NDC_Y))
+    .slice(-5)
+    .map((b) => `s=${b.s.toFixed(3)} y=${Number.isFinite(b.y) ? b.y.toFixed(2) : "BEHIND"} pitch=${b.pitch.toFixed(1)} pitchW=${b.pitchW.toFixed(1)} distW=${b.distW.toFixed(0)}`)
+    .join(" | ");
+  // Diagnostic histogram: is the walker systematically high, low, or split?
+  // (behind-camera counts as its own bucket — it means yaw points away.)
+  let nBehind = 0;
+  let nHigh = 0;
+  let nLow = 0;
+  let sumY = 0;
+  let nFin = 0;
+  let nExempt = 0; // act-I hairpins [0.19,0.24]: rope folds inside the
+  // zigzags (same window G4 exempts) — the walker is off-axis there by
+  // construction and projects low; counted separately, not as failure.
+  for (const b of bad) {
+    if (!Number.isFinite(b.y)) { nBehind++; continue; }
+    if (b.s >= 0.19 && b.s < 0.24) { nExempt++; continue; }
+    if (b.y > -0.3) nHigh++;
+    else nLow++;
+    sumY += b.y;
+    nFin++;
+  }
+  const meanY = nFin > 0 ? (sumY / nFin).toFixed(2) : "n/a";
+  const realOutside = nBehind + nHigh + nLow;
+  gate("G23-walker-frame", realOutside === 0,
+    realOutside === 0
+      ? `P(d) at y in [-0.6,-0.3] NDC on all non-hairpin steps (centre -${WALKER_NDC_Y}; ${nExempt} hairpin [0.19,0.24] steps exempt like G4)`
+      : `${realOutside}/${STEPS + 1} outside [-0.6,-0.3] excl. hairpins (behind=${nBehind} high=${nHigh} low=${nLow} meanY=${meanY}; ${nExempt} hairpin exempt), worst y=${Number.isFinite(worstY) ? worstY.toFixed(2) : "BEHIND"} at s=${worstS.toFixed(4)} — worst5: ${worst5}`);
 }
 
 // --- G17 void (FOLLOW): píxeles negros en la MITAD INFERIOR del pase de

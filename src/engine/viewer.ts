@@ -636,9 +636,11 @@ float wgrain(vec2 lp){
   const rig = createRig({ camera, route, world, elev, meta, progress });
   {
     // initial framing is simply rig.at(s=0) — no hardcoded default camera.
+    // Walker-framed pose: position + quaternion (never lookAt, which would
+    // compute a pitch composePose just replaced).
     const p0 = rig.poseAt(scroll.s);
     camera.position.set(p0.pos[0], p0.pos[1], p0.pos[2]);
-    camera.lookAt(p0.target[0], p0.target[1], p0.target[2]);
+    camera.quaternion.set(p0.quaternion[0], p0.quaternion[1], p0.quaternion[2], p0.quaternion[3]);
   }
 
   // ?orbit=1: deferred OrbitControls, rig excluded. Orbit starts where the
@@ -657,16 +659,14 @@ float wgrain(vec2 lp){
     const p = rig.poseAt(camS);
     oc.target.set(p.target[0], p.target[1], p.target[2]);
     camera.position.set(p.pos[0], p.pos[1], p.pos[2]);
+    camera.quaternion.set(p.quaternion[0], p.quaternion[1], p.quaternion[2], p.quaternion[3]);
     oc.update();
     orbitControls = oc;
   }
   // Without the flag: zero mouse/touch listeners on the canvas — the canvas
   // must never compete with scroll.
 
-  const res2 = new THREE.Vector2(
-    renderer.domElement.width,
-    renderer.domElement.height,
-  );
+  const res2 = renderer.getDrawingBufferSize(new THREE.Vector2());
   const line = buildRouteLine(route, world, elev, meta, res2,
     (x, y) => meshHeightAtStep(elev, meta, x, y, step), step);
   group.add(line.group);
@@ -955,7 +955,8 @@ float wgrain(vec2 lp){
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
-    res2.set(renderer.domElement.width, renderer.domElement.height);
+    // LineMaterial.resolution is in pixels — the drawing buffer, not CSS px.
+    renderer.getDrawingBufferSize(res2);
     for (const m of line.group.children) {
       const lm = (m as { material: { resolution: THREE.Vector2 } }).material;
       lm.resolution.copy(res2);

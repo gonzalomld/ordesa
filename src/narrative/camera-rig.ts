@@ -18,7 +18,9 @@ import {
   FOLLOW_H_AIM,
   K_IN,
   K_OUT,
+  PITCH_MAX_HARD,
   SUBJECT_X,
+  WALKER_NDC_Y,
 } from "./choreography.ts";
 import { buildPchip } from "./curve.ts";
 import type { ProgressHandle } from "./progress.ts";
@@ -54,6 +56,8 @@ export interface RigPose {
   target: [number, number, number];
   yaw: number;
   pitch: number;
+  /** Orientation quaternion [x,y,z,w] (YXZ: rope yaw + walker pitch). */
+  quaternion: [number, number, number, number];
   /** plan distance camera->aim (m). */
   dist: number;
   hCam: number;
@@ -176,16 +180,13 @@ export function createRig(deps: RigDeps): {
     return sampleGrid(elev, meta, ex, ey) + CAM_CLEARANCE_M;
   }
 
-  /** Effective yaw (cam->aim, the rope yaw the camera flies) + ray
-   * elevation of cam->aim. READ-ONLY diagnostics. */
-  function effAngles(camPos: [number, number, number], aim: [number, number, number]): { yaw: number; pitch: number } {
-    const dx = aim[0] - camPos[0];
-    const dy = aim[1] - camPos[1];
-    const dz = aim[2] - camPos[2];
-    const yaw = bearingDeg(dx, dz);
-    const rayElev = (Math.asin(Math.min(1, Math.max(-1, dy / Math.max(1e-6, Math.hypot(dx, dy, dz))))) * 180) / Math.PI;
-    return { yaw, pitch: rayElev };
+  // effAngles: DEAD with the yaw-table model (E5 scaffolding). composePose
+  // is the only source of yaw/pitch — any import of this name is a leftover
+  // of the wrong model. (Kept as a failing stub so the breakage is loud.)
+  function effAngles(): never {
+    throw new Error("effAngles is deleted — composePose is the only source of yaw/pitch");
   }
+  void effAngles;
 
   function applyViewOffset(): void {
     // 3B seed (brief §7): subject at SUBJECT_X via frustum shift, NOT a
@@ -256,8 +257,70 @@ export function createRig(deps: RigDeps): {
     return { pos, aim, dp };
   }
 
+  /** Walker-framed orientation (pose purity: poseAt IS the pose on screen).
+   * Yaw comes from the rope anchor->aim (valley axis, as before); pitch
+   * comes from the WALKER so the walked track stays in frame:
+   *   pitchWalker = atan2(camY - walkerY, distPlan(cam, walker))  // down+
+   *   pitch = pitchWalker - walkerNdcY · (fovDeg/2)  // lift so the walker
+   *                                            // sits low in the frame
+   * Built as a YXZ quaternion directly — no lookAt (lookAt computes a pitch
+   * that would be thrown away, and patching rotation.x after it mixes axes
+   * near vertical views). setViewOffset (SUBJECT_X) shifts the frustum, not
+   * the orientation: compatible. PITCH_MAX_HARD stays the cap. */
+  function composePose(
+    camPos: [number, number, number],
+    aim: [number, number, number],
+    walker: [number, number, number],
+    walkerNdcY: number,
+    fovDeg: number,
+  ): { yaw: number; pitch: number; quat: [number, number, number, number] } {
+    const yaw = bearingDeg(aim[0] - camPos[0], aim[2] - camPos[2]);
+    const wdx = walker[0] - camPos[0];
+    const wdz = walker[2] - camPos[2];
+    const distPlanW = Math.max(1e-6, Math.hypot(wdx, wdz));
+    const pitchWalker = (Math.atan2(camPos[1] - walker[1], distPlanW) * 180) / Math.PI;
+    // PITCH_MAX_HARD caps the UP excursion only: the lift
+    // (pitchWalker - pitch) never exceeds it. The walker stays at -0.45
+    // NDC everywhere — capping the absolute pitch would park the walker
+    // at the bottom edge wherever the drone flies low (G23 failing).
+    const pitch = Math.max(pitchWalker - walkerNdcY * (fovDeg / 2), pitchWalker - PITCH_MAX_HARD);
+    const yawR = (yaw * Math.PI) / 180;
+    const pitchR = (pitch * Math.PI) / 180;
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-pitchR, -yawR, 0, "YXZ"));
+    return { yaw, pitch, quat: [q.x, q.y, q.z, q.w] };
+  }
+
+  /** Walker world position at distance d + epilogue handling. The epilogue
+   * blends position + aim point (never quaternions): walker slides to the
+   * aim and walkerNdcY fades to 0 with the same k, so the loop ends centred. */
+  function walkerAt(
+    d: number,
+    sc: number,
+    aim: [number, number, number],
+  ): { walker: [number, number, number]; walkerNdcY: number } {
+    const pW = trackAt(route, Math.min(route.lengthM, d));
+    const walker: [number, number, number] = [
+      pW.x - world.centerX,
+      pW.z + FOLLOW_H_AIM,
+      -(pW.y - world.centerY),
+    ];
+    if (sc >= EPILOGUE_S) {
+      const k = epilogueBlend(sc);
+      return {
+        walker: [
+          walker[0] + (aim[0] - walker[0]) * k,
+          walker[1] + (aim[1] - walker[1]) * k,
+          walker[2] + (aim[2] - walker[2]) * k,
+        ],
+        walkerNdcY: WALKER_NDC_Y * (1 - k),
+      };
+    }
+    return { walker, walkerNdcY: WALKER_NDC_Y };
+  }
+
   function poseAt(s: number): RigPose {
     const sc = Math.min(1, Math.max(0, s));
+    const d = rawD(sc);
     const rope = ropePose(sc);
     // static pose: safety policy, NO temporal smoothing (poseAt is pure).
     const sample = (x: number, y: number): number => sampleGrid(elev, meta, x, y);
@@ -265,9 +328,10 @@ export function createRig(deps: RigDeps): {
     let pos = safe.camPos;
     const floor = floorClearance(pos);
     if (pos[1] < floor) pos = [pos[0], floor, pos[2]];
-    const ang = effAngles(pos, safe.aim);
+    const w = walkerAt(d, sc, safe.aim);
+    const c = composePose(pos, safe.aim, w.walker, w.walkerNdcY, deps.camera.fov);
     const dp = Math.hypot(pos[0] - safe.aim[0], pos[2] - safe.aim[2]);
-    return { pos, target: safe.aim, yaw: ang.yaw, pitch: ang.pitch, dist: dp, hCam: safe.hCam, lookM: rope.lookM, backM: safe.backM };
+    return { pos, target: safe.aim, yaw: c.yaw, pitch: c.pitch, quaternion: c.quat, dist: dp, hCam: safe.hCam, lookM: rope.lookM, backM: safe.backM };
   }
 
   function update(dt: number): void {
@@ -301,19 +365,21 @@ export function createRig(deps: RigDeps): {
     const built = dampedPose(s, corrHSm, corrBackSm);
     const floor = floorClearance(built.pos);
     const posF: [number, number, number] = built.pos[1] < floor ? [built.pos[0], floor, built.pos[2]] : built.pos;
+    const d = rawD(s);
+    const w = walkerAt(d, s, built.aim);
+    const c = composePose(posF, built.aim, w.walker, w.walkerNdcY, deps.camera.fov);
     deps.camera.position.set(posF[0], posF[1], posF[2]);
-    deps.camera.lookAt(built.aim[0], built.aim[1], built.aim[2]);
+    deps.camera.quaternion.set(c.quat[0], c.quat[1], c.quat[2], c.quat[3]);
     applyViewOffset();
     lastTarget = built.aim;
-    const ang = effAngles(posF, built.aim);
     diag.distPlan = Math.hypot(posF[0] - built.aim[0], posF[2] - built.aim[2]);
     diag.hCam = rope.hCam + corrHSm;
     diag.lookM = rope.lookM;
     diag.backM = rope.backM + corrBackSm;
     const [ex, ey] = worldToEpsg(posF[0], posF[2], world);
     diag.holgura = posF[1] - sampleGrid(elev, meta, ex, ey);
-    diag.yaw = ang.yaw;
-    diag.pitch = ang.pitch;
+    diag.yaw = c.yaw;
+    diag.pitch = c.pitch;
     diag.corrH = corrHSm;
   }
 

@@ -265,6 +265,9 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
       ghostProbe = on;
       ghostMat.opacity = on ? 1 : 0.25;
       ghostMat.color.setHex(on ? 0xff00ff : (ghostCream.getHex() as number));
+      // ?ghost=1 asks "is there geometry?" — the pending stretch (alpha 0)
+      // would hide the answer, so it draws too while the probe is on.
+      uDimFuture.value = on ? 1 : TRACK_DIM_FUTURE;
     },
     redrape(meshZ: (x: number, y: number) => number, step?: number): void {
       geo.setPositions(drape(meshZ));
