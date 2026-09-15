@@ -64,9 +64,9 @@ export const SHADOW_MOVE_EPS_M = 150; // shadow needsUpdate also fires when the 
 export const SKY_EPS_DEG = 0.5; // sky-capture + fog colour refresh only when solar elevation changed more than this
 
 export const TRACK_DIM_PAST = 1.0; // walked stretch opacity (full)
-export const TRACK_DIM_FUTURE = 0.45; // E2 corregido: the road ahead draws thin and faint (was 0.0)
+export const TRACK_DIM_FUTURE = 0.55; // §1+§4: pending reads with the new sky (was 0.45)
 export const TRACK_COL_PAST = 0xf2e8d0; // warm cream, walked stretch (§1 cinta)
-export const TRACK_COL_FUTURE = 0xb9d9c4; // faint acqua-green, pending stretch at 45% (§1 cinta)
+export const TRACK_COL_FUTURE = 0x8fc9a8; // saturated acqua-green, pending stretch (§1+§4: was 0xb9d9c4)
 export const TRACK_W_FUTURE = 0.6; // E2: width factor of the pending stretch over the current one — RESERVED (one Line2 geometry cannot do per-segment width; unused until a split is decided, no geometry split in this change)
 export const TRACK_TIP_FADE_M = 40; // E2: soft tip before the cut so the head is not a chop (audit: 180 reads better at drone distance — see TRACK_FADE_M below)
 export const TRACK_FADE_M = 180; // BLOQUEANTE audit: 150-200 m of path in the tip fade (40 m is sub-pixel at 2.6-4.8 km camera distance)
@@ -88,6 +88,18 @@ export const HEMI_LUMA_FLOOR = 0.14; // linear-luma floor (was 0.10): Pradera 0.
 export const SLOPE_WINDOW_M = 200; // misma ventana que la cifra publicada en sources.md; el crudo sobre 5 m llega a 493 % y no es publicable
 export const G11_LUMA_MIN = 0.06; // mean linear framebuffer luminance at s=0.10 (audit A6, 32x32 readPixels grid)
 export const LUMA_GRID = 32; // G11 readPixels grid (audit A6); measured in-browser via ?luma=1, every 30th frame
+
+// --- §4 sky (Preetham starting values, measured with the probe) ---
+export const SKY_TURBIDITY = 2.2; // (today ~8-10: what whitens the horizon)
+export const SKY_RAYLEIGH = 1.6; // flat, no low-sun branch
+export const SKY_MIE = 0.004; // (was 0.006)
+export const SKY_G = 0.8; // mieDirectionalG
+export const SKY_EXPOSURE = 0.55; // day exposure with ACES (today 1.05 burns the sky)
+export const HEMI_GRAY_MIX = 0.4; // shadow stays cool, not tinted: mix(sky, grey(luma), 0.4)
+export const CLOUD_COVERAGE = 0.3; // alpha-weighted target at 12:00 (the metric is already corrected)
+export const G24_ZEN_MIN = "#2a68b8"; // saturated blue, not grey
+export const G24_ZEN_MAX = "#3e86d2"; // saturated blue, not grey
+export const G24_HZ_RATIO = 2.2; // horizon luma / zenith luma <= 2.2 (today ~4: white horizon)
 
 // --- audit A9: cloud layer seen from above (epilogue) must fade toward the
 // zenith while keeping its grazing-incidence density.

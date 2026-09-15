@@ -18,6 +18,12 @@ export interface SkyCapture {
   refreshIfNeeded(elevDeg: number): boolean;
   /** Rastro isolation (?skycap=0): skip the capture (zenith frozen). */
   setEnabled(on: boolean): void;
+  /** G24: read zenith + horizon luma from the capture (renderer path only,
+   * no raw GL). Zenith = top-centre of the 64×32 equirect, horizon =
+   * vertical middle. Returns BYTES (Uint8Array view) — the gate needs a
+   * hue band + a luma RATIO, not absolute HDR.
+   * Precondition: the capture target is UnsignedByteType (readable). */
+  readZenith(): { buf: Uint8Array; w: number; h: number };
   dispose(): void;
 }
 
@@ -28,8 +34,13 @@ export function createSkyCapture(
   skyDome: THREE.Mesh,
   camera: THREE.Camera,
 ): SkyCapture {
+  // G24 target: readback-compatible by construction — UnsignedByteType +
+  // RGBAFormat, the combination readRenderTargetPixels accepts. (HalfFloat
+  // would render fine but refuse the read; the capture feeds the fog
+  // shader, not a meter — 8 bit is plenty for a hue band + luma ratio.)
   const rt = new THREE.WebGLRenderTarget(64, 32, {
-    type: THREE.HalfFloatType,
+    type: THREE.UnsignedByteType,
+    format: THREE.RGBAFormat,
     colorSpace: THREE.NoColorSpace,
     depthBuffer: false,
   });
@@ -45,6 +56,14 @@ export function createSkyCapture(
   skyScene.add(domeClone);
   let lastElev = Infinity;
   let enabled = true;
+  // G24 readback: persistent buffer (no per-frame alloc), read through the
+  // renderer — never raw gl. Rows: y=30/31 zenith, y=16 horizon (equirect:
+  // v=1 top). Col x=32 faces away from the sun seam.
+  const zenBuf = new Uint8Array(64 * 32 * 4);
+  function readZenith(): { buf: Uint8Array; w: number; h: number } {
+    renderer.readRenderTargetPixels(rt, 0, 0, 64, 32, zenBuf);
+    return { buf: zenBuf, w: 64, h: 32 };
+  }
   function doRefresh(): void {
     if (!enabled) return;
     // The dome clone shares geometry + material with the main dome, so the
@@ -74,6 +93,7 @@ export function createSkyCapture(
     setEnabled(on: boolean) {
       enabled = on;
     },
+    readZenith,
     dispose() {
       rt.dispose();
       fogUniforms.uSkyMap.value = null;

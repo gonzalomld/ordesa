@@ -1039,8 +1039,27 @@ float wgrain(vec2 lp){
     // G22: getError() right after the capture render names the pass. Always
     // drains (getError clears the flag); the HUD poll reads the ledger, it
     // never polls GL itself.
-    skyCap?.refreshIfNeeded(st.sunElev);
-    if (boot.debug) {
+    // G24: after a REAL recapture, read zenith + horizon from the capture
+    // (measured sky, not the computed estimate) for the HUD line.
+    if (skyCap?.refreshIfNeeded(st.sunElev)) {
+      if (boot.debug) glPassErr.capture = glProbe.getError();
+      try {
+        const { buf, w, h } = skyCap.readZenith();
+        const px = (x: number, y: number): [number, number, number] => {
+          const o = (y * w + x) * 4;
+          return [(buf[o] as number) / 255, (buf[o + 1] as number) / 255, (buf[o + 2] as number) / 255];
+        };
+        const zen = px(Math.floor(w / 2), h - 2);
+        const hor = px(Math.floor(w / 2), Math.floor(h / 2));
+        const toHex = (c: [number, number, number]): string =>
+          `#${[c[0], c[1], c[2]].map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join("")}`;
+        metrics.zenithHex = toHex(zen);
+        const luma = (c: [number, number, number]): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        (window as unknown as { __skyHzRatio?: number }).__skyHzRatio = luma(hor) / Math.max(1e-6, luma(zen));
+      } catch {
+        /* probe failed — computed estimate below stays */
+      }
+    } else if (boot.debug) {
       glPassErr.capture = glProbe.getError();
     }
     metrics.time = hhmm(hour);
@@ -1082,7 +1101,10 @@ float wgrain(vec2 lp){
       }
       clouds.update(clock.elapsedTime, camera, renderer.domElement.width, renderer.domElement.height);
       metrics.cloudCoverage = clouds.getCoverage();
-      clouds.setCap(clouds.getCoverage() > 0.2);
+      // §4: the 20% veil cap is GONE (T1 verdict belonged to the unweighted
+      // metric). The cap now guards the CLOUD_COVERAGE target band instead:
+      // halve global alpha only while visibly above 0.38 (upper edge).
+      clouds.setCap(clouds.getCoverage() > 0.38);
     }
     line.setDim(routeDim);
     metrics.hasRock = 1;

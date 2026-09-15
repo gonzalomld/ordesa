@@ -796,7 +796,7 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
 
 // --- uGlow == 0 fuera de hitos (auditoría halo): la rampa glowNear(s, c)
 // con GLOW_S_WINDOW = 0.02 vale exactamente 0 en s = 0 y s = 0.14 (lejos de
-// A3/A7/A8). Aritmética pura, sin DOM.
+// A3/A7/A8). Aritmética pura, sin DOM. (§1 cinta: halo apagado, no borrado.)
 {
   const { GLOW_S_WINDOW } = await import("../src/narrative/choreography.ts");
   const glowNear = (s: number, c: number): number =>
@@ -806,6 +806,28 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   const onOk = samples.slice(6).every(([s, c]) => glowNear(s, c) === 1);
   gate("uGlow-gate", offOk && onOk,
     offOk && onOk ? `uGlow 0 at s=0/0.14 (non-milestones), 1 at A3/A7/A8 (window ${GLOW_S_WINDOW})` : "uGlow leaks outside milestone windows");
+}
+
+// --- G24 sky (§4: contract over the capture probe). Node checks the
+// CONTRACT (probe exists + readback-compatible target + constants); the
+// NUMBERS (zenith band + horizon/zenith ratio) are measured in-browser at
+// ?debug=1&s=0.18&t=12:00: zenithHex in [G24_ZEN_MIN, G24_ZEN_MAX],
+// __skyHzRatio <= G24_HZ_RATIO, coverage in [0.22, 0.38].
+{
+  const capSrc = readFileSync("src/engine/sky-capture.ts", "utf8");
+  const viewerSrcG24 = readFileSync("src/engine/viewer.ts", "utf8");
+  const hasProbe = capSrc.includes("readZenith") && viewerSrcG24.includes("__skyHzRatio");
+  const readbackOk = capSrc.includes("UnsignedByteType") && !capSrc.includes("HalfFloatType");
+  const { G24_ZEN_MIN, G24_ZEN_MAX, G24_HZ_RATIO, SKY_TURBIDITY, SKY_RAYLEIGH, SKY_MIE, SKY_G, SKY_EXPOSURE, HEMI_GRAY_MIX, CLOUD_COVERAGE } =
+    await import("../src/narrative/choreography.ts");
+  const constsOk =
+    SKY_TURBIDITY === 2.2 && SKY_RAYLEIGH === 1.6 && SKY_MIE === 0.004 && SKY_G === 0.8 &&
+    SKY_EXPOSURE === 0.55 && HEMI_GRAY_MIX === 0.4 && CLOUD_COVERAGE === 0.3 &&
+    G24_HZ_RATIO === 2.2 && G24_ZEN_MIN === "#2a68b8" && G24_ZEN_MAX === "#3e86d2";
+  gate("G24-sky", hasProbe && readbackOk && constsOk,
+    hasProbe && readbackOk && constsOk
+      ? `capture probe readZenith (UnsignedByte) + __skyHzRatio; band [${G24_ZEN_MIN},${G24_ZEN_MAX}], hz/z <= ${G24_HZ_RATIO} — measure at ?t=12:00`
+      : "no readZenith probe, HalfFloat target, or sky constants drifted");
 }
 
 // --- G9-bis shape (follow replan): plan-dist percentiles replace the

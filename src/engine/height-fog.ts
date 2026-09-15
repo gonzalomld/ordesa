@@ -9,6 +9,7 @@
 // the outgoing fragment. Intensity NEVER scales with sin(solar altitude):
 // at 07:24 with the sun at 2.1 deg the valley still needs full sky light.
 import type * as THREE from "three";
+import { HEMI_GRAY_MIX } from "../narrative/choreography.ts";
 
 export interface FogParams {
   fogTopM: number; // ceiling: full fog below, fading above
@@ -82,7 +83,11 @@ float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
   // blue, not black — add dome light directly (no three Light in scene).
   // uHemiDay is 1 whenever the sun is up (never sin(altitude)), ~0 after
   // sunset. Reference: Everest 02:27 — night, yet perfectly legible.
-  gl_FragColor.rgb += uHemiSky * uHemiDay * 0.35;
+  // §4: with a bluer sky the shadow goes violet — mix the sky toward
+  // neutral grey of equal luma FIRST (HEMI_GRAY_MIX). Cool, not tinted.
+  float hemiLuma = dot(uHemiSky, vec3(0.2126, 0.7152, 0.0722));
+  vec3 hemiMix = mix(uHemiSky, vec3(hemiLuma), ${HEMI_GRAY_MIX.toFixed(2)});
+  gl_FragColor.rgb += hemiMix * uHemiDay * 0.35;
   // S9: fog colour sampled from the 64×32 sky capture along the view ray —
   // the far terrain dissolves into the actual sky, dawn and dusk included.
   vec3 haze = uSkyColor;
