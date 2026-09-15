@@ -267,8 +267,10 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   // --- gate + progress (R0: global 45 s watchdog — never wait forever) ---
   // P0/G20: after first render, a dead GL program must blame graphics, not
   // the network. renderer.info.programs[].diagnostics.runnable === false
-  // means the shader never compiled (the vMapUv class of bug) — the gate
-  // message says so and ?debug=1 prints the program diagnostics.
+  // means the shader never compiled — the gate message says so and
+  // ?debug=1 prints the program diagnostics. The ?s= boot path compiles
+  // the terrain program AFTER the first render (pose known only then), so
+  // the check runs late (frame 60) to let the real texture arrive first.
   function checkGLPrograms(): string | null {
     try {
       const progs = renderer.info.programs as { diagnostics?: { runnable?: boolean }; name?: string }[];
@@ -427,9 +429,11 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     if (!terrainMat) {
       terrainMat = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0 });
       // P0: compile-proof material — a neutral 1x1 DataTexture as `map` so
-      // USE_MAP/vMapUv exist at first compile even if the base ortho hasn't
-      // arrived (slow net + ?s= pose-at-boot used to compile mapless and the
-      // onBeforeCompile read of vMapUv killed the program forever).
+      // the program compiles WITH map even if the base ortho hasn't arrived
+      // (slow net + ?s= pose-at-boot used to compile mapless, and three only
+      // declares vMapUv under USE_MAP, killing the program forever).
+      // NOTE: `uv` itself is unconditional in WebGLProgram (line ~685), so
+      // vTerrainUv = uv always compiles — the varying is ours, not three's.
       {
         const px = new Uint8Array([200, 195, 185, 255]);
         const neutral = new THREE.DataTexture(px, 1, 1, THREE.RGBAFormat);
@@ -450,7 +454,6 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uNormalStrength"] = normalStrength;
         s.uniforms["uWallDeg"] = wallDeg;
         s.uniforms["uRockWeight"] = rockWeight;
-        s.uniforms["uRoughness"] = rockWeight;
         s.uniforms["uGrainK"] = grainK;
         s.uniforms["uHasCorr"] = hasCorr;
         s.uniforms["uHasNormal"] = hasNormal;
@@ -467,7 +470,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
 uniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNormalStrength; varying vec3 vUv2c;
 uniform float uWallDeg; uniform float uRockWeight; uniform float uGrainK;
 uniform float uHasCorr; uniform float uHasNormal;
-varying vec3 vWPos2; varying vec3 vWNormal2;
+varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv;
 float gSteep = 0.0;
 float gRaw = 0.0;
 float gGrain = 0.0;
@@ -1080,9 +1083,10 @@ float wgrain(vec2 lp){
       }
     }
     frames++;
-    // P0/G20: first frames decide — a dead program now means the boot
-    // compiled mapless (or any shader regression), never the network.
-    if (frames === 8) {
+    // P0/G20: late check (frame 60) — the terrain program compiles after
+    // first render on the ?s= path, so frame 8 would false-positive on the
+    // neutral 1x1 probe still in flight.
+    if (frames === 60) {
       const glErr = checkGLPrograms();
       if (glErr) gate.fail(glErr);
     }
