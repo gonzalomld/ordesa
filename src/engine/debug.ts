@@ -64,6 +64,11 @@ export interface BootQuery {
   /** Rastro invertido: vDist gradient probe (?debug=trackdist). One load,
    * one answer — blue Pradera / red Cola, or the inverse, or flat. */
   trackDist: boolean;
+  /** Rastro enterrado: ghost pass to magenta at opacity 1 (?ghost=1).
+   * The ghost draws exactly what lies behind the terrain. */
+  ghost: boolean;
+  /** ?lod=N: pin the terrain LOD and disable the frame-budget rule. */
+  lod: number | null;
 }
 
 function parseSParam(raw: string | null): number | null {
@@ -81,6 +86,8 @@ export function parseBootQuery(): BootQuery {
     clouds = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
   }
   const mode = q.get("debug");
+  const rawLod = q.get("lod");
+  const lodN = rawLod === null || rawLod.trim() === "" ? null : Number(rawLod.trim());
   return {
     debug: mode === "1" || mode === "steep",
     steep: mode === "steep",
@@ -93,6 +100,8 @@ export function parseBootQuery(): BootQuery {
     orbit: q.has("orbit"),
     trackAll: q.get("track") === "all",
     trackDist: q.get("debug") === "trackdist",
+    ghost: q.has("ghost"),
+    lod: lodN !== null && Number.isFinite(lodN) && [1, 2, 4].includes(lodN) ? lodN : null,
   };
 }
 

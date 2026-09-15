@@ -35,6 +35,16 @@ export interface RouteLine {
   debugProgressDist(): number;
   /** ?debug=trackdist: gradient probe (blue Pradera → red Cola). */
   setTrackDistMode(on: boolean): void;
+  /** ?ghost=1: isolation probe — ghost pass to magenta at opacity 1.
+   * The ghost (GreaterDepth) draws exactly what lies BEHIND the terrain,
+   * so a magenta track means the line is buried, not cut. Never touches
+   * the solid pass. Debug-only: no writer may also drive the piece. */
+  setGhostProbe(on: boolean): void;
+  /** Redrape the line on a new meshZ lattice (LOD change). The geometry
+   * positions are rewritten in place — one line, one LOD, always the same. */
+  redrape(meshZ: (x: number, y: number) => number, step?: number): void;
+  /** The terrain LOD step the line was draped on (HUD audit: lod vs lineLod). */
+  lineLod(): number;
   /** HUD audit: uStepM + instance count (no attribute left to sample). */
   debugIds(): { stepM: number; count: number; lengthM: number };
   /** G15: offscreen ID pass WITH the cut — render ONLY the solid Line2
@@ -85,6 +95,8 @@ export function buildRouteLine(
    * When given, line Z samples the MESH height (same filter as the vertex),
    * not the full-res MDT — two heights for the same point then coincide. */
   meshZ?: (x: number, y: number) => number,
+  /** The terrain LOD step meshZ was sampled at (HUD audit: lod vs lineLod). */
+  meshStep = 2,
 ): RouteLine {
   const group = new THREE.Group();
   // drape along the terrain NORMAL (not vertical): offset 4 m scaled by slope.
@@ -92,28 +104,34 @@ export function buildRouteLine(
   // the mesh vertex filter, not the full-res MDT — so line and ground agree
   // even where decimation flattened a gully. Slope still comes from the
   // full grid (stable normals); only the height is lattice-quantised.
-  const pos: number[] = [];
-  for (let i = 0; i < route.n; i++) {
-    const x = route.x[i] as number;
-    const y = route.y[i] as number;
-    const e = 5;
-    const dzdx = (sampleGrid(elev, meta, x + e, y) - sampleGrid(elev, meta, x - e, y)) / (2 * e);
-    const dzdy = (sampleGrid(elev, meta, x, y + e) - sampleGrid(elev, meta, x, y - e)) / (2 * e);
-    const inv = 1 / Math.hypot(dzdx, dzdy, 1);
-    const nx = -dzdx * inv;
-    const ny = inv;
-    const nz = dzdy * inv; // north component
-    const off = 4 / Math.max(0.45, ny); // more clearance on steep walls
-    const gx = x + nx * off;
-    const gy = y + nz * off;
-    // E4: mesh-lattice height (+4 drape含む source parity with route.z when
-    // no meshZ) then the normal offset along Y.
-    const base = meshZ ? meshZ(gx, gy) + 4 : sampleGrid(elev, meta, gx, gy);
-    const gz = base - 4 + ny * off;
-    void nz;
-    const [wx, wy, wz] = epsgToWorld(gx, y, gz, world);
-    pos.push(wx, wy, wz);
-  }
+  // Redrape (LOD change): same drape, new lattice, positions rewritten in
+  // place on the shared LineGeometry so ghost/solid/halo/ID stay in sync.
+  const drape = (mz: ((x: number, y: number) => number) | undefined): number[] => {
+    const pos: number[] = [];
+    for (let i = 0; i < route.n; i++) {
+      const x = route.x[i] as number;
+      const y = route.y[i] as number;
+      const e = 5;
+      const dzdx = (sampleGrid(elev, meta, x + e, y) - sampleGrid(elev, meta, x - e, y)) / (2 * e);
+      const dzdy = (sampleGrid(elev, meta, x, y + e) - sampleGrid(elev, meta, x, y - e)) / (2 * e);
+      const inv = 1 / Math.hypot(dzdx, dzdy, 1);
+      const nx = -dzdx * inv;
+      const ny = inv;
+      const nz = dzdy * inv; // north component
+      const off = 4 / Math.max(0.45, ny); // more clearance on steep walls
+      const gx = x + nx * off;
+      const gy = y + nz * off;
+      // E4: mesh-lattice height (+4 drape含む source parity with route.z when
+      // no meshZ) then the normal offset along Y.
+      const base = mz ? mz(gx, gy) + 4 : sampleGrid(elev, meta, gx, gy);
+      const gz = base - 4 + ny * off;
+      void nz;
+      const [wx, wy, wz] = epsgToWorld(gx, y, gz, world);
+      pos.push(wx, wy, wz);
+    }
+    return pos;
+  };
+  const pos = drape(meshZ);
   const geo = new LineGeometry();
   geo.setPositions(pos);
   // RASTRO gl_InstanceID: NO per-segment attribute. The old
@@ -195,6 +213,7 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
     return m;
   };
   const ghostMat = mk(THREE.GreaterDepth, 0.25);
+  const ghostCream = ghostMat.color.clone();
   const solidMat = mk(THREE.LessEqualDepth, 1);
   const ghost = new Line2(geo, ghostMat);
   const solid = new Line2(geo, solidMat);
@@ -224,10 +243,12 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
   idScene.add(idLine);
   const idTarget = new THREE.WebGLRenderTarget(256, 144, { depthBuffer: true });
   const idBuf = new Uint8Array(256 * 144 * 4);
+  let ghostProbe = false;
+  let drapedStep = meshStep;
   return {
     group,
     setDim(f: number) {
-      ghostMat.opacity = 0.25 * f;
+      ghostMat.opacity = (ghostProbe ? 1 : 0.25) * f;
       solidMat.opacity = 1 * f;
       haloMat.opacity = GLOW_ALPHA * f;
     },
@@ -239,6 +260,18 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
     },
     setTrackDistMode(on: boolean) {
       uTrackDist.value = on ? 1 : 0;
+    },
+    setGhostProbe(on: boolean) {
+      ghostProbe = on;
+      ghostMat.opacity = on ? 1 : 0.25;
+      ghostMat.color.setHex(on ? 0xff00ff : (ghostCream.getHex() as number));
+    },
+    redrape(meshZ: (x: number, y: number) => number, step?: number): void {
+      geo.setPositions(drape(meshZ));
+      if (step !== undefined) drapedStep = step;
+    },
+    lineLod() {
+      return drapedStep;
     },
     debugIds() {
       return { stepM: uStepM.value, count: nSeg, lengthM: uLengthM.value };

@@ -55,7 +55,7 @@ import {
   buildTerrainGeometry,
   loadElevations,
   loadMeta,
-  meshHeightAtStep2,
+  meshHeightAtStep,
   worldFromMeta,
 } from "./terrain.ts";
 
@@ -430,7 +430,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   gate.setProgress(0.5, 0);
   await nextFrame();
 
-  let step = 2;
+  let step = boot.lod ?? 2;
   metrics.lod = step;
   let terrain: THREE.Mesh | null = null;
   let terrainMat: THREE.MeshStandardMaterial | null = null;
@@ -667,8 +667,13 @@ float wgrain(vec2 lp){
     renderer.domElement.width,
     renderer.domElement.height,
   );
-  const line = buildRouteLine(route, world, elev, meta, res2, (x, y) => meshHeightAtStep2(elev, meta, x, y));
+  const line = buildRouteLine(route, world, elev, meta, res2,
+    (x, y) => meshHeightAtStep(elev, meta, x, y, step), step);
   group.add(line.group);
+  // Rastro enterrado, instrumento primero: ?ghost=1 — el pase fantasma a
+  // magenta opaco dibuja exactamente lo que está detrás del terreno. Si el
+  // rastro aparece en magenta, está enterrado bajo la malla, no cortado.
+  if (boot.ghost) line.setGhostProbe(true);
   // Rastro invertido, instrumento primero: ?debug=trackdist wins over
   // ?track=all (the gradient needs uProgressDist = lengthM anyway).
   if (boot.trackDist) {
@@ -771,9 +776,15 @@ float wgrain(vec2 lp){
   const lastTele: Record<string, string> = {};
 
   // --- instruments: whole phase-2 HUD behind ?debug=1, extended with 3A ---
+  // ?ghost=1 and ?lod=N are read-only probes even without ?debug=1: they
+  // only change what the ghost pass shows / which lattice the mesh draws.
+  // No probe writes a state the piece also drives (setGhostProbe only
+  // touches ghost colour/opacity; ?lod only pins the LOD step).
   // G14: the slider panel's HORA is a READOUT of st.hourDec (same source as
   // the bar). There is no hour control: with scroll driving time, a slider
   // that sets the hour would be a second source by definition.
+  // Rastro enterrado (?lod=N): la fila de pasos refleja el LOD fijado por URL.
+  const lodPinned = boot.lod;
   if (boot.debug) {
     const hud = el("div", "hud2");
     const timeLab = el("div", "hud-label", `hora ${hhmm(progress.getState().hourDec)}${progress.getState().hourFrozen ? " (fija ?t=)" : ""}`);
@@ -843,7 +854,8 @@ float wgrain(vec2 lp){
     for (const st of [1, 2, 4]) {
       const b = document.createElement("button");
       b.type = "button";
-      b.textContent = `paso ${st}`;
+      // ?lod=N pins the LOD: the matching step shows as active.
+      b.textContent = lodPinned === st ? `paso ${st} (?lod)` : `paso ${st}`;
       b.className = st === step ? "hud-btn active" : "hud-btn";
       b.addEventListener("click", () => {
         step = st;
@@ -851,6 +863,9 @@ float wgrain(vec2 lp){
         for (const c of lodRow.children) c.classList.remove("active");
         b.classList.add("active");
         rebuildTerrain();
+        // Rastro enterrado: una línea, un LOD — la línea se re-drapea sobre
+        // el lattice nuevo en el mismo sitio que cambia el LOD.
+        line.redrape((x, y) => meshHeightAtStep(elev, meta, x, y, step), step);
         if (terrainMat?.map) terrainMat.needsUpdate = true;
       });
       lodRow.appendChild(b);
@@ -883,7 +898,7 @@ float wgrain(vec2 lp){
       });
       const err = glProbe.getError();
       const glTxt = err === glProbe.NO_ERROR ? "" : ` GL_ERR=${err === glProbe.INVALID_OPERATION ? "INVALID_OPERATION(feedback?)" : err}`;
-      const label = `track uStepM=${ids.stepM} instances=${ids.count} line2=${nLine2} uProg=${line.debugProgressDist().toFixed(1)}${glTxt}`;
+      const label = `track uStepM=${ids.stepM} instances=${ids.count} line2=${nLine2} uProg=${line.debugProgressDist().toFixed(1)} lod=${metrics.lod} lineLod=${line.lineLod()}${glTxt}`;
       if (trackLab.textContent !== label) trackLab.textContent = label;
       trackLab.style.color = err === glProbe.NO_ERROR ? "" : "#ff6b6b";
     }, 500);
@@ -1166,11 +1181,14 @@ float wgrain(vec2 lp){
     }
     // E1 budget: sustained >24 ms frames drop the far LOD one notch (2->4),
     // once. The camera never pays for the triangle budget.
-    if (!lodDropped && frames > 120 && metrics.msFrame > 24 && step === 2) {
+    // ?lod=N pins the LOD and disables this rule (rastro enterrado probe).
+    if (boot.lod === null && !lodDropped && frames > 120 && metrics.msFrame > 24 && step === 2) {
       lodDropped = true;
       step = 4;
       metrics.lod = step;
       rebuildTerrain();
+      // Una línea, un LOD: re-drape sobre el lattice nuevo.
+      line.redrape((x, y) => meshHeightAtStep(elev, meta, x, y, step), step);
       if (terrainMat?.map) terrainMat.needsUpdate = true;
     }
   });

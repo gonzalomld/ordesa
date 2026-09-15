@@ -187,17 +187,17 @@ export function buildTerrainGeometry(
   return geo;
 }
 
-/** E4 step-2 height: what the GPU draws at (x,y) — bilinear over the step-2
- * vertex lattice. Exported so verify-3a uses the SAME decimator as the
- * viewer (G13). Inside the snapped corridor the mesh carries full-res
- * heights instead; G13 mirrors that with its own corridor test. */
-export function meshHeightAtStep2(
+/** E4 step-N height: what the GPU draws at (x,y) — bilinear over the step-N
+ * vertex lattice. Exported so the viewer drapes the line on the SAME lattice
+ * the terrain draws (G13). Inside the snapped corridor the mesh carries
+ * full-res heights instead; G13 mirrors that with its own corridor test. */
+export function meshHeightAtStep(
   elev: Float32Array,
   meta: Meta,
   x: number,
   y: number,
+  step: number,
 ): number {
-  const step = 2;
   const col = (x - meta.originX) / meta.resX - 0.5;
   const row = (meta.originY - y) / meta.resY - 0.5;
   const lc = Math.floor(col / step) * step;
@@ -215,6 +215,16 @@ export function meshHeightAtStep2(
   const c = at(c0, Math.min(H - 1, r0 + step));
   const d = at(Math.min(W - 1, c0 + step), Math.min(H - 1, r0 + step));
   return a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy;
+}
+
+/** Back-compat alias (step 2). Prefer meshHeightAtStep with the live LOD. */
+export function meshHeightAtStep2(
+  elev: Float32Array,
+  meta: Meta,
+  x: number,
+  y: number,
+): number {
+  return meshHeightAtStep(elev, meta, x, y, 2);
 }
 
 /** E4: overwrite mesh vertices near the track with the full-res heightmap
