@@ -67,6 +67,10 @@ export interface BootQuery {
   /** Rastro enterrado: ghost pass to magenta at opacity 1 (?ghost=1).
    * The ghost draws exactly what lies behind the terrain. */
   ghost: boolean;
+  /** §4b FASE 1: equirect sky-capture blit (?debug=skymap). The 64×32
+   * capture target scaled ×6 in the lower-left corner, own ortho scene,
+   * after main render + labels. Lazy behind the flag like the rest. */
+  skymap: boolean;
   /** Rastro feedback-loop: skip the sky capture (?skycap=0 freezes zenith).
    * Isolation probe — if the track appears with the capture off, the loop
    * was in the capture. */
@@ -105,6 +109,7 @@ export function parseBootQuery(): BootQuery {
     trackAll: q.get("track") === "all",
     trackDist: q.get("debug") === "trackdist",
     ghost: q.has("ghost"),
+    skymap: q.get("debug") === "skymap",
     skycap: q.get("skycap") !== "0",
     lod: lodN !== null && Number.isFinite(lodN) && [1, 2, 3].includes(lodN) ? lodN : null,
   };

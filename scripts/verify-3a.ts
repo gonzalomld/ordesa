@@ -826,26 +826,36 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     offOk && onOk ? `uGlow 0 at s=0/0.14 (non-milestones), 1 at A3/A7/A8 (window ${GLOW_S_WINDOW})` : "uGlow leaks outside milestone windows");
 }
 
-// --- G24 sky (§4: contract over the capture probe). Node checks the
-// CONTRACT (probe exists + readback-compatible target + constants); the
-// NUMBERS (zenith band + horizon/zenith ratio) are measured in-browser at
-// ?debug=1&s=0.18&t=12:00: zenithHex in [G24_ZEN_MIN, G24_ZEN_MAX],
-// __skyHzRatio <= G24_HZ_RATIO, coverage in [0.22, 0.38].
+// --- G24 sky (§4b FASE 1: true equirect capture). Node checks the CONTRACT:
+// own capture ShaderMaterial with equirect uv→dir math (NOT a dome clone —
+// the 1 m clone box rendered black), uniforms shared BY REFERENCE with the
+// dome (live, zero copies), quad camera NOT the main camera, readback
+// target, SKY_SCALE inline, constants. The NUMBERS (zenith band +
+// horizon/zenith ratio) are measured in-browser at ?debug=1&s=0.18&t=12:00:
+// zenithHex in [G24_ZEN_MIN, G24_ZEN_MAX] per channel (±12/255),
+// __skyHzRatio in [1.2, 2.2] (G24b), skymap centre pixel ≠ #000000 (G25).
 {
   const capSrc = readFileSync("src/engine/sky-capture.ts", "utf8");
   const viewerSrcG24 = readFileSync("src/engine/viewer.ts", "utf8");
   const hasProbe = capSrc.includes("readZenith") && viewerSrcG24.includes("__skyHzRatio");
   const readbackOk = capSrc.includes("UnsignedByteType") && !capSrc.includes("HalfFloatType");
+  // FASE 1: equirect by construction, never a dome clone.
+  const noClone = !capSrc.includes("domeClone") && !capSrc.includes("skyDome.geometry");
+  const equirect = capSrc.includes("( vUv.x - 0.5 ) * 6.2831853") && capSrc.includes("( vUv.y - 0.5 ) * 3.1415927");
+  const sharedU = capSrc.includes('sunPosition: domeU["sunPosition"]') && capSrc.includes('turbidity: domeU["turbidity"]');
+  const ownCam = capSrc.includes("OrthographicCamera") && !capSrc.includes("renderer.render(skyScene, camera)");
   const { G24_ZEN_MIN, G24_ZEN_MAX, G24_HZ_RATIO, SKY_TURBIDITY, SKY_RAYLEIGH, SKY_MIE, SKY_G, SKY_SCALE, HEMI_GRAY_MIX, CLOUD_COVERAGE } =
     await import("../src/narrative/choreography.ts");
   const constsOk =
     SKY_TURBIDITY === 2.2 && SKY_RAYLEIGH === 1.6 && SKY_MIE === 0.004 && SKY_G === 0.8 &&
     SKY_SCALE === 0.32 && HEMI_GRAY_MIX === 0.4 && CLOUD_COVERAGE === 0.3 &&
     G24_HZ_RATIO === 2.2 && G24_ZEN_MIN === "#2a68b8" && G24_ZEN_MAX === "#3e86d2";
-  gate("G24-sky", hasProbe && readbackOk && constsOk,
-    hasProbe && readbackOk && constsOk
-      ? `capture probe readZenith (UnsignedByte) + __skyHzRatio; band [${G24_ZEN_MIN},${G24_ZEN_MAX}], hz/z <= ${G24_HZ_RATIO} — measure at ?t=12:00`
-      : "no readZenith probe, HalfFloat target, or sky constants drifted");
+  const skymapFlag = readFileSync("src/engine/debug.ts", "utf8").includes("skymap");
+  const ok = hasProbe && readbackOk && noClone && equirect && sharedU && ownCam && constsOk && skymapFlag;
+  gate("G24-sky", ok,
+    ok
+      ? `equirect capture (uv→dir, shared uniforms, own ortho cam) + readZenith + __skyHzRatio; band [${G24_ZEN_MIN},${G24_ZEN_MAX}], hz/z <= ${G24_HZ_RATIO} — measure at ?t=12:00`
+      : `contract broken (probe=${hasProbe} readback=${readbackOk} noClone=${noClone} equirect=${equirect} sharedU=${sharedU} ownCam=${ownCam} consts=${constsOk} skymap=${skymapFlag})`);
 }
 
 // --- G9-bis shape (follow replan): plan-dist percentiles replace the

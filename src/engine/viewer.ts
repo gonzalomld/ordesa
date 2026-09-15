@@ -699,7 +699,7 @@ float wgrain(vec2 lp){
   }
   applyLighting(progress.getState().hourDec);
   renderer.compile(scene, camera);
-  skyCap = createSkyCapture(renderer, sky, camera);
+  skyCap = createSkyCapture(renderer, sky);
   skyCap.setEnabled(boot.skycap);
   skyCap.refresh();
   renderer.shadowMap.needsUpdate = true;
@@ -942,6 +942,34 @@ float wgrain(vec2 lp){
     const { mountPathOverlay } = await import("../narrative/debug-path.ts");
     mountPathOverlay({ route, world, elev, meta, progress, rig });
   }
+  // §4b FASE 1: ?debug=skymap — blit the 64×32 capture target ×6 in the
+  // lower-left corner, own ortho scene (never the main scene), after the
+  // main render + labels. Static objects (built once): the ONLY per-frame
+  // cost is one extra render call (calls 5 → 6), and only with the flag.
+  let skymapBlit: {
+    scene: THREE.Scene;
+    cam: THREE.OrthographicCamera;
+    mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  } | null = null;
+  function ensureSkymapBlit(): void {
+    if (skymapBlit || !skyCap) return;
+    const w = 64 * 6;
+    const h = 32 * 6;
+    const bscene = new THREE.Scene();
+    const bcam = new THREE.OrthographicCamera(0, window.innerWidth, 0, window.innerHeight, 0, 1);
+    const bmat = new THREE.MeshBasicMaterial({ map: skyCap.texture(), toneMapped: false });
+    const bmesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), bmat);
+    bmesh.position.set(w / 2, h / 2, 0);
+    bmesh.frustumCulled = false;
+    bscene.add(bmesh);
+    skymapBlit = { scene: bscene, cam: bcam, mesh: bmesh };
+  }
+  window.addEventListener("resize", () => {
+    if (!skymapBlit) return;
+    skymapBlit.cam.right = window.innerWidth;
+    skymapBlit.cam.top = window.innerHeight;
+    skymapBlit.cam.updateProjectionMatrix();
+  });
   // G12/G17 occluder pass (respuesta G12): terrain ONLY — no dome, no
   // clouds, no track, no labels. overrideMaterial flat white, clear black:
   // black pixels ARE sky (nothing occludes). Clouds are not occluders
@@ -1167,6 +1195,16 @@ float wgrain(vec2 lp){
     }
     // T1: labels AFTER render, every frame, no throttle (js etiq ~0.1 ms).
     updateLabels(labelRts, camera, window.innerWidth, window.innerHeight, 30000);
+    // §4b FASE 1: ?debug=skymap blit — capture target ×6, lower-left, own
+    // ortho scene, AFTER main render + labels. setRenderTarget(null) is the
+    // canvas by definition (renderer path only, never raw GL).
+    if (boot.skymap && skyCap && boot.skycap) {
+      ensureSkymapBlit();
+      if (skymapBlit) {
+        if (boot.debug) renderer.clearDepth();
+        renderer.render(skymapBlit.scene, skymapBlit.cam);
+      }
+    }
     const t3 = performance.now();
     metrics.jsTerrain = 0; // terrain JS slice is inside rebuilds, not the loop
     metrics.jsLabels = Math.max(0, t3 - t2);
