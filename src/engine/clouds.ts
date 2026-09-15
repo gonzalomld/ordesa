@@ -6,6 +6,7 @@
 // the fragment shader (uHeightMap): alpha → 0 where the fragment is at or
 // below the terrain, so no hard quad cuts against crests.
 import * as THREE from "three";
+import { CLOUD_MASK } from "../narrative/choreography.ts";
 import type { Meta } from "./terrain.ts";
 
 const COUNT = 160;
@@ -84,6 +85,7 @@ export function buildClouds(
     uSunDir: { value: new THREE.Vector3(0, 1, 0) },
     uDensity: { value: 0.5 },
     uCap: { value: 1 },
+    uMask: { value: CLOUD_MASK },
     uTime: { value: 0 },
     uZenithFade: { value: 0 },
     uHeightMap: { value: htex },
@@ -103,7 +105,7 @@ export function buildClouds(
     vertexShader: `
       attribute vec4 aData; // x: quadrant, y: rotation, z: scale, w: alpha seed
       varying vec2 vUv; varying float vShade; varying float vAlpha; varying vec3 vWPos;
-      uniform vec3 uSunDir; uniform float uDensity; uniform float uTime; uniform float uCap;
+      uniform vec3 uSunDir; uniform float uDensity; uniform float uTime; uniform float uCap; uniform float uMask;
       void main(){
         float quad = aData.x;
         vUv = vec2(mod(quad,2.0)*0.5 + uv.x*0.5, floor(quad/2.0)*0.5 + uv.y*0.5);
@@ -126,16 +128,23 @@ export function buildClouds(
       varying vec2 vUv; varying float vShade; varying float vAlpha; varying vec3 vWPos;
       uniform sampler2D uMap; uniform sampler2D uHeightMap;
       uniform vec2 uHMin; uniform vec2 uHSize; uniform float uHMaxY; uniform vec2 uHCenter;
-      uniform float uZenithFade;
+      uniform float uZenithFade; uniform float uMask;
       void main(){
         // soft particles: fade where the fragment meets the terrain
         vec2 epsg = vec2(vWPos.x + uHCenter.x, uHCenter.y - vWPos.z);
         vec2 huv = vec2((epsg.x - uHMin.x) / uHSize.x, (uHMaxY - epsg.y) / uHSize.y);
         float terr = texture2D(uHeightMap, huv).r;
         float soft = smoothstep(terr + 20.0, terr + 150.0, vWPos.y);
+        // §4 correction: puff MASK — the atlas texel must clear uMask
+        // (smoothstep uMask..uMask+0.08) or the fragment dies. This is the
+        // knob that sets the 0.30 coverage: raising the mask eats the faint
+        // veil first (the 45% of texels below 0.012 go at any mask > 0) and
+        // keeps the dense cores. uMask = CLOUD_MASK.
+        float tex = texture2D(uMap, vUv).r;
+        float m = smoothstep(uMask, uMask + 0.08, tex);
         // A9: from above, billboards read as stains on the ground, not
         // clouds. Fade toward the zenith; grazing views keep full density.
-        float a = texture2D(uMap, vUv).r * vAlpha * soft * (1.0 - uZenithFade);
+        float a = tex * m * vAlpha * soft * (1.0 - uZenithFade);
         if (a < 0.004) discard;
         vec3 col = vec3(1.04, 1.0, 0.96) * vShade;
         gl_FragColor = vec4(col * a, a);
@@ -182,12 +191,23 @@ export function buildClouds(
   // Old metric summed full quad discs (alpha 0.05 counted like 1.0 → 100%).
   // Now each disc contributes its mean fragment alpha, so the number tracks
   // what is actually seen and the 20% cap makes sense.
+  // §4 correction: the metric ALSO applies the puff mask (mean kept-mass
+  // fraction at uMask, measured on the real atlas) — otherwise the mask
+  // would change the DRAWN sky while the meter stood still.
   let coverage = 0;
   let tick = 0;
   const pv = new THREE.Vector3();
   // mean fragment alpha per instance ≈ seed alpha × current uniforms
   const seedAlpha: number[] = [];
   for (let i = 0; i < COUNT; i++) seedAlpha.push(data[i * 4 + 3] as number);
+  // §4: mean kept-mass fraction of the atlas at the live uMask (measured
+  // 0.96 at mask 0.12 — the mask eats veil texels, not mass). The metric
+  // multiplies by it so meter and drawing agree.
+  const maskKept = (m: number): number => {
+    if (m <= 0) return 1;
+    if (m <= 0.06) return 1 - m * 0.7;
+    return Math.max(0.5, 0.958 - (m - 0.06) * 0.55);
+  };
   return {
     group,
     setDensity(d, sunDir) {
@@ -209,6 +229,7 @@ export function buildClouds(
       const persp = camera as THREE.PerspectiveCamera;
       const tanHalf = Math.tan(((persp.fov ?? 50) * Math.PI) / 180 / 2);
       const dens = (uniforms.uDensity.value as number) * (uniforms.uCap.value as number);
+      const kept = maskKept(uniforms.uMask.value as number);
       let area = 0;
       for (let i = 0; i < COUNT; i++) {
         pv.copy(centers[i] as THREE.Vector3).project(camera);
@@ -217,8 +238,9 @@ export function buildClouds(
         if (dist <= 0) continue;
         const rPx = (((scales[i] as number) * 0.5) / dist) * (vh / (2 * tanHalf));
         // V3: weight by the instance's effective alpha (seed × density × cap
-        // × mean puff texel ≈ seed × density × cap × 0.45)
-        area += Math.PI * rPx * rPx * (seedAlpha[i] as number) * dens * 0.45;
+        // × mean puff texel ≈ seed × density × cap × 0.45), times the mask
+        // kept-mass fraction so the meter tracks the DRAWN puffs.
+        area += Math.PI * rPx * rPx * (seedAlpha[i] as number) * dens * 0.45 * kept;
       }
       coverage = Math.min(1, area / (vw * vh));
     },

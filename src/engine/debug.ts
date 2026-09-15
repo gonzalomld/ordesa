@@ -106,7 +106,7 @@ export function parseBootQuery(): BootQuery {
     trackDist: q.get("debug") === "trackdist",
     ghost: q.has("ghost"),
     skycap: q.get("skycap") !== "0",
-    lod: lodN !== null && Number.isFinite(lodN) && [1, 2, 4].includes(lodN) ? lodN : null,
+    lod: lodN !== null && Number.isFinite(lodN) && [1, 2, 3].includes(lodN) ? lodN : null,
   };
 }
 

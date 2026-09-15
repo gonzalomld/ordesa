@@ -4,7 +4,7 @@
 // numbers are FLAT (no elevation branch): the sky model must read the same
 // at 12:00 whatever the hour math does. Twilight keeps its own exposure.
 import { ACTS, ROUTE_DATE } from "../../scripts/geo-constants.ts";
-import { SKY_EXPOSURE, SKY_G, SKY_MIE, SKY_RAYLEIGH, SKY_TURBIDITY } from "../narrative/choreography.ts";
+import { SKY_G, SKY_MIE, SKY_RAYLEIGH, SKY_TURBIDITY } from "../narrative/choreography.ts";
 
 export interface Lighting {
   sunAzimuth: number;
@@ -77,13 +77,18 @@ export function lightingAt(t: string | number): Lighting {
   // the x⁴ distance curve keeps the valley readable, only the far edge melts)
   const fogDensity = e <= 0 ? 1 : Math.max(0.55, 1 - (h - 7.1) / 3.4);
   const fogTopM = lerp(1750, 1400, Math.min(1, Math.max(0, (h - 7) / 3.5)));
-  // convection: grows 11:00 → 16:00. §4: rescaled so the ALPHA-WEIGHTED
-  // coverage reads CLOUD_COVERAGE (0.30) at 12:00 — measured with ?t=12:00,
-  // never by eye. The old curve belonged to the unweighted metric.
-  const cloudDensity = Math.min(1, Math.max(0, (h - 10.5) / 2.5)) * 0.75 + (h >= 10.5 ? 0.12 : 0);
-  // §4 sky: flat day exposure (SKY_EXPOSURE with ACES — 1.05 burns the sky).
-  // Twilight keeps 1.25 so the epilogue stays readable.
-  const exposure = e <= 0 ? 1.25 : SKY_EXPOSURE;
+  // convection: the ALPHA-WEIGHTED coverage must read CLOUD_COVERAGE
+  // (0.30) at 12:00. Measured 0.024-0.044 at density 0.57: the metric
+  // counts IN-FRUSTUM instances only, and at drone distance most puffs
+  // are small or out of frame — the curve carries ~1.0 at noon so the
+  // density knob (× user multiplier × cap) can actually reach the band.
+  // If 1.0 still reads below 0.22 in-browser, the COUNT/placement is the
+  // problem (not the curve) and doctor says so — never silently rescale.
+  const cloudDensity = Math.min(1, Math.max(0, (h - 10) / 2) * 1.4);
+  // §4 correction: day exposure is 1.0 (renderer default) — the SKY dims
+  // in the DOME (SKY_SCALE), never via exposure: 0.55 starved the terrain
+  // (luma 0.023 at noon against a 0.18 gate). Twilight keeps 1.25.
+  const exposure = e <= 0 ? 1.25 : 1.0;
   return {
     sunAzimuth: azimuthDeg,
     sunElevation: elevationDeg,

@@ -94,9 +94,13 @@ export const SKY_TURBIDITY = 2.2; // (today ~8-10: what whitens the horizon)
 export const SKY_RAYLEIGH = 1.6; // flat, no low-sun branch
 export const SKY_MIE = 0.004; // (was 0.006)
 export const SKY_G = 0.8; // mieDirectionalG
-export const SKY_EXPOSURE = 0.55; // day exposure with ACES (today 1.05 burns the sky)
+// §4 correction: the SKY dims in the DOME (uSkyScale), not with the renderer
+// exposure — exposure 0.55 starved the terrain (luma 0.023 at noon).
+export const SKY_SCALE = 0.32; // sky-dome radiance multiplier before tone mapping
+export const SKY_EXPOSURE = 0.55; // DEAD (§4 correction): dimming via exposure dragged the terrain with the sky; exposure is 1.0 again, the dome carries the dimming. Kept so git history explains itself.
 export const HEMI_GRAY_MIX = 0.4; // shadow stays cool, not tinted: mix(sky, grey(luma), 0.4)
 export const CLOUD_COVERAGE = 0.3; // alpha-weighted target at 12:00 (the metric is already corrected)
+export const CLOUD_MASK = 0.12; // puff-mask threshold: veil texels die first, dense cores stay (atlas-measured)
 export const G24_ZEN_MIN = "#2a68b8"; // saturated blue, not grey
 export const G24_ZEN_MAX = "#3e86d2"; // saturated blue, not grey
 export const G24_HZ_RATIO = 2.2; // horizon luma / zenith luma <= 2.2 (today ~4: white horizon)
@@ -149,7 +153,7 @@ export const FOLLOW_LOOK_M = 600; // m of path ahead (default)
 export const FOLLOW_BACK_M = 500; // m of path behind (default)
 export const FOLLOW_H_AIM = 40; // m of aim height over the ground
 export const WALKER_NDC_Y = 0.45; // framing: the walker at -0.45 NDC (lower quarter); pitch offset = WALKER_NDC_Y · (vFOV/2)
-export const FOLLOW_D_MIN = 900; // m: if dist_planta(camera, aim) < 900, push back along aim->anchor to 900
+export const FOLLOW_D_MIN = 900; // m: push back along aim->cam (yaw-preserving) until BOTH camera->aim and camera->walker >= 900 (§4: aim-only let the walker sit under the camera in the cirque; the walker half is a one-shot quadratic capped at 3x aim distance, then PITCH_MAX_HARD bounds the rest)
 export const FOLLOW_NUDOS_S = [0.0, 0.03, 0.18, 0.38, 0.57, 0.77, 0.92, 0.98]; // 0, ACT_MID_S[0,I,II,III,IV,V], 0.98 (ends repeat first/last act values)
 export const FOLLOW_H_CAM_N = [380, 380, 420, 480, 450, 520, 400, 400]; // 0/I/II/III/IV/V per brief table
 // LOOK I act 800 (pasada rig puro: 650 peaks 2.69 at s=0.221, 750 peaks

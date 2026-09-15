@@ -133,6 +133,18 @@ console.log(
   const sunset = bisectSunset((h) => nodeSun(42.645, -0.055, 2026, 8, 16, h, 120).elevationDeg);
   const e = nodeSun(42.645, -0.055, 2026, 8, 16, sunset, 120).elevationDeg;
   console.log(`  sunset: ${hhmmss(sunset)} local, elev(sunset)=${e.toFixed(3)} deg (need -0.833 +/-0.005)`);
+  // §4 correction: the RUNTIME dome uniforms (turbidity/rayleigh/mie/G +
+  // SKY_SCALE) — the brief's complaint was unanswerable: no way to know
+  // whether 2.2 ever reached the shader. lightingAt(12) IS what
+  // applyLighting feeds the dome at noon; print it.
+  {
+    const { lightingAt } = await import("../src/engine/sun.ts");
+    const { SKY_SCALE } = await import("../src/narrative/choreography.ts");
+    const L = lightingAt(12);
+    console.log(
+      `  sky@12:00 turbidity=${L.turbidity} rayleigh=${L.rayleigh} mieCoefficient=${L.mieCoefficient} mieDirectionalG=${L.mieDirectionalG} uSkyScale=${SKY_SCALE} exposure=${L.exposure}`,
+    );
+  }
   // RASTRO gl_InstanceID: no attribute left — distance IS the index.
   // The old instanceDistEnd check is dead (its units were right and still
   // the shader read the wrong buffer). What matters now: uniform resample.

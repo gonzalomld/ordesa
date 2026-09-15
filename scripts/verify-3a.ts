@@ -170,20 +170,42 @@ function ropeAt(s: number): { cam: [number, number, number]; aim: [number, numbe
   const pA = anchorAtD(d, prof.backM);
   const aim: [number, number, number] = [pAim.x - cx, pAim.z + FOLLOW_H_AIM, -(pAim.y - cy)];
   const cam: [number, number, number] = [pA.x - cx, pA.z + prof.hCam, -(pA.y - cy)];
-  let dx = cam[0] - aim[0];
-  let dz = cam[2] - aim[2];
-  let dp = Math.hypot(dx, dz);
-  if (dp < FOLLOW_D_MIN) {
-    if (dp < 1e-6) {
+  // §4: D_MIN DUAL to aim AND walker (same as the rig), along aim→cam
+  // (yaw-preserving, one-shot quadratic capped at 3x — never iterate or
+  // project onto another ray). dp below stays the camera→aim plan distance
+  // G9 measures.
+  const pW = trackAt(r, Math.min(r.lengthM, d));
+  const wx = pW.x - cx;
+  const wz = -(pW.y - cy);
+  {
+    let ux = cam[0] - aim[0];
+    let uz = cam[2] - aim[2];
+    let dpAim = Math.hypot(ux, uz);
+    if (dpAim < 1e-6) {
       const q0 = trackAt(r, Math.max(0, d - 5));
-      dx = q0.x - pAim.x;
-      dz = -((q0.y - pAim.y));
-      dp = Math.hypot(dx, dz) || 1;
+      ux = q0.x - pW.x;
+      uz = -((q0.y - pW.y));
+      dpAim = Math.hypot(ux, uz) || 1;
     }
-    cam[0] = aim[0] + (dx / dp) * FOLLOW_D_MIN;
-    cam[2] = aim[2] + (dz / dp) * FOLLOW_D_MIN;
-    dp = FOLLOW_D_MIN;
+    ux /= dpAim;
+    uz /= dpAim;
+    const dAim = Math.max(0, FOLLOW_D_MIN - dpAim);
+    let dWalk = 0;
+    const ex = cam[0] - wx;
+    const ez = cam[2] - wz;
+    if (Math.hypot(ex, ez) < FOLLOW_D_MIN) {
+      const b2 = ux * ex + uz * ez;
+      const c = ex * ex + ez * ez - FOLLOW_D_MIN * FOLLOW_D_MIN;
+      const disc = Math.max(0, b2 * b2 - c);
+      dWalk = Math.min(-b2 + Math.sqrt(disc), 3 * dpAim);
+    }
+    const push = Math.max(dAim, Math.max(0, dWalk));
+    if (push > 0) {
+      cam[0] += ux * push;
+      cam[2] += uz * push;
+    }
   }
+  let dp = Math.hypot(cam[0] - aim[0], cam[2] - aim[2]);
   if (sc >= EPILOGUE_S) {
     const k = epilogueBlend(sc);
     const epiPos: [number, number, number] = [follow.epiCam.x - cx, follow.epiCam.z, -(follow.epiCam.y - cy)];
@@ -689,16 +711,12 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     // Yaw via ropeHeadingDeg (anchors.ts) — the SAME rope segment the rig
     // flies (anchor->aim), never the raw atan2 of a possibly D_MIN-shifted
     // vector. bearingDeg(dx,dz) = atan2(dx,-dz) by definition.
+    // §4: absolute PITCH_MAX_HARD cap, same as composePose.
     const prof = followAt(follow, s);
     const yaw = ropeHeadingDeg(r, d, prof.lookM, prof.backM);
     const distPlanW = Math.max(1e-6, Math.hypot(walker[0] - cam[0], walker[2] - cam[2]));
     const pitchWalker = (Math.atan2(cam[1] - walker[1], distPlanW) * 180) / Math.PI;
-    // Same cap as the rig: PITCH_MAX_HARD caps the UP excursion only
-    // (the lift never exceeds it); the walker stays at -0.45 NDC.
-    const pitch = Math.max(
-      pitchWalker - WALKER_NDC_Y * (fovDeg / 2),
-      pitchWalker - PITCH_MAX_HARD,
-    );
+    const pitch = Math.min(pitchWalker - WALKER_NDC_Y * (fovDeg / 2), PITCH_MAX_HARD);
     // view: YXZ (yaw about world Y, then pitch about camera X). Forward is
     // R_y(-yawR)·R_x(-pitchR)·(0,0,-1) — verified against three above.
     const yawR = (yaw * Math.PI) / 180;
@@ -818,11 +836,11 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   const viewerSrcG24 = readFileSync("src/engine/viewer.ts", "utf8");
   const hasProbe = capSrc.includes("readZenith") && viewerSrcG24.includes("__skyHzRatio");
   const readbackOk = capSrc.includes("UnsignedByteType") && !capSrc.includes("HalfFloatType");
-  const { G24_ZEN_MIN, G24_ZEN_MAX, G24_HZ_RATIO, SKY_TURBIDITY, SKY_RAYLEIGH, SKY_MIE, SKY_G, SKY_EXPOSURE, HEMI_GRAY_MIX, CLOUD_COVERAGE } =
+  const { G24_ZEN_MIN, G24_ZEN_MAX, G24_HZ_RATIO, SKY_TURBIDITY, SKY_RAYLEIGH, SKY_MIE, SKY_G, SKY_SCALE, HEMI_GRAY_MIX, CLOUD_COVERAGE } =
     await import("../src/narrative/choreography.ts");
   const constsOk =
     SKY_TURBIDITY === 2.2 && SKY_RAYLEIGH === 1.6 && SKY_MIE === 0.004 && SKY_G === 0.8 &&
-    SKY_EXPOSURE === 0.55 && HEMI_GRAY_MIX === 0.4 && CLOUD_COVERAGE === 0.3 &&
+    SKY_SCALE === 0.32 && HEMI_GRAY_MIX === 0.4 && CLOUD_COVERAGE === 0.3 &&
     G24_HZ_RATIO === 2.2 && G24_ZEN_MIN === "#2a68b8" && G24_ZEN_MAX === "#3e86d2";
   gate("G24-sky", hasProbe && readbackOk && constsOk,
     hasProbe && readbackOk && constsOk

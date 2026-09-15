@@ -28,6 +28,7 @@ import {
   SHADOW_MIN_FRAMES,
   SHADOW_MOVE_EPS_M,
   SHADOW_NEAR_M,
+  SKY_SCALE,
   SUNSET_ELEV_DEG,
 } from "../narrative/choreography.ts";
 import { initProgress, type ProgressHandle } from "../narrative/progress.ts";
@@ -182,6 +183,22 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   sky.renderOrder = -10;
   scene.add(sky);
   const skyU = sky.material.uniforms as Record<string, { value: unknown }>;
+  // §4 correction: the dome dims ITSELF (patched ShaderMaterial scale —
+  // the Sky shader has no hook, so onBeforeCompile multiplies the outgoing
+  // radiance BEFORE tonemapping/colorspace). Renderer exposure stays 1.0:
+  // dimming via exposure starved the terrain (luma 0.023 at noon).
+  {
+    const skym = sky.material as THREE.ShaderMaterial & { onBeforeCompile: (s: { fragmentShader: string }) => void };
+    const prevSky = skym.onBeforeCompile.bind(skym);
+    (sky.material as THREE.Material).onBeforeCompile = (s: { fragmentShader: string }) => {
+      prevSky(s);
+      s.fragmentShader = s.fragmentShader.replace(
+        "gl_FragColor = vec4( retColor, 1.0 );",
+        `gl_FragColor = vec4( retColor * ${(SKY_SCALE as number).toFixed(3)}, 1.0 );`,
+      );
+    };
+    sky.material.needsUpdate = true;
+  }
   const nightBg = new THREE.Color(0x05070f);
   let skyCap: SkyCapture | null = null;
 
@@ -858,7 +875,10 @@ float wgrain(vec2 lp){
       grainK.value = k;
     });
     const lodRow = el("div", "hud-row");
-    for (const st of [1, 2, 4]) {
+    // §4 correction: ONE budget level — 2→3, never 2→4. Step 4 halves the
+    // lattice twice (16x fewer vertices) and visibly terraces the walls;
+    // step 3 is the measured middle (still 2.8x fewer than step 2).
+    for (const st of [1, 2, 3]) {
       const b = document.createElement("button");
       b.type = "button";
       // ?lod=N pins the LOD: the matching step shows as active.
@@ -966,6 +986,7 @@ float wgrain(vec2 lp){
   // E1: far-plane budget watch — drone views pull in more triangles. If
   // msFrame breaks 24, drop the far LOD before touching the camera.
   let lodDropped = false;
+  let lodHotFrames = 0;
 
   const clock = new THREE.Clock();
   const tickFrame = frameClock(metrics);
@@ -1039,10 +1060,14 @@ float wgrain(vec2 lp){
     // G22: getError() right after the capture render names the pass. Always
     // drains (getError clears the flag); the HUD poll reads the ledger, it
     // never polls GL itself.
-    // G24: after a REAL recapture, read zenith + horizon from the capture
-    // (measured sky, not the computed estimate) for the HUD line.
-    if (skyCap?.refreshIfNeeded(st.sunElev)) {
-      if (boot.debug) glPassErr.capture = glProbe.getError();
+    // G24: the loop ALWAYS drains the capture error (clean or not), and the
+    // zenith read ALWAYS runs when the capture is enabled — the ratio must
+    // be written every frame, not only after a real recapture (the old code
+    // gated the write on refreshIfNeeded() === true, so __skyHzRatio stayed
+    // 0 whenever the sun barely moved between frames).
+    const recapped = skyCap?.refreshIfNeeded(st.sunElev) ?? false;
+    if (boot.debug) glPassErr.capture = glProbe.getError();
+    if (skyCap && boot.skycap) {
       try {
         const { buf, w, h } = skyCap.readZenith();
         const px = (x: number, y: number): [number, number, number] => {
@@ -1059,9 +1084,8 @@ float wgrain(vec2 lp){
       } catch {
         /* probe failed — computed estimate below stays */
       }
-    } else if (boot.debug) {
-      glPassErr.capture = glProbe.getError();
     }
+    void recapped;
     metrics.time = hhmm(hour);
     // G14: mirror the FULL state (copy — the live object mutates next frame).
     // The audit reads z/slopePct/climbM from __metrics without touching DOM.
@@ -1242,17 +1266,26 @@ float wgrain(vec2 lp){
       const glErr = checkGLPrograms();
       if (glErr) gate.fail(glErr);
     }
-    // E1 budget: sustained >24 ms frames drop the far LOD one notch (2->4),
-    // once. The camera never pays for the triangle budget.
+    // E1 budget: SUSTAINED >24 ms frames drop one LOD notch (2->3), once.
+    // Sustained = 120 consecutive frames above budget (msFrame is already a
+    // moving average — a single slow frame must never trip it). The camera
+    // never pays for the triangle budget.
     // ?lod=N pins the LOD and disables this rule (rastro enterrado probe).
-    if (boot.lod === null && !lodDropped && frames > 120 && metrics.msFrame > 24 && step === 2) {
-      lodDropped = true;
-      step = 4;
-      metrics.lod = step;
-      rebuildTerrain();
-      // Una línea, un LOD: re-drape sobre el lattice nuevo.
-      line.redrape((x, y) => meshHeightAtStep(elev, meta, x, y, step), step);
-      if (terrainMat?.map) terrainMat.needsUpdate = true;
+    // §4 correction: one level (2→3), never two (2→4 halves the lattice
+    // twice and terraces the walls).
+    if (boot.lod === null && !lodDropped && step === 2 && metrics.msFrame > 24) {
+      lodHotFrames++;
+      if (lodHotFrames >= 120 && frames > 120) {
+        lodDropped = true;
+        step = 3;
+        metrics.lod = step;
+        rebuildTerrain();
+        // Una línea, un LOD: re-drape sobre el lattice nuevo.
+        line.redrape((x, y) => meshHeightAtStep(elev, meta, x, y, step), step);
+        if (terrainMat?.map) terrainMat.needsUpdate = true;
+      }
+    } else {
+      lodHotFrames = 0;
     }
   });
 }

@@ -115,10 +115,15 @@ export function createRig(deps: RigDeps): {
   }
 
   /** Pure rope pose (brief §2): D_MIN push-back in plan holding altitude,
-   * then the epilogue MODE blend (position + aim, lookAt after, no slerp). */
-  function ropePose(s: number): RopePose {
+   * then the epilogue MODE blend (position + aim, lookAt after, no slerp).
+   * §4 correction: D_MIN is measured camera→WALKER (P(d)), not camera→aim.
+   * The old aim-based push-back let the walker sit almost under the camera
+   * in the cirque (aim 900 m out, walker overhead → 38.9° dive and 0.3 m/px
+   * pixelation no texture can survive). The walker position needs rawD, so
+   * ropePose takes it as a parameter — poseAt/update pass rawD(sc). */
+  function ropePose(s: number, dHint?: number): RopePose {
     const sc = Math.min(1, Math.max(0, s));
-    const d = rawD(sc);
+    const d = dHint ?? rawD(sc);
     const prof = followAt(follow, sc);
     const pAim = trackAt(route, Math.min(route.lengthM, d + prof.lookM));
     const pA = anchorAt(d, prof.backM);
@@ -132,21 +137,49 @@ export function createRig(deps: RigDeps): {
       pA.z + prof.hCam,
       -(pA.y - world.centerY),
     ];
-    // D_MIN push-back in plan along aim->anchor, holding altitude.
-    let dx = camPos[0] - aim[0];
-    let dz = camPos[2] - aim[2];
-    let dp = Math.hypot(dx, dz);
-    if (dp < FOLLOW_D_MIN) {
-      if (dp < 1e-6) {
+    // D_MIN push-back in plan, holding altitude, along the aim→cam ray.
+    // Scaling cam along aim→cam preserves cam->aim yaw BY CONSTRUCTION
+    // (yaw is defined by that exact ray), so G18 stays tautological and G4
+    // untouched. Enforces BOTH camera→aim and camera→walker ≥ FOLLOW_D_MIN
+    // (§4: the cirque case had aim at 900 m with the walker almost under
+    // the camera → 38.9° dive and 0.3 m/px pixelation). The walker half is
+    // a ONE-SHOT quadratic (solve |cam + u·d − walker| = D_MIN for d ≥ 0),
+    // capped at 3× the aim distance: iterating or projecting onto another
+    // ray launches the camera when the walker sits abeam (measured: G18
+    // 74°, G4 5.26, G23 behind, G19 ×18, sweep hang — never again).
+    // Whatever shortfall survives the cap, PITCH_MAX_HARD bounds the dive.
+    const pW = trackAt(route, Math.min(route.lengthM, d));
+    const wx = pW.x - world.centerX;
+    const wz = -(pW.y - world.centerY);
+    {
+      let ux = camPos[0] - aim[0];
+      let uz = camPos[2] - aim[2];
+      let dpAim = Math.hypot(ux, uz);
+      if (dpAim < 1e-6) {
         const q0 = trackAt(route, Math.max(0, d - 5));
-        dx = q0.x - pAim.x;
-        dz = -((q0.y - pAim.y));
-        dp = Math.hypot(dx, dz) || 1;
+        ux = q0.x - pAim.x;
+        uz = -((q0.y - pAim.y));
+        dpAim = Math.hypot(ux, uz) || 1;
       }
-      camPos[0] = aim[0] + (dx / dp) * FOLLOW_D_MIN;
-      camPos[2] = aim[2] + (dz / dp) * FOLLOW_D_MIN;
-      dp = FOLLOW_D_MIN;
+      ux /= dpAim;
+      uz /= dpAim;
+      const dAim = Math.max(0, FOLLOW_D_MIN - dpAim);
+      let dWalk = 0;
+      const ex = camPos[0] - wx;
+      const ez = camPos[2] - wz;
+      if (Math.hypot(ex, ez) < FOLLOW_D_MIN) {
+        const b2 = ux * ex + uz * ez;
+        const c = ex * ex + ez * ez - FOLLOW_D_MIN * FOLLOW_D_MIN;
+        const disc = Math.max(0, b2 * b2 - c);
+        dWalk = Math.min(-b2 + Math.sqrt(disc), 3 * dpAim);
+      }
+      const push = Math.max(dAim, Math.max(0, dWalk));
+      if (push > 0) {
+        camPos[0] += ux * push;
+        camPos[2] += uz * push;
+      }
     }
+    let dp = Math.hypot(camPos[0] - aim[0], camPos[2] - aim[2]);
     if (sc >= EPILOGUE_S) {
       const k = epilogueBlend(sc);
       const epiPos: [number, number, number] = [
@@ -202,7 +235,8 @@ export function createRig(deps: RigDeps): {
   }
 
   /** Damped pose: same construction as ropePose from corrected (hCam, backM)
-   * so damping never shears the geometry. Epilogue/D_MIN identical. */
+   * so damping never shears the geometry. Epilogue/D_MIN identical
+   * (§4: D_MIN to the walker here too — same push-back, same anchor). */
   function dampedPose(s: number, hCorr: number, bCorr: number): { pos: [number, number, number]; aim: [number, number, number]; dp: number } {
     const sc = Math.min(1, Math.max(0, s));
     const d = rawD(sc);
@@ -220,20 +254,40 @@ export function createRig(deps: RigDeps): {
       pA.z + prof.hCam + hCorr,
       -(pA.y - world.centerY),
     ];
-    let dx = pos[0] - aim[0];
-    let dz = pos[2] - aim[2];
-    let dp = Math.hypot(dx, dz);
-    if (dp < FOLLOW_D_MIN) {
-      if (dp < 1e-6) {
+    const pW = trackAt(route, Math.min(route.lengthM, d));
+    const wx = pW.x - world.centerX;
+    const wz = -(pW.y - world.centerY);
+    // D_MIN dual push-back along aim→pos (same as ropePose: yaw-preserving,
+    // one-shot quadratic, capped — see above).
+    {
+      let ux = pos[0] - aim[0];
+      let uz = pos[2] - aim[2];
+      let dpAim = Math.hypot(ux, uz);
+      if (dpAim < 1e-6) {
         const q0 = trackAt(route, Math.max(0, d - 5));
-        dx = q0.x - pAim.x;
-        dz = -((q0.y - pAim.y));
-        dp = Math.hypot(dx, dz) || 1;
+        ux = q0.x - pW.x;
+        uz = -((q0.y - pW.y));
+        dpAim = Math.hypot(ux, uz) || 1;
       }
-      pos[0] = aim[0] + (dx / dp) * FOLLOW_D_MIN;
-      pos[2] = aim[2] + (dz / dp) * FOLLOW_D_MIN;
-      dp = FOLLOW_D_MIN;
+      ux /= dpAim;
+      uz /= dpAim;
+      const dAim = Math.max(0, FOLLOW_D_MIN - dpAim);
+      let dWalk = 0;
+      const ex = pos[0] - wx;
+      const ez = pos[2] - wz;
+      if (Math.hypot(ex, ez) < FOLLOW_D_MIN) {
+        const b2 = ux * ex + uz * ez;
+        const c = ex * ex + ez * ez - FOLLOW_D_MIN * FOLLOW_D_MIN;
+        const disc = Math.max(0, b2 * b2 - c);
+        dWalk = Math.min(-b2 + Math.sqrt(disc), 3 * dpAim);
+      }
+      const push = Math.max(dAim, Math.max(0, dWalk));
+      if (push > 0) {
+        pos[0] += ux * push;
+        pos[2] += uz * push;
+      }
     }
+    let dp = Math.hypot(pos[0] - aim[0], pos[2] - aim[2]);
     if (sc >= EPILOGUE_S) {
       const k = epilogueBlend(sc);
       const epiPos: [number, number, number] = [
@@ -261,12 +315,17 @@ export function createRig(deps: RigDeps): {
    * Yaw comes from the rope anchor->aim (valley axis, as before); pitch
    * comes from the WALKER so the walked track stays in frame:
    *   pitchWalker = atan2(camY - walkerY, distPlan(cam, walker))  // down+
-   *   pitch = pitchWalker - walkerNdcY · (fovDeg/2)  // lift so the walker
-   *                                            // sits low in the frame
+   *   pitch = min(pitchWalker - walkerNdcY · (fovDeg/2), PITCH_MAX_HARD)
+   * PITCH_MAX_HARD applies HERE, as an absolute cap on the flown pitch
+   * (§4 correction: the old "UP excursion" form never capped anything —
+   * max(pitchW - lift, pitchW - 28) === pitchW - lift always, so s=0.80
+   * flew at 38.9° and the cirque pixelated at 0.3 m/px). Capping the
+   * absolute pitch can park the walker low where the drone flies close —
+   * that is G23's business to report, not this function's to hide.
    * Built as a YXZ quaternion directly — no lookAt (lookAt computes a pitch
    * that would be thrown away, and patching rotation.x after it mixes axes
    * near vertical views). setViewOffset (SUBJECT_X) shifts the frustum, not
-   * the orientation: compatible. PITCH_MAX_HARD stays the cap. */
+   * the orientation: compatible. */
   function composePose(
     camPos: [number, number, number],
     aim: [number, number, number],
@@ -279,11 +338,7 @@ export function createRig(deps: RigDeps): {
     const wdz = walker[2] - camPos[2];
     const distPlanW = Math.max(1e-6, Math.hypot(wdx, wdz));
     const pitchWalker = (Math.atan2(camPos[1] - walker[1], distPlanW) * 180) / Math.PI;
-    // PITCH_MAX_HARD caps the UP excursion only: the lift
-    // (pitchWalker - pitch) never exceeds it. The walker stays at -0.45
-    // NDC everywhere — capping the absolute pitch would park the walker
-    // at the bottom edge wherever the drone flies low (G23 failing).
-    const pitch = Math.max(pitchWalker - walkerNdcY * (fovDeg / 2), pitchWalker - PITCH_MAX_HARD);
+    const pitch = Math.min(pitchWalker - walkerNdcY * (fovDeg / 2), PITCH_MAX_HARD);
     const yawR = (yaw * Math.PI) / 180;
     const pitchR = (pitch * Math.PI) / 180;
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-pitchR, -yawR, 0, "YXZ"));
@@ -321,7 +376,7 @@ export function createRig(deps: RigDeps): {
   function poseAt(s: number): RigPose {
     const sc = Math.min(1, Math.max(0, s));
     const d = rawD(sc);
-    const rope = ropePose(sc);
+    const rope = ropePose(sc, d);
     // static pose: safety policy, NO temporal smoothing (poseAt is pure).
     const sample = (x: number, y: number): number => sampleGrid(elev, meta, x, y);
     const safe = resolveFollowSafety(sample, world.centerX, world.centerY, rope, route, world);
