@@ -796,7 +796,9 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
 
 // --- uGlow == 0 fuera de hitos (auditoría halo): la rampa glowNear(s, c)
 // con GLOW_S_WINDOW = 0.02 vale exactamente 0 en s = 0 y s = 0.14 (lejos de
-// A3/A7/A8). Aritmética pura, sin DOM.
+// A3/A7/A8). Aritmética pura, sin DOM. §2: the ramp now drives the bloom
+// composite alpha (GLOW_ALPHA_BLOOM / _HITO), not a Line2 pass — the gate
+// math is unchanged.
 {
   const { GLOW_S_WINDOW } = await import("../src/narrative/choreography.ts");
   const glowNear = (s: number, c: number): number =>
@@ -806,6 +808,55 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   const onOk = samples.slice(6).every(([s, c]) => glowNear(s, c) === 1);
   gate("uGlow-gate", offOk && onOk,
     offOk && onOk ? `uGlow 0 at s=0/0.14 (non-milestones), 1 at A3/A7/A8 (window ${GLOW_S_WINDOW})` : "uGlow leaks outside milestone windows");
+}
+
+// --- G24 sky (§4 cierre visual): contract over the sky-capture probe.
+// Node checks the CONTRACT (probe exists + constants sane); the NUMBERS
+// (zenith band + horizon/zenith ratio) are measured in-browser at ?t=12:00:
+// zenithHex in [G24_ZEN_MIN, G24_ZEN_MAX], horizon/zenith luma <= G24_HZ_RATIO.
+{
+  const src = readFileSync("src/engine/sky-capture.ts", "utf8");
+  const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
+  const hasProbe = src.includes("readZenith") && viewerSrc.includes("__skyHzRatio");
+  const { G24_ZEN_MIN, G24_ZEN_MAX, G24_HZ_RATIO, SKY_TURBIDITY, SKY_RAYLEIGH, SKY_EXPOSURE, CLOUD_COVERAGE } =
+    await import("../src/narrative/choreography.ts");
+  const constsOk =
+    SKY_TURBIDITY === 2.2 && SKY_RAYLEIGH === 1.6 && SKY_EXPOSURE === 0.55 &&
+    G24_HZ_RATIO === 2.2 && CLOUD_COVERAGE === 0.3 &&
+    G24_ZEN_MIN === "#2a68b8" && G24_ZEN_MAX === "#3e86d2";
+  gate("G24-sky", hasProbe && constsOk,
+    hasProbe && constsOk
+      ? `capture probe readZenith + __skyHzRatio in viewer; band [${G24_ZEN_MIN},${G24_ZEN_MAX}], hz/z <= ${G24_HZ_RATIO} — measure at ?t=12:00`
+      : "no readZenith probe or sky constants drifted");
+}
+
+// --- §2 bloom contract: the Line2 halo x3 pass is deleted (not flagged),
+// the bloom owns the glow (own scenes only), msPost measures it.
+{
+  const lineSrc = readFileSync("src/engine/route-line.ts", "utf8");
+  const viewerSrc2 = readFileSync("src/engine/viewer.ts", "utf8");
+  const haloGone = !lineSrc.includes("haloMat") && !lineSrc.includes("GLOW_MULT");
+  const bloomOwn = existsSync("src/engine/bloom.ts") &&
+    viewerSrc2.includes("createBloom") && viewerSrc2.includes("glowScene") &&
+    viewerSrc2.includes("metrics.msPost = Math.max(0, performance.now() - tPost)");
+  gate("bloom-contract", haloGone && bloomOwn,
+    haloGone && bloomOwn
+      ? "Line2 halo x3 deleted; bloom (own scenes, quarter-res blur, composite) timed in msPost (budget 1 ms)"
+      : "halo pass survives or bloom/msPost missing");
+}
+
+// --- §3 beams contract: hito shafts + labels hanging from the tip. ---
+{
+  const beamsOk = existsSync("src/engine/beams.ts");
+  const viewerSrc3 = readFileSync("src/engine/viewer.ts", "utf8");
+  const labelsSrc = readFileSync("src/engine/labels.ts", "utf8");
+  const wired = viewerSrc3.includes("buildBeams") && viewerSrc3.includes("beams.setActive(st.d)") &&
+    viewerSrc3.includes("beams.activeId()") && labelsSrc.includes("beamTipM") &&
+    labelsSrc.includes("lbl-active");
+  gate("beams-contract", beamsOk && wired,
+    beamsOk && wired
+      ? "beams.ts builds hito shafts; labels hang from BEAM_H tip; active hito emphasized"
+      : "beams.ts missing or not wired (setActive/activeId/beamTipM/lbl-active)");
 }
 
 // --- G9-bis shape (follow replan): plan-dist percentiles replace the

@@ -18,6 +18,10 @@ export interface SkyCapture {
   refreshIfNeeded(elevDeg: number): boolean;
   /** Rastro isolation (?skycap=0): skip the capture (zenith frozen). */
   setEnabled(on: boolean): void;
+  /** G24: read zenith + horizon from the capture (readRenderTargetPixels
+   * only — no raw GL). Zenith = top row centre (uv.y≈0.94), horizon =
+   * middle row (uv.y≈0.5). Linear HDR values (HalfFloat, NoToneMapping). */
+  readZenith(): { zenith: [number, number, number]; horizon: [number, number, number] };
   dispose(): void;
 }
 
@@ -45,6 +49,18 @@ export function createSkyCapture(
   skyScene.add(domeClone);
   let lastElev = Infinity;
   let enabled = true;
+  const zenBuf = new Uint8Array(64 * 32 * 4);
+  // NOTE: rt is HalfFloat; readRenderTargetPixels returns bytes via the
+  // renderer's unsigned-byte readback path (quantised, fast). G24 needs a
+  // hue band + a luma RATIO, not absolute HDR — 8-bit is plenty.
+  function readZenith(): { zenith: [number, number, number]; horizon: [number, number, number] } {
+    renderer.readRenderTargetPixels(rt, 0, 0, 64, 32, zenBuf);
+    const px = (x: number, y: number): [number, number, number] => {
+      const o = (y * 64 + x) * 4;
+      return [(zenBuf[o] as number) / 255, (zenBuf[o + 1] as number) / 255, (zenBuf[o + 2] as number) / 255];
+    };
+    return { zenith: px(32, 30), horizon: px(32, 16) };
+  }
   function doRefresh(): void {
     if (!enabled) return;
     // The dome clone shares geometry + material with the main dome, so the
@@ -74,6 +90,7 @@ export function createSkyCapture(
     setEnabled(on: boolean) {
       enabled = on;
     },
+    readZenith,
     dispose() {
       rt.dispose();
       fogUniforms.uSkyMap.value = null;
