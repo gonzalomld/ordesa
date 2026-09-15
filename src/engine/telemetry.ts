@@ -9,6 +9,9 @@ export interface RouteData {
   lengthM: number;
   totalClimbM: number;
   n: number;
+  /** Rastro gl_InstanceID: uniform resample step in metres (5). The segment
+   * distance IS its instance index — no attribute can desync it. */
+  stepM: number;
   x: Float32Array;
   y: Float32Array;
   z: Float32Array; // drape z (mdt+offset)
@@ -32,6 +35,7 @@ export async function loadRouteData(): Promise<RouteData> {
     cumClimb: number[];
     lengthM: number;
     totalClimbM: number;
+    stepM?: number;
   };
   // R2: ONE climb series — the smoothed accumulation (S7, published +815 m).
   // BLOQUEANTE NUEVO: slope reads z_raw when the pipeline writes it (raw
@@ -40,6 +44,7 @@ export async function loadRouteData(): Promise<RouteData> {
     lengthM: j.lengthM,
     totalClimbM: j.totalClimbM,
     n: j.x.length,
+    stepM: j.stepM ?? 5,
     x: Float32Array.from(j.x),
     y: Float32Array.from(j.y),
     z: Float32Array.from(j.z_mdt),

@@ -265,20 +265,25 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   }
 
   // --- gate + progress (R0: global 45 s watchdog — never wait forever) ---
-  // P0/G20: after first render, a dead GL program must blame graphics, not
-  // the network. renderer.info.programs[].diagnostics.runnable === false
-  // means the shader never compiled — the gate message says so and
-  // ?debug=1 prints the program diagnostics. The ?s= boot path compiles
-  // the terrain program AFTER the first render (pose known only then), so
-  // the check runs late (frame 60) to let the real texture arrive first.
+  // P0-3: dead programs blame graphics with the full infoLog (see
+  // checkGLPrograms below). Slow-net stalls are the watchdog's business.
+  // P0-3 (higiene, sin urgencia): tras el primer render, un programa muerto
+  // es error de gráficos, no de red. El cuelgue al 11 % era red lenta +
+  // vigilante por tiempo, no la pieza (corregido en la pasada del rastro).
   function checkGLPrograms(): string | null {
     try {
-      const progs = renderer.info.programs as { diagnostics?: { runnable?: boolean }; name?: string }[];
+      const progs = renderer.info.programs as {
+        diagnostics?: { runnable?: boolean };
+        name?: string;
+        infoLog?: string;
+      }[];
       const dead = progs.filter((p) => p.diagnostics && p.diagnostics.runnable === false);
       if (dead.length > 0) {
-        const names = dead.map((p) => p.name ?? "shader").join(", ");
-        console.error(`[ordesa] dead GL program(s): ${names}`);
-        return `error de gráficos (${names}); recarga la página`;
+        for (const p of dead) {
+          // eslint-disable-next-line no-console
+          console.error(`[ordesa] dead GL program ${p.name ?? "shader"}:\n${p.infoLog ?? "(no log)"}`);
+        }
+        return `Error de gráficos. Recarga; si persiste, prueba otro navegador.`;
       }
     } catch {
       /* renderer.info unavailable — no verdict */
@@ -836,9 +841,8 @@ float wgrain(vec2 lp){
       if (timeLab.textContent !== label) timeLab.textContent = label;
     }, 500);
     void hourTick;
-    // Rastro invertido: HUD audit — vDist samples + instance count + Line2
-    // census. One load answers geometry-vs-cut (suspect 1: a second
-    // buildRouteLine alive from E4 would show line2 != 4).
+    // Rastro gl_InstanceID: HUD audit — uStepM + instance count + Line2
+    // census (no attribute left to sample; the index IS the distance).
     const trackLab = el("div", "hud-label", "track …");
     hud.append(trackLab);
     const trackTick = window.setInterval(() => {
@@ -847,7 +851,7 @@ float wgrain(vec2 lp){
       scene.traverse((o) => {
         if ((o as unknown as { isLine2?: boolean }).isLine2 === true) nLine2++;
       });
-      const label = `track vDist[0]=${Number.isNaN(ids.first) ? "EMPTY" : ids.first.toFixed(1)} vDist[n-1]=${Number.isNaN(ids.last) ? "EMPTY" : ids.last.toFixed(1)} instances=${ids.count} line2=${nLine2} uProg=${line.debugProgressDist().toFixed(1)}`;
+      const label = `track uStepM=${ids.stepM} instances=${ids.count} line2=${nLine2} uProg=${line.debugProgressDist().toFixed(1)}`;
       if (trackLab.textContent !== label) trackLab.textContent = label;
     }, 500);
     void trackTick;

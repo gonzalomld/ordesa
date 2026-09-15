@@ -133,26 +133,18 @@ console.log(
   const sunset = bisectSunset((h) => nodeSun(42.645, -0.055, 2026, 8, 16, h, 120).elevationDeg);
   const e = nodeSun(42.645, -0.055, 2026, 8, 16, sunset, 120).elevationDeg;
   console.log(`  sunset: ${hhmmss(sunset)} local, elev(sunset)=${e.toFixed(3)} deg (need -0.833 +/-0.005)`);
-  // RASTRO (pasada rig puro): the cut compares vDist vs uProgressDist.
-  // Hypothesis on the table: instanceDistStart/End carry the POINT INDEX
-  // (0-3625) instead of metres (0-18126) — then nothing paints until
-  // uProgressDist > 3626 (km 3.6). One-line check before touching anything:
+  // RASTRO gl_InstanceID: no attribute left — distance IS the index.
+  // The old instanceDistEnd check is dead (its units were right and still
+  // the shader read the wrong buffer). What matters now: uniform resample.
   {
-    let mn = Infinity;
-    let mx = -Infinity;
-    for (let i = 0; i < routeJ.d.length; i++) {
-      const v = routeJ.d[i] as number;
-      if (v < mn) mn = v;
-      if (v > mx) mx = v;
+    const ds = routeJ.d as number[];
+    let uniform = true;
+    for (let i = 1; i < ds.length; i++) {
+      if (Math.abs((ds[i] as number) - (ds[i - 1] as number) - 5) > 0.01) {
+        uniform = false;
+        break;
+      }
     }
-    const n = routeJ.d.length;
-    const verdict = Math.abs(mx - routeJ.lengthM) < 1
-      ? "METRES ok — cut hypothesis dead, look at passes/renderOrder/corridor"
-      : Math.abs(mx - (n - 1)) < 1
-        ? "INDEX — hypothesis confirmed: attributes carry point index, not metres"
-        : Math.abs(mx - routeJ.lengthM / 1000) < 0.05
-          ? "KILOMETRES — attributes carry km, not metres"
-          : "UNKNOWN units — do not touch, report";
-    console.log(`  instanceDistEnd: min=${mn.toFixed(1)} max=${mx.toFixed(1)} (n=${n}, lengthM=${routeJ.lengthM}) → ${verdict}`);
+    console.log(`  track-index: n=${ds.length} step=5 m uniform=${uniform} lengthM=${routeJ.lengthM} (vDist = gl_InstanceID * uStepM)`);
   }
 }

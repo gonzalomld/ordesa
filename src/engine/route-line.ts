@@ -1,13 +1,12 @@
 // route-line.ts — D5/B5: full Line2 track, cream, dual-pass occlusion +
 // E3 halo pass. Phase 3A: ONE geometry (never split, no drawRange per
-// frame). Walked vs pending is a per-segment distance attribute (C4:
-// LineGeometry is instanced — one segment = one instance, so the attribute
-// is instanced and the vertex picks its end via position.y) compared
-// against uProgressDist. E2: the road ahead does not exist — pending alpha
-// is 0 with a TRACK_FADE_M tip; the epilogue (s>=0.98) raises uProgressDist
-// to lengthM so the whole loop draws. E3: width follows camera-target
-// distance (2 px far .. 7 px near) + an additive x3 halo gated by uGlow
-// near A3/A7/A8. All three passes share the geometry and the uniforms.
+// frame). Walked vs pending is vDist = instance index × uStepM (AUDIT:
+// the per-segment attribute read back the wrong buffer — world X instead
+// of path distance, sweeping the map west→east. Deleted, not fixed).
+// uStepM = route.stepM (5 m uniform resample). gl_InstanceID cannot desync.
+// E2: the road ahead does not exist — pending alpha is 0 with a TRACK_FADE_M
+// tip; the epilogue (s>=0.98) raises uProgressDist to lengthM so the whole
+// loop draws. E3: width follows camera-target distance + additive halo.
 import * as THREE from "three";
 import { Line2 } from "three/addons/lines/Line2.js";
 import { LineGeometry } from "three/addons/lines/LineGeometry.js";
@@ -36,11 +35,10 @@ export interface RouteLine {
   debugProgressDist(): number;
   /** ?debug=trackdist: gradient probe (blue Pradera → red Cola). */
   setTrackDistMode(on: boolean): void;
-  /** HUD audit: first/last vDist sample + instance count. */
-  debugIds(): { first: number; last: number; count: number };
-  /** G15 (pasada rig puro): offscreen ID pass — render ONLY the solid Line2
-   * (no terrain, no halo, flat unlit colour) into a 256x144 target and count
-   * non-null pixels. A 1088-point grid cannot see a 2 px line; this can. */
+  /** HUD audit: uStepM + instance count (no attribute left to sample). */
+  debugIds(): { stepM: number; count: number; lengthM: number };
+  /** G15: offscreen ID pass WITH the cut — render ONLY the solid Line2
+   * into a 256x144 target and count non-null pixels. */
   countIdPixels(renderer: THREE.WebGLRenderer, camera: THREE.Camera): number;
 }
 
@@ -111,18 +109,12 @@ export function buildRouteLine(
   }
   const geo = new LineGeometry();
   geo.setPositions(pos);
-  // C4: per-segment accumulated distance (instanced: n-1 segments, METRES
-  // in route.d — doctor prints instanceDistEnd min/max to prove the units;
-  // an index-vs-metres mixup here blanks the line until km 3.6).
+  // RASTRO gl_InstanceID: NO per-segment attribute. The old
+  // instanceDistStart/End read back the wrong buffer in-shader (world X,
+  // sweeping the map west→east instead of walking the path). Deleted.
+  // vDist = float(gl_InstanceID) * uStepM — the resample is uniform 5 m,
+  // so the distance IS the index. Nothing to fill, nothing to desync.
   const nSeg = Math.max(0, route.n - 1);
-  const dStart = new Float32Array(nSeg);
-  const dEnd = new Float32Array(nSeg);
-  for (let i = 0; i < nSeg; i++) {
-    dStart[i] = route.d[i] as number;
-    dEnd[i] = route.d[i + 1] as number;
-  }
-  geo.setAttribute("instanceDistStart", new THREE.InstancedBufferAttribute(dStart, 1));
-  geo.setAttribute("instanceDistEnd", new THREE.InstancedBufferAttribute(dEnd, 1));
 
   const uProgressDist = { value: 0 };
   const uDimPast = { value: TRACK_DIM_PAST };
@@ -130,6 +122,7 @@ export function buildRouteLine(
   const uTipFade = { value: TRACK_FADE_M };
   const uLengthM = { value: route.lengthM };
   const uTrackDist = { value: 0 };
+  const uStepM = { value: route.stepM };
   const patchLine = (m: LineMaterial): void => {
     const prev = m.onBeforeCompile.bind(m);
     m.onBeforeCompile = (shader: { uniforms: Record<string, unknown>; vertexShader: string; fragmentShader: string }) => {
@@ -141,16 +134,17 @@ export function buildRouteLine(
       uniforms["uTipFade"] = uTipFade;
       uniforms["uLengthM"] = uLengthM;
       uniforms["uTrackDist"] = uTrackDist;
+      uniforms["uStepM"] = uStepM;
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
           `#include <common>
-attribute float instanceDistStart; attribute float instanceDistEnd; varying float vDist;`,
+uniform float uStepM; varying float vDist;`,
         )
         .replace(
           "void main() {",
           `void main() {
-vDist = ( position.y < 0.5 ) ? instanceDistStart : instanceDistEnd;`,
+vDist = float( gl_InstanceID ) * uStepM;`,
         );
       shader.fragmentShader = shader.fragmentShader
         .replace(
@@ -162,12 +156,17 @@ varying float vDist; uniform float uProgressDist; uniform float uDimPast; unifor
           "float alpha = opacity;",
           // E2: ahead does not exist (uDimFuture = 0); the tip fade is the
           // visible head (TRACK_FADE_M, audit: 180 m at drone distance).
-          // Ghost + solid share the rule.
-          // ?debug=trackdist: gradient probe INSTEAD of the cut — blue
-          // Pradera, red Cola, blue again on return. One load, one answer.
+          // Ghost + solid + ID share the rule.
           `float head = 1.0 - smoothstep( uProgressDist - uTipFade, uProgressDist, vDist );
-float alpha = opacity * mix( uDimFuture, uDimPast * head, step( vDist, uProgressDist ) );
-if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - vDist / uLengthM ); alpha = opacity; }`,
+float alpha = opacity * mix( uDimFuture, uDimPast * head, step( vDist, uProgressDist ) );`,
+        )
+        .replace(
+          "vec4 diffuseColor = vec4( diffuse, alpha );",
+          // ?debug=trackdist: gradient probe on its OWN line (diffuseColor
+          // is declared HERE, not at `float alpha` — injecting there never
+          // compiled). Blue Pradera → red Cola → blue on return.
+          `vec4 diffuseColor = vec4( diffuse, alpha );
+if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - vDist / uLengthM ); }`,
         );
     };
     m.customProgramCacheKey = () => "ordesa-route-progress";
@@ -235,10 +234,7 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
       uTrackDist.value = on ? 1 : 0;
     },
     debugIds() {
-      const attr = geo.getAttribute("instanceDistEnd") as THREE.InstancedBufferAttribute | undefined;
-      const arr = attr?.array as ArrayLike<number> | undefined;
-      if (!attr || !arr || arr.length === 0) return { first: NaN, last: NaN, count: 0 };
-      return { first: arr[0] as number, last: arr[arr.length - 1] as number, count: attr.count };
+      return { stepM: uStepM.value, count: nSeg, lengthM: uLengthM.value };
     },
     countIdPixels(renderer: THREE.WebGLRenderer, camera: THREE.Camera) {
       // G15: ID pass WITH the progress cut (idMat shares uProgressDist).
