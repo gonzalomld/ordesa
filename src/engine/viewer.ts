@@ -682,7 +682,8 @@ float wgrain(vec2 lp){
   }
   applyLighting(progress.getState().hourDec);
   renderer.compile(scene, camera);
-  skyCap = createSkyCapture(renderer, scene, camera);
+  skyCap = createSkyCapture(renderer, sky, camera);
+  skyCap.setEnabled(boot.skycap);
   skyCap.refresh();
   renderer.shadowMap.needsUpdate = true;
   shadowNeedsUpdate = false;
@@ -780,6 +781,12 @@ float wgrain(vec2 lp){
   // only change what the ghost pass shows / which lattice the mesh draws.
   // No probe writes a state the piece also drives (setGhostProbe only
   // touches ghost colour/opacity; ?lod only pins the LOD step).
+  // G22 (frame limpio): per-pass GL error ledger, live only with ?debug=1
+  // (getError() drains the flag — never poll it in production). The loop
+  // records capture/main/probe errors right after each renderer.render;
+  // the HUD label reports them with the pass name.
+  const glProbe = renderer.getContext() as WebGL2RenderingContext;
+  const glPassErr = { capture: 0, main: 0, probe: 0, label: "" };
   // G14: the slider panel's HORA is a READOUT of st.hourDec (same source as
   // the bar). There is no hour control: with scroll driving time, a slider
   // that sets the hour would be a second source by definition.
@@ -883,24 +890,28 @@ float wgrain(vec2 lp){
     void hourTick;
     // Rastro gl_InstanceID: HUD audit — uStepM + instance count + Line2
     // census (no attribute left to sample; the index IS the distance).
-    // Feedback-loop guard (auditoría rastro): getError() after the main
-    // render — INVALID_OPERATION here means an instrument broke the frame
-    // (the trackdist ×3-draw discard class of bug), and the HUD says so in
-    // red instead of waiting for someone to open the console.
+    // G22 (frame limpio): getError() right after EACH renderer.render of
+    // the frame — capture, main, probes — with the pass name. INVALID_
+    // OPERATION after a pass means THAT pass fed its own destination
+    // (feedback loop) and its draws were discarded by the driver.
+    // glProbe/glPassErr live outside this block (created before the loop).
     const trackLab = el("div", "hud-label", "track …");
     hud.append(trackLab);
-    const glProbe = renderer.getContext() as WebGL2RenderingContext;
     const trackTick = window.setInterval(() => {
       const ids = line.debugIds();
       let nLine2 = 0;
       scene.traverse((o) => {
         if ((o as unknown as { isLine2?: boolean }).isLine2 === true) nLine2++;
       });
-      const err = glProbe.getError();
-      const glTxt = err === glProbe.NO_ERROR ? "" : ` GL_ERR=${err === glProbe.INVALID_OPERATION ? "INVALID_OPERATION(feedback?)" : err}`;
-      const label = `track uStepM=${ids.stepM} instances=${ids.count} line2=${nLine2} uProg=${line.debugProgressDist().toFixed(1)} lod=${metrics.lod} lineLod=${line.lineLod()}${glTxt}`;
+      // G22: the loop drains GL after every pass and keeps the per-frame
+      // ledger — this poll only READS the ledger (never getError here:
+      // polling would drain the flag the loop just recorded). Empty label =
+      // clean frame; passes[...] names the failing pass.
+      const passTxt = glPassErr.label !== "" ? ` passes[${glPassErr.label}]` : "";
+      const skycapTxt = boot.skycap ? "" : " skycap=0";
+      const label = `track uStepM=${ids.stepM} instances=${ids.count} line2=${nLine2} uProg=${line.debugProgressDist().toFixed(1)} lod=${metrics.lod} lineLod=${line.lineLod()}${skycapTxt}${passTxt}`;
       if (trackLab.textContent !== label) trackLab.textContent = label;
-      trackLab.style.color = err === glProbe.NO_ERROR ? "" : "#ff6b6b";
+      trackLab.style.color = glPassErr.label !== "" ? "#ff6b6b" : "";
     }, 500);
     void trackTick;
   }
@@ -1023,8 +1034,14 @@ float wgrain(vec2 lp){
         framesSinceShadow = 0;
       }
     }
-    // sky + fog colour refresh in the SAME event (gated by solar elevation)
+    // sky + fog colour refresh in the SAME event (gated by solar elevation).
+    // G22: getError() right after the capture render names the pass. Always
+    // drains (getError clears the flag); the HUD poll reads the ledger, it
+    // never polls GL itself.
     skyCap?.refreshIfNeeded(st.sunElev);
+    if (boot.debug) {
+      glPassErr.capture = glProbe.getError();
+    }
     metrics.time = hhmm(hour);
     // G14: mirror the FULL state (copy — the live object mutates next frame).
     // The audit reads z/slopePct/climbM from __metrics without touching DOM.
@@ -1095,6 +1112,12 @@ float wgrain(vec2 lp){
     // one frame behind the canvas — invisible when still, swimming on scroll.
     camera.updateMatrixWorld(true);
     renderer.render(scene, camera);
+    if (boot.debug) {
+      // G22: name the failing pass — capture recorded above, main here,
+      // probes below (their own scenes). Always drains; the per-frame label
+      // below is what the HUD poll reads.
+      glPassErr.main = glProbe.getError();
+    }
     // T1: labels AFTER render, every frame, no throttle (js etiq ~0.1 ms).
     updateLabels(labelRts, camera, window.innerWidth, window.innerHeight, 30000);
     const t3 = performance.now();
@@ -1163,6 +1186,8 @@ float wgrain(vec2 lp){
       }
       // G15: offscreen ID pass (solid Line2 alone, 256x144). Runs on the
       // same 30-frame cadence as G11/G12; result in window.__trackpx.
+      // G22: getError() after the probes names them too — renderCount and
+      // countIdPixels each restore setRenderTarget(null) on the way out.
       if (trackpxOn) {
         try {
           (window as unknown as { __trackpx?: number }).__trackpx = line.countIdPixels(renderer, camera);
@@ -1170,6 +1195,21 @@ float wgrain(vec2 lp){
           (window as unknown as { __trackpx?: number }).__trackpx = -1;
         }
       }
+      if (boot.debug && (skyfracOn || trackpxOn)) {
+        glPassErr.probe = glProbe.getError();
+      }
+      if (boot.debug) {
+        // G22 per-frame label: capture → main → probe, first error wins.
+        // Rebuilt every frame (sticky would blame a pass fixed long ago);
+        // the 500 ms HUD poll samples it, so a persistent loop stays visible
+        // while a one-off flickers once and clears — which is the point.
+        const bad = glPassErr.capture !== glProbe.NO_ERROR ? `capture:${glPassErr.capture}`
+          : glPassErr.main !== glProbe.NO_ERROR ? `main:${glPassErr.main}`
+            : glPassErr.probe !== glProbe.NO_ERROR ? `probe:${glPassErr.probe}` : "";
+        glPassErr.label = bad === "" ? "" :
+          bad.endsWith(`:${glProbe.INVALID_OPERATION}`) ? `${bad.slice(0, -String(glProbe.INVALID_OPERATION).length - 1)}:INVALID_OPERATION` : bad;
+      }
+      void frames;
     }
     frames++;
     // P0/G20: late check (frame 60) — the terrain program compiles after

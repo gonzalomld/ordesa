@@ -67,6 +67,10 @@ export interface BootQuery {
   /** Rastro enterrado: ghost pass to magenta at opacity 1 (?ghost=1).
    * The ghost draws exactly what lies behind the terrain. */
   ghost: boolean;
+  /** Rastro feedback-loop: skip the sky capture (?skycap=0 freezes zenith).
+   * Isolation probe — if the track appears with the capture off, the loop
+   * was in the capture. */
+  skycap: boolean;
   /** ?lod=N: pin the terrain LOD and disable the frame-budget rule. */
   lod: number | null;
 }
@@ -101,6 +105,7 @@ export function parseBootQuery(): BootQuery {
     trackAll: q.get("track") === "all",
     trackDist: q.get("debug") === "trackdist",
     ghost: q.has("ghost"),
+    skycap: q.get("skycap") !== "0",
     lod: lodN !== null && Number.isFinite(lodN) && [1, 2, 4].includes(lodN) ? lodN : null,
   };
 }
