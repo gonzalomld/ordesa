@@ -65,9 +65,7 @@ export const SKY_EPS_DEG = 0.5; // sky-capture + fog colour refresh only when so
 
 export const TRACK_DIM_PAST = 1.0; // walked stretch opacity (full)
 export const TRACK_DIM_FUTURE = 0.45; // E2 corregido: the road ahead draws thin and faint (was 0.0)
-export const TRACK_W_FUTURE = 0.6; // E2: width factor of the pending stretch over the current one — RESERVED (one Line2 geometry cannot do per-segment width; vertex-scale trick lands with §2 bloom, never a geometry split)
-export const TRACK_COL_PAST = 0xf2e8d0; // warm cream, walked stretch (reference: Lobuche branch)
-export const TRACK_COL_FUTURE = 0xb9d9c4; // faint acqua-green, pending stretch at 45% (E2)
+export const TRACK_W_FUTURE = 0.6; // E2: width factor of the pending stretch over the current one — RESERVED (one Line2 geometry cannot do per-segment width; unused until a split is decided, no geometry split in this change)
 export const TRACK_TIP_FADE_M = 40; // E2: soft tip before the cut so the head is not a chop (audit: 180 reads better at drone distance — see TRACK_FADE_M below)
 export const TRACK_FADE_M = 180; // BLOQUEANTE audit: 150-200 m of path in the tip fade (40 m is sub-pixel at 2.6-4.8 km camera distance)
 export const EPILOGUE_S = 0.98; // E2/R3: epilogue transition; the full loop draws over s in [0.98, 1.00]
@@ -173,28 +171,12 @@ export const SUBJECT_X = 0.5; // NDC x of the aim point (setViewOffset, not a ro
 // uGlow MUST read 0 outside the A3/A7/A8 windows (audit: lit at s=0/0.14,
 // which are not milestones) — verify:3a asserts the gate math on worn paths.
 export const LINE_W_FAR = 2; // px above LINE_W_D_FAR (sober line)
-export const LINE_W_NEAR = 3.5; // px below LINE_W_D_NEAR (thin drone ribbon; far line stays thin)
+export const LINE_W_NEAR = 3; // px below LINE_W_D_NEAR (was 5: tube at drone distance; far line stays thin)
 export const LINE_W_D_FAR = 2000; // m: smoothstep upper edge (was 2600)
 export const LINE_W_D_NEAR = 600; // m: smoothstep lower edge (was 1200)
-export const GLOW_MULT = 3; // halo pass width x3, drawn first (dies with §2 bloom — do not reuse)
-export const GLOW_ALPHA = 0.18; // halo opacity (cream, additive; §2 bloom retunes to 0.35 / 0.6 at milestones)
+export const GLOW_MULT = 3; // halo pass width x3, drawn first
+export const GLOW_ALPHA = 0.18; // halo opacity (cream, additive)
 export const GLOW_S_WINDOW = 0.02; // uGlow 0..1 within +-0.02 s of A3/A7/A8
-export const GLOW_ALPHA_BLOOM = 0.35; // §2: fullscreen-composite bloom alpha (0.6 at milestones)
-export const GLOW_ALPHA_BLOOM_HITO = 0.6; // §2: bloom alpha inside the milestone window
-// --- milestone beams (§3): vertical shafts on hito labels ---
-export const BEAM_H = 160; // m: beam height above ground
-export const BEAM_ACTIVE_MULT = 1.3; // active (nearest-to-walker) hito beam is taller + full opacity
-// --- sky (§4, Preetham starting values + G24 gate) ---
-export const SKY_TURBIDITY = 2.2; // (today ~8-10: what whitens the horizon)
-export const SKY_RAYLEIGH = 1.6; // flat, no low-sun branch
-export const SKY_MIE = 0.004; // (was 0.006)
-export const SKY_G = 0.8; // mieDirectionalG
-export const SKY_EXPOSURE = 0.55; // day exposure with ACES (today 1.05 burns the sky)
-export const HEMI_GRAY_MIX = 0.4; // shadow stays cool, not tinted: mix(sky, grey(luma), 0.4)
-export const CLOUD_COVERAGE = 0.3; // alpha-weighted target at 12:00 (the metric is already corrected)
-export const G24_ZEN_MIN = "#2a68b8"; // saturated blue, not grey
-export const G24_ZEN_MAX = "#3e86d2"; // saturated blue, not grey
-export const G24_HZ_RATIO = 2.2; // horizon luma / zenith luma <= 2.2 (today ~4: white horizon)
 
 // --- E4 (line floats over decimated mesh): full-res corridor around track ---
 export const CORRIDOR_HALF_M = 150; // force LOD 0 within +-150 m of the track

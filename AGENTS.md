@@ -34,3 +34,4 @@
 - Anulaciones explícitas de la pieza (orden: `?cam=` > rig para la pose, `?t=` > scroll para la hora, `?s=`/`?act=` > scroll para `s`, `?orbit=1` excluye el rig). Si está `?cam=`, el rig no compone; si está `?t=`, la hora queda congelada.
 - El contexto GL crudo solo se lee (`getError`, `getShaderSource`, `readPixels`, timer queries); nunca se escribe. Todo estado pasa por el renderer.
 - Ningún render a target usa la escena principal. Cada pase fuera de pantalla tiene su escena propia con solo lo que necesita.
+- Una fase, un despliegue. Cuando el brief da un orden con una comprobación entre fases, el orden es parte del brief. Juntar fases para ahorrar un despliegue no ahorra nada: cuesta la localización del fallo.

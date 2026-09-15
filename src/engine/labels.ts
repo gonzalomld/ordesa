@@ -11,8 +11,6 @@ export interface LabelDef {
   x: number;
   y: number;
   z: number;
-  /** Path distance in metres (hitos only) — drives the active beam. */
-  d?: number;
   nombre: string | null;
   fuente: string;
 }
@@ -27,7 +25,6 @@ export interface LabelRuntime {
   lastY: number;
   lastOpacity: string;
   lastHidden: boolean;
-  lastActive: boolean;
   occluded: boolean;
 }
 
@@ -36,8 +33,6 @@ export function buildLabels(
   cx: number,
   cy: number,
   container: HTMLElement,
-  /** §3: hito labels hang from the beam tip (z + beamTipM), not the ground. */
-  beamTipM = 0,
 ): LabelRuntime[] {
   return defs
     .filter((d) => d.nombre)
@@ -52,18 +47,16 @@ export function buildLabels(
       z.textContent = `${Math.round(def.z).toLocaleString("es-ES")} m`;
       el.append(nm, document.createTextNode(" · "), z);
       container.appendChild(el);
-      const tipZ = def.tipo === "hito" ? def.z + beamTipM : def.z;
       return {
         def,
         el,
         wx: def.x - cx,
-        wy: tipZ,
+        wy: def.z,
         wz: -(def.y - cy),
         lastX: -1,
         lastY: -1,
         lastOpacity: "",
         lastHidden: false,
-        lastActive: false,
         occluded: false,
       };
     });
@@ -112,8 +105,6 @@ export function updateLabels(
   w: number,
   h: number,
   maxDist: number,
-  /** §3: active hito id paints with .lbl-active (full emphasis). */
-  activeId: string | null = null,
 ): void {
   // project all (S4: NDC and world position need SEPARATE vectors — the old
   // code overwrote _v with the world pos and read .x/.y as if they were NDC,
@@ -159,12 +150,6 @@ export function updateLabels(
     }
     if (hidden) continue;
     const op = rt.occluded ? "0.25" : "1";
-    // §3: active hito emphasis (class swap, write-if-changed like the rest).
-    const isActive = activeId !== null && rt.def.id === activeId;
-    if (isActive !== rt.lastActive) {
-      rt.lastActive = isActive;
-      rt.el.classList.toggle("lbl-active", isActive);
-    }
     // T2: compare with epsilon; write unrounded values into the transform.
     if (Math.abs(px - rt.lastX) > 0.01 || Math.abs(py - rt.lastY) > 0.01) {
       rt.lastX = px;

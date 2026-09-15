@@ -6,7 +6,6 @@ import * as THREE from "three";
 import { Sky } from "three/addons/objects/Sky.js";
 import { createRig } from "../narrative/camera-rig.ts";
 import {
-  BEAM_H,
   CAM_FAR,
   CAM_NEAR,
   CAM_PRESETS_S,
@@ -35,8 +34,6 @@ import { initProgress, type ProgressHandle } from "../narrative/progress.ts";
 import { createScroll, type ScrollHandle } from "../narrative/scroll.ts";
 import { buildClouds } from "./clouds.ts";
 import { frameClock, mountDebug, parseBootQuery } from "./debug.ts";
-import { buildBeams } from "./beams.ts";
-import { createBloom, type Bloom } from "./bloom.ts";
 import { buildGate, nextFrame } from "./gate.ts";
 import { createSkyCapture, type SkyCapture } from "./sky-capture.ts";
 import { fogUniforms, patchTerrainMaterial } from "./height-fog.ts";
@@ -748,31 +745,7 @@ float wgrain(vec2 lp){
   const labelDefs = (await fetch("/assets/labels.json").then((r) => r.json()).catch(() => ({ labels: [] }))) as {
     labels: LabelDef[];
   };
-  const labelRts = buildLabels(labelDefs.labels, world.centerX, world.centerY, labelLayer, BEAM_H);
-  // §3: milestone beams (hito labels hang from the beam tip; .lbl-active
-  // marks the nearest-to-walker hito). Built after res2 so the LineMaterial
-  // gets real pixels; resize handler keeps it in sync (see below).
-  const beams = buildBeams(labelDefs.labels, world, res2);
-  group.add(beams.group);
-  // §2 bloom: glow scene = track + beams, flat paint on black (own scene,
-  // never the main one). The LineGeometry positions buffer is shared by
-  // reference (redrape rewrites it in place — the glow track follows for
-  // free, same LOD, same cut state is NOT shared: glow has no cut, the
-  // bloom is a halo, not a meter). The blur reads THIS scene; the main
-  // frame keeps the lit materials.
-  const glowScene = new THREE.Scene();
-  const glowTrackMat = new THREE.LineBasicMaterial({ color: 0xf2e8d0 });
-  const glowTrack = new THREE.Line((line.group.children[0] as { geometry: THREE.BufferGeometry }).geometry as THREE.BufferGeometry, glowTrackMat);
-  glowTrack.frustumCulled = false;
-  glowScene.add(glowTrack);
-  const glowBeamsMat = new THREE.LineBasicMaterial({ color: 0xf2e8d0, transparent: true, opacity: 0.7 });
-  const glowBeams = new THREE.LineSegments(
-    (beams.group.children[0] as { geometry: THREE.BufferGeometry }).geometry as THREE.BufferGeometry,
-    glowBeamsMat,
-  );
-  glowBeams.frustumCulled = false;
-  glowScene.add(glowBeams);
-  const bloom: Bloom = createBloom(renderer, camera, glowScene);
+  const labelRts = buildLabels(labelDefs.labels, world.centerX, world.centerY, labelLayer);
 
   // --- telemetry bar (7 cols, reads progress.getState()) ---
   const tele = el("div", "tele");
@@ -988,8 +961,6 @@ float wgrain(vec2 lp){
       const lm = (m as { material: { resolution: THREE.Vector2 } }).material;
       lm.resolution.copy(res2);
     }
-    beams.setResolution(res2);
-    bloom.setSize(res2.x, res2.y);
   });
 
   // E1: far-plane budget watch — drone views pull in more triangles. If
@@ -1026,20 +997,14 @@ float wgrain(vec2 lp){
       if (boot.trackAll) line.setProgressDist(e);
       else line.setProgressDist(st.s >= EPILOGUE_S ? e : Math.min(st.d, e));
     }
-    // E3: line width from plan camera->aim distance; §2 bloom glow at the
+    // E3: line width from plan camera->aim distance; halo glow at the
     // cirque + mirador milestones (follow replan: s-anchored, no hitos yaw).
-    // §3: beams follow the walker (nearest hito goes active). glowA* are
-    // read again at composite time (below) — same window, no second source.
-    let glowA3 = 0;
-    let glowA7 = 0;
-    let glowA8 = 0;
     {
       const dg0 = rig.getDiag();
-      glowA3 = glowNear(st.s, 0.3);
-      glowA7 = glowNear(st.s, 0.745);
-      glowA8 = glowNear(st.s, 0.86);
-      line.setFraming(dg0.distPlan, Math.max(glowA3, glowA7, glowA8));
-      beams.setActive(st.d);
+      const gA3 = glowNear(st.s, 0.3);
+      const gA7 = glowNear(st.s, 0.745);
+      const gA8 = glowNear(st.s, 0.86);
+      line.setFraming(dg0.distPlan, Math.max(gA3, gA7, gA8));
     }
     // B4: sun station follows the rig target; shadow refresh has TWO
     // triggers (sun turned OR target moved), at most every N frames.
@@ -1074,20 +1039,7 @@ float wgrain(vec2 lp){
     // G22: getError() right after the capture render names the pass. Always
     // drains (getError clears the flag); the HUD poll reads the ledger, it
     // never polls GL itself.
-    // G24: after a real recapture, read zenith + horizon from the capture
-    // (measured sky, not the computed estimate) for the HUD line.
-    if (skyCap?.refreshIfNeeded(st.sunElev) && boot.debug) {
-      try {
-        const z = skyCap.readZenith();
-        const toHex = (c: [number, number, number]): string =>
-          `#${[c[0], c[1], c[2]].map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join("")}`;
-        metrics.zenithHex = toHex(z.zenith);
-        const luma = (c: [number, number, number]): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-        (window as unknown as { __skyHzRatio?: number }).__skyHzRatio = luma(z.horizon) / Math.max(1e-6, luma(z.zenith));
-      } catch {
-        /* probe failed — computed estimate below stays */
-      }
-    }
+    skyCap?.refreshIfNeeded(st.sunElev);
     if (boot.debug) {
       glPassErr.capture = glProbe.getError();
     }
@@ -1130,10 +1082,7 @@ float wgrain(vec2 lp){
       }
       clouds.update(clock.elapsedTime, camera, renderer.domElement.width, renderer.domElement.height);
       metrics.cloudCoverage = clouds.getCoverage();
-      // §4: the 20% veil cap is GONE (T1 verdict belonged to the unweighted
-      // metric). The cap now guards the CLOUD_COVERAGE target band instead:
-      // halve global alpha only while visibly above 0.38 (G24 upper edge).
-      clouds.setCap(clouds.getCoverage() > 0.38);
+      clouds.setCap(clouds.getCoverage() > 0.2);
     }
     line.setDim(routeDim);
     metrics.hasRock = 1;
@@ -1171,28 +1120,11 @@ float wgrain(vec2 lp){
       glPassErr.main = glProbe.getError();
     }
     // T1: labels AFTER render, every frame, no throttle (js etiq ~0.1 ms).
-    // §3: the active beam id emphasizes its label (.lbl-active).
-    updateLabels(labelRts, camera, window.innerWidth, window.innerHeight, 30000, beams.activeId());
+    updateLabels(labelRts, camera, window.innerWidth, window.innerHeight, 30000);
     const t3 = performance.now();
     metrics.jsTerrain = 0; // terrain JS slice is inside rebuilds, not the loop
     metrics.jsLabels = Math.max(0, t3 - t2);
-    // §2 bloom: the Everest glow is a blur of the track, not a fat line.
-    // AFTER the main render (own glow/blur/quad scenes only, never the main
-    // scene), BEFORE the probes (G22 names the bloom passes like the rest).
-    // trackdist LOOK-only skips it too (see below): nothing may steal the
-    // canvas between the line passes and the screen.
-    {
-      const tPost = performance.now();
-      if (!boot.trackDist) bloom.render(Math.max(glowA3, glowA7, glowA8));
-      metrics.msPost = Math.max(0, performance.now() - tPost);
-    }
-    if (boot.debug) {
-      const eBloom = glProbe.getError();
-      if (eBloom !== glProbe.NO_ERROR) {
-        glPassErr.probe = eBloom;
-        glPassErr.label = `bloom:${eBloom === glProbe.INVALID_OPERATION ? "INVALID_OPERATION" : eBloom}`;
-      }
-    }
+    metrics.msPost = 0;
     // G11 (audit A6): mean linear luminance over a LUMA_GRID^2 readPixels
     // grid, every 30th frame, only with ?luma=1 (a per-frame readPixels
     // stall would eat the budget it is meant to protect). R1: sampled AFTER
@@ -1266,26 +1198,17 @@ float wgrain(vec2 lp){
       }
       if (boot.debug && (skyfracOn || trackpxOn)) {
         glPassErr.probe = glProbe.getError();
-        // Bloom keeps its own name (set above every frame): probes only
-        // overwrite an empty label, never a bloom:INVALID_OPERATION.
-        if (glPassErr.probe !== glProbe.NO_ERROR && glPassErr.label === "") {
-          glPassErr.label = `probe:${glPassErr.probe === glProbe.INVALID_OPERATION ? "INVALID_OPERATION" : glPassErr.probe}`;
-        }
       }
       if (boot.debug) {
-        // G22 per-frame label: capture → main → bloom/probe, first error
-        // wins. The bloom block above already set label+probe on a bloom
-        // error; the probes below only overwrite an empty label.
+        // G22 per-frame label: capture → main → probe, first error wins.
         // Rebuilt every frame (sticky would blame a pass fixed long ago);
         // the 500 ms HUD poll samples it, so a persistent loop stays visible
         // while a one-off flickers once and clears — which is the point.
-        if (glPassErr.label === "") {
-          const bad = glPassErr.capture !== glProbe.NO_ERROR ? `capture:${glPassErr.capture}`
-            : glPassErr.main !== glProbe.NO_ERROR ? `main:${glPassErr.main}`
-              : glPassErr.probe !== glProbe.NO_ERROR ? `probe:${glPassErr.probe}` : "";
-          glPassErr.label = bad === "" ? "" :
-            bad.endsWith(`:${glProbe.INVALID_OPERATION}`) ? `${bad.slice(0, -String(glProbe.INVALID_OPERATION).length - 1)}:INVALID_OPERATION` : bad;
-        }
+        const bad = glPassErr.capture !== glProbe.NO_ERROR ? `capture:${glPassErr.capture}`
+          : glPassErr.main !== glProbe.NO_ERROR ? `main:${glPassErr.main}`
+            : glPassErr.probe !== glProbe.NO_ERROR ? `probe:${glPassErr.probe}` : "";
+        glPassErr.label = bad === "" ? "" :
+          bad.endsWith(`:${glProbe.INVALID_OPERATION}`) ? `${bad.slice(0, -String(glProbe.INVALID_OPERATION).length - 1)}:INVALID_OPERATION` : bad;
       }
       void frames;
     }

@@ -1,9 +1,6 @@
 // sun.ts — front mirror of scripts/lib/sun.ts (same NOAA formulas).
 // Pure: lightingAt(madridHHMM) → everything the renderer needs.
-// Sky (§4 cierre visual): Preetham starting values measured with the
-// existing probe — turbidity is what whitens the horizon.
 import { ACTS, ROUTE_DATE } from "../../scripts/geo-constants.ts";
-import { SKY_EXPOSURE, SKY_G, SKY_MIE, SKY_RAYLEIGH, SKY_TURBIDITY } from "../narrative/choreography.ts";
 
 export interface Lighting {
   sunAzimuth: number;
@@ -76,24 +73,20 @@ export function lightingAt(t: string | number): Lighting {
   // the x⁴ distance curve keeps the valley readable, only the far edge melts)
   const fogDensity = e <= 0 ? 1 : Math.max(0.55, 1 - (h - 7.1) / 3.4);
   const fogTopM = lerp(1750, 1400, Math.min(1, Math.max(0, (h - 7) / 3.5)));
-  // convection: grows 11:00 → 16:00. §4: rescaled so the ALPHA-WEIGHTED
-  // coverage reads CLOUD_COVERAGE (0.30) at 12:00 — measured with ?t=12:00,
-  // never by eye. The old curve peaked at ~20% cap scale; the metric now
-  // tracks what is actually seen, so the curve carries the full target.
-  const cloudDensity = Math.min(1, Math.max(0, (h - 10.5) / 2.5)) * 0.75 + (h >= 10.5 ? 0.12 : 0);
+  // convection: grows 11:00 → 16:00, midday peak capped at 20% cover (T1 verdict)
+  const cloudDensity = Math.min(0.55, Math.max(0, (h - 11) / 5)) * 0.55 + (h >= 11 ? 0.1 : 0);
   // R3c: exposure carries contrast at low sun, not a veil.
-  // Day exposure SKY_EXPOSURE (0.55 with ACES — 1.05 burns the sky);
-  // twilight stays bright enough to read (1.25).
-  const exposure = e <= 0 ? 1.25 : SKY_EXPOSURE;
+  // 16° → ~1.0; noon → 0.85; twilight stays bright enough to read (1.25).
+  const exposure = e <= 0 ? 1.25 : lerp(1.05, 0.85, Math.min(1, Math.max(0, (e - 12) / 48)));
   return {
     sunAzimuth: azimuthDeg,
     sunElevation: elevationDeg,
     sunColor: warmColor(e),
     sunIntensity: e <= 0 ? 0.12 : lerp(1.2, 2.8, Math.min(1, e / 60)),
-    turbidity: SKY_TURBIDITY,
-    rayleigh: SKY_RAYLEIGH,
-    mieCoefficient: SKY_MIE,
-    mieDirectionalG: SKY_G,
+    turbidity: 2.0,
+    rayleigh: e > 10 ? 0.7 : 1.6,
+    mieCoefficient: 0.006,
+    mieDirectionalG: 0.8,
     fogDensity: Math.min(1, fogDensity),
     fogTopM,
     cloudDensity: e <= 0 ? 0 : cloudDensity,

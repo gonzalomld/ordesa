@@ -12,12 +12,12 @@ import { Line2 } from "three/addons/lines/Line2.js";
 import { LineGeometry } from "three/addons/lines/LineGeometry.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import {
+  GLOW_ALPHA,
+  GLOW_MULT,
   LINE_W_D_FAR,
   LINE_W_D_NEAR,
   LINE_W_FAR,
   LINE_W_NEAR,
-  TRACK_COL_FUTURE,
-  TRACK_COL_PAST,
   TRACK_DIM_FUTURE,
   TRACK_DIM_PAST,
   TRACK_FADE_M,
@@ -29,8 +29,7 @@ export interface RouteLine {
   group: THREE.Group;
   setDim(f: number): void;
   setProgressDist(dM: number): void;
-  /** E3: call every frame — width from camera distance. glow01 drives the
-   * §2 bloom alpha in the viewer (the Line2 halo pass is deleted). */
+  /** E3: call every frame — width from camera distance, glow from journey s. */
   setFraming(camDistM: number, glow01: number): void;
   /** BLOQUEANTE isolation probe: expose the shared uniform for tests. */
   debugProgressDist(): number;
@@ -149,8 +148,6 @@ export function buildRouteLine(
   const uLengthM = { value: route.lengthM };
   const uTrackDist = { value: 0 };
   const uStepM = { value: route.stepM };
-  const uColPast = { value: new THREE.Color(TRACK_COL_PAST) };
-  const uColFuture = { value: new THREE.Color(TRACK_COL_FUTURE) };
   const patchLine = (m: LineMaterial): void => {
     const prev = m.onBeforeCompile.bind(m);
     m.onBeforeCompile = (shader: { uniforms: Record<string, unknown>; vertexShader: string; fragmentShader: string }) => {
@@ -163,8 +160,6 @@ export function buildRouteLine(
       uniforms["uLengthM"] = uLengthM;
       uniforms["uTrackDist"] = uTrackDist;
       uniforms["uStepM"] = uStepM;
-      uniforms["uColPast"] = uColPast;
-      uniforms["uColFuture"] = uColFuture;
       shader.vertexShader = shader.vertexShader
         .replace(
           "#include <common>",
@@ -180,36 +175,34 @@ vDist = float( gl_InstanceID ) * uStepM;`,
         .replace(
           "#include <common>",
           `#include <common>
-varying float vDist; uniform float uProgressDist; uniform float uDimPast; uniform float uDimFuture; uniform float uTipFade; uniform float uLengthM; uniform float uTrackDist; uniform vec3 uColPast; uniform vec3 uColFuture;`,
+varying float vDist; uniform float uProgressDist; uniform float uDimPast; uniform float uDimFuture; uniform float uTipFade; uniform float uLengthM; uniform float uTrackDist;`,
         )
         .replace(
           "float alpha = opacity;",
-          // E2 corregido: the head fade runs cream -> acqua-green, never to
-          // transparent. pastFactor: 1 walked, 0 pending. Ghost + solid + ID
-          // share the rule.
+          // E2: ahead does not exist (uDimFuture = 0); the tip fade is the
+          // visible head (TRACK_FADE_M, audit: 180 m at drone distance).
+          // Ghost + solid + ID share the rule.
           `float head = 1.0 - smoothstep( uProgressDist - uTipFade, uProgressDist, vDist );
-float pastFactor = step( vDist, uProgressDist );
-float alpha = opacity * mix( uDimFuture, uDimPast * head, pastFactor );`,
+float alpha = opacity * mix( uDimFuture, uDimPast * head, step( vDist, uProgressDist ) );`,
         )
         .replace(
           "vec4 diffuseColor = vec4( diffuse, alpha );",
-          // ?debug=trackdist and ?ghost=1 probes win over the cream/green
-          // paint (diffuseColor is declared HERE, not at `float alpha`).
-          // Blue Pradera → red Cola → blue on return.
-          `vec3 baseCol = mix( uColFuture, uColPast, pastFactor );
-vec4 diffuseColor = vec4( baseCol, alpha );
+          // ?debug=trackdist: gradient probe on its OWN line (diffuseColor
+          // is declared HERE, not at `float alpha` — injecting there never
+          // compiled). Blue Pradera → red Cola → blue on return.
+          `vec4 diffuseColor = vec4( diffuse, alpha );
 if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - vDist / uLengthM ); }`,
         );
     };
     m.customProgramCacheKey = () => "ordesa-route-progress";
   };
-  const mk = (depthFunc: THREE.DepthFunctions, opacity: number, transparent = true): LineMaterial => {
+  const mk = (depthFunc: THREE.DepthFunctions, opacity: number): LineMaterial => {
     const m = new LineMaterial({
-      color: TRACK_COL_PAST,
+      color: 0xefe3c8,
       linewidth: 2.75,
       worldUnits: false,
       alphaToCoverage: false,
-      transparent,
+      transparent: true,
       opacity,
       depthTest: true,
       depthWrite: false,
@@ -220,15 +213,8 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
     return m;
   };
   const ghostMat = mk(THREE.GreaterDepth, 0.25);
-  // Ghost stays NormalBlending: additive is what sums overlaps into beads.
-  ghostMat.blending = THREE.NormalBlending;
-  // Ghost probe colour source: cream clone stays in sync with the paint
-  // (TRACK_COL_PAST), never a stale literal.
   const ghostCream = ghostMat.color.clone();
-  // Solid: walked alpha is 1, so src-over overlap of round caps is
-  // idempotent — no beads without giving up the 45% pending alpha.
   const solidMat = mk(THREE.LessEqualDepth, 1);
-  solidMat.blending = THREE.NormalBlending;
   const ghost = new Line2(geo, ghostMat);
   const solid = new Line2(geo, solidMat);
   ghost.frustumCulled = false;
@@ -236,10 +222,13 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
   ghost.renderOrder = 5;
   solid.renderOrder = 6;
   group.add(ghost, solid);
-  // §2 bloom killed the Line2 halo pass (x3 additive): uniform, beaded, and
-  // superseded by the quarter-res blur composite. Deleted, not flagged.
-  // The vertex x0.6 pending-width trick lands here when §2 needs it; until
-  // then pending reads via colour+alpha (single width, single geometry).
+  // E3 halo: same geometry, drawn first, width x3, additive cream at 18%.
+  const haloMat = mk(THREE.LessEqualDepth, GLOW_ALPHA);
+  haloMat.blending = THREE.AdditiveBlending;
+  const halo = new Line2(geo, haloMat);
+  halo.frustumCulled = false;
+  halo.renderOrder = 4;
+  group.add(halo);
   // G15 ID pass: the SAME solid Line2, flat unlit material, rendered alone
   // into a 256x144 target. Patched with the SAME cut (uProgressDist shared)
   // — the ID pass answers "does the user see the path?", not "does the
@@ -261,6 +250,7 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
     setDim(f: number) {
       ghostMat.opacity = (ghostProbe ? 1 : 0.25) * f;
       solidMat.opacity = 1 * f;
+      haloMat.opacity = GLOW_ALPHA * f;
     },
     setProgressDist(dM: number) {
       uProgressDist.value = dM;
@@ -295,18 +285,17 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
       return renderCount(renderer, idTarget, idBuf, idScene, camera, 256, 144,
         (rr, gg, bb) => rr > 4 || gg > 4 || bb > 4);
     },
-    setFraming(camDistM: number, _glow01: number) {
-      // E3 drone revision (pasada rig puro): 2 px beyond 2000 m, 3.5 px
-      // under 600 m. ONE width for walked + pending (§1: no geometry split;
-      // pending reads via colour+alpha). §2 bloom owns the glow now — the
-      // glow01 argument stays so the call site does not churn (it drives
-      // the bloom alpha in the viewer); the Line2 halo pass is deleted.
-      void _glow01;
+    setFraming(camDistM: number, glow01: number) {
+      // E3 drone revision (pasada rig puro): 2 px beyond 2000 m, 3 px under
+      // 600 m. The far line stays thin; only the immediate foreground fattens.
       const f = Math.min(1, Math.max(0, (LINE_W_D_FAR - camDistM) / (LINE_W_D_FAR - LINE_W_D_NEAR)));
       const s = f * f * (3 - 2 * f);
       const w = LINE_W_FAR + (LINE_W_NEAR - LINE_W_FAR) * s;
       solidMat.linewidth = w;
       ghostMat.linewidth = w;
+      haloMat.linewidth = w * GLOW_MULT;
+      const g = Math.min(1, Math.max(0, glow01));
+      haloMat.opacity = GLOW_ALPHA * g;
     },
   };
 }

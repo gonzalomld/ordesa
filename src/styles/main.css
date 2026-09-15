@@ -259,12 +259,6 @@ body {
   border-style: dashed;
 }
 
-/* §3: active milestone (nearest to the walker) — hangs from its beam tip. */
-.lbl-active {
-  border-color: rgb(242 232 208 / 80%);
-  background: rgb(10 12 14 / 72%);
-}
-
 /* --- phase-2 tuning hud --- */
 .hud2 {
   position: fixed;

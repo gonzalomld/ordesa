@@ -153,11 +153,9 @@ export function buildClouds(
     const x = meta.bbox.minx + rnd() * spanX;
     // convection band over the rim and valley edges, with gaps
     const y = meta.bbox.miny + (0.3 + rnd() * 0.7) * (meta.bbox.maxy - meta.bbox.miny);
-    // S1a: terrain-relative — what real convection does. §4: absolute
-    // cumulus band 1900-2300 m; over high ridges the band rides up
-    // (max(ground+120): never buries a puff inside a crest).
+    // S1a: terrain-relative — what real convection does
     const ground = sampleElev(elev, meta, x, y);
-    const z = Math.max(ground + 120, 1900 + rnd() * 400);
+    const z = ground + 500 + rnd() * 300;
     dummy.position.set(x - cx, z, -(y - cy));
     dummy.updateMatrix();
     mesh.setMatrixAt(i, dummy.matrix);
