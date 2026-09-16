@@ -810,9 +810,8 @@ float wgrain(vec2 lp){
   }
 
   // clouds (S1: terrain-relative placement needs the decoded heightmap).
-  // §4b FASE 4b: band above the camera — camYmax from a poseAt sweep
-  // (s ∈ [0, 0.97] step 0.005). Poses travel in EPSG plan + altitude
-  // (CloudCamPose {x, y, z}): the layout never mixes frames.
+  // §4b FASE 4c: MAIN band strictly above every lens (base = camYmax + 250)
+  // + DISTANT horizon family for low acts. Poses travel EPSG + altitude.
   const cloudCams: { x: number; y: number; z: number }[] = [];
   {
     const w2eX = (wx: number): number => wx + world.centerX;
@@ -830,14 +829,16 @@ float wgrain(vec2 lp){
     { n: route.n, x: route.x, y: route.y },
     cloudCams,
   );
-  (window as unknown as { __cloudBand?: { base: number; top: number; camYmax: number; camYmin: number } }).__cloudBand = (() => {
+  // §4b FASE 4c: BOTH families published — main [camYmax+250, +400],
+  // distant {band [2000,2400], clearance ≥ 3 km plan to every pose}.
+  (window as unknown as { __cloudBand?: { main: { base: number; top: number }; far: { lo: number; hi: number; minM: number }; camYmax: number } }).__cloudBand = (() => {
     let m = -Infinity;
-    let n = Infinity;
-    for (const c of cloudCams) {
-      if (c.z > m) m = c.z;
-      if (c.z < n) n = c.z;
-    }
-    return { base: n + 300, top: m + 650, camYmax: m, camYmin: n };
+    for (const c of cloudCams) if (c.z > m) m = c.z;
+    return {
+      main: { base: m + 250, top: m + 250 + 400 },
+      far: { lo: 2000, hi: 2400, minM: 3000 },
+      camYmax: m,
+    };
   })();
   scene.add(clouds.group);
   gate.setProgress(0.8, 5);
@@ -1088,6 +1089,43 @@ float wgrain(vec2 lp){
   const occTarget = new THREE.WebGLRenderTarget(256, 144, { depthBuffer: true });
   const occBuf = new Uint8Array(256 * 144 * 4);
   const occMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  // §4b FASE 4c (G42 color): mean canvas colour of the cloud pixels from
+  // the SAME meter pass (no re-render): display luma ≥ 0.72, chroma ≤ 0.10
+  // (white, not grey veils or salmon shreds). Reads the flat RT ALPHA
+  // mask + the presented frame buf (both already read this frame); the
+  // meter grid is 96×54, the frame buf is w×h — nearest mapping.
+  function publishCloudColor(
+    buf: Uint8Array, w: number, h: number,
+  ): void {
+    let n = 0;
+    let sl = 0;
+    let sc = 0;
+    for (let yy = 0; yy < 54; yy++) {
+      for (let xx = 0; xx < 96; xx++) {
+        const co = (yy * 96 + xx) * 4;
+        if ((cloudPxBuf[co] as number) <= 128) continue;
+        const fx = Math.min(w - 1, Math.floor(((xx + 0.5) / 96) * w));
+        const fy = Math.min(h - 1, Math.floor(((yy + 0.5) / 54) * h));
+        const o = (fy * w + fx) * 4;
+        const rr = (buf[o] as number) / 255;
+        const gg = (buf[o + 1] as number) / 255;
+        const bb = (buf[o + 2] as number) / 255;
+        const mxc = Math.max(rr, gg, bb);
+        const mnc = Math.min(rr, gg, bb);
+        sl += 0.2126 * rr + 0.7152 * gg + 0.0722 * bb;
+        sc += mxc > 1e-6 ? (mxc - mnc) / mxc : 0;
+        n++;
+      }
+    }
+    const W = window as unknown as { __cloudLuma?: number; __cloudChroma?: number };
+    if (n > 0) {
+      W.__cloudLuma = sl / n;
+      W.__cloudChroma = sc / n;
+    } else {
+      W.__cloudLuma = -1;
+      W.__cloudChroma = -1;
+    }
+  }
   // §4b FASE 4b: cloud pixel meter — the SAME InstancedMesh with a flat
   // probe material (atlas alpha × vAlpha only, no colour) into its own
   // 96×54 target. Counted inside the TERRAIN-sky mask (occBuf): only sky
@@ -1295,10 +1333,10 @@ float wgrain(vec2 lp){
         const elevDeg = (Math.atan2(-dy, horiz) * 180) / Math.PI;
         const f = Math.min(1, Math.max(0, (elevDeg - CLOUD_FADE_START_DEG) / (90 - CLOUD_FADE_START_DEG)));
         clouds.setZenithFade(f * CLOUD_ZENITH_FADE);
-        // §4b FASE 4b: epilogue height fade — on when the camera flies
-        // above the band, off otherwise (horizon puffs stay either way).
-        const band = (window as unknown as { __cloudBand?: { base: number } }).__cloudBand;
-        clouds.setBelowFade(camera.position.y > (band?.base ?? Infinity) ? 1 : 0);
+        // §4b FASE 4c: above-fade is PER-PUFF in the vertex (camera.y −
+        // centre.y) — no global toggle needed. setBelowFade(1) arms it;
+        // setCamY is dead (kept for call-site stability).
+        clouds.setBelowFade(1);
         clouds.setCamY(camera.position.y);
       }
       clouds.update(clock.elapsedTime, camera, renderer.domElement.width, renderer.domElement.height);
@@ -1536,67 +1574,104 @@ float wgrain(vec2 lp){
       // §4b FASE 2b (G26 medible) + G22: sin cambios — el blit y getError
       // ya viven en el bloque de 30 frames; la sonda de sombra no mueve
       // nada (misma rejilla, misma máscara, solo aritmética JS).
-      // §4b FASE 4 (G30 cielo azul): con ?skyfrac=1, fracción de cielo NO
-      // cubierta por nubes = píxeles de cielo (máscara oclusora) × (1 −
-      // cobertura por PÍXELES). Sin oclusor no hay máscara: -1 (pendiente).
+      // §4b FASE 4c (G24c/G41/G43): pixel meter — cloud mesh with the flat
+      // probe material into 96×54, counted inside the terrain-sky mask.
+      // Runs ONLY with ?skyfrac=1 on the 30-frame cadence (production
+      // never pays it). No try/catch: a failure throws under ?debug=1
+      // (loud) and publishes __cloudCoverPxErr (G24c gate reads it).
+      // Publishes __cloudCoverPx (sky fraction covered) next to the
+      // analytic metrics.cloudCoverage so the audit sees how much the
+      // disc meter lies. ALSO accumulates the meter RT into __cloudRT
+      // (G41 density decile + G43 terrain overlap read it, no re-render).
       if (skyfracOn) {
-        // §4b FASE 4b: pixel meter — cloud mesh with the flat probe
+        // §4b FASE 4c: pixel meter — cloud mesh with the flat probe
         // material into 96×54, counted inside the terrain-sky mask.
         // Runs ONLY with ?skyfrac=1 on the 30-frame cadence (production
         // never pays it). Publishes __cloudCoverPx (sky fraction covered)
-        // next to the analytic __metrics.cloudCoverage so the audit sees
-        // how much the disc meter lies.
+        // next to the analytic metrics.cloudCoverage so the audit sees
+        // how much the disc meter lies. ALSO accumulates the meter RT
+        // into __cloudRT (G41 density decile + G43 terrain overlap read
+        // it, no re-render). Failures throw under ?debug=1 (loud) and
+        // publish __cloudCoverPxErr.
         if (occRan) {
-          try {
-            if (!cloudPxWired) {
-              const pu = clouds.probeUniforms();
-              (cloudPxMat.uniforms["uMap"] as { value: unknown }).value = pu.uMap;
-              (cloudPxMat.uniforms["uDensity"] as { value: unknown }).value = pu.uDensity;
-              (cloudPxMat.uniforms["uCap"] as { value: unknown }).value = pu.uCap;
-              (cloudPxMat.uniforms["uMask"] as { value: unknown }).value = pu.uMask;
-              cloudPxWired = true;
-            }
-            const prevColor = renderer.getClearColor(new THREE.Color());
-            const prevAlpha = renderer.getClearAlpha();
-            renderer.setRenderTarget(cloudPxTarget);
-            renderer.setClearColor(0x000000, 1);
-            renderer.clear(true, false, false);
-            const prevMat = clouds.mesh.material;
-            clouds.mesh.material = cloudPxMat;
-            clouds.mesh.frustumCulled = false;
-            renderer.render(occSceneOccless(), camera);
-            clouds.mesh.material = prevMat;
-            renderer.readRenderTargetPixels(cloudPxTarget, 0, 0, 96, 54, cloudPxBuf);
-            renderer.setRenderTarget(null);
-            renderer.setClearColor(prevColor, prevAlpha);
-            // count white (cloud, a>0.15) inside the terrain-sky mask:
-            // occBuf is 256×144, cloudPxBuf is 96×54 — nearest mapping.
-            let skyN = 0;
-            let cloudN = 0;
-            for (let yy = 0; yy < 54; yy++) {
-              for (let xx = 0; xx < 96; xx++) {
-                const mx = Math.min(255, Math.floor((xx / 96) * 256));
-                const my = Math.min(143, Math.floor((yy / 54) * 144));
-                const mo = (my * 256 + mx) * 4;
-                if ((occBuf[mo] as number) < 8 && (occBuf[mo + 1] as number) < 8 && (occBuf[mo + 2] as number) < 8) {
-                  skyN++;
-                  const co = (yy * 96 + xx) * 4;
-                  if ((cloudPxBuf[co] as number) > 128) cloudN++;
+          if (!cloudPxWired) {
+            const pu = clouds.probeUniforms();
+            (cloudPxMat.uniforms["uMap"] as { value: unknown }).value = pu.uMap;
+            (cloudPxMat.uniforms["uDensity"] as { value: unknown }).value = pu.uDensity;
+            (cloudPxMat.uniforms["uCap"] as { value: unknown }).value = pu.uCap;
+            (cloudPxMat.uniforms["uMask"] as { value: unknown }).value = pu.uMask;
+            cloudPxWired = true;
+          }
+          // cloudPxScene HOLDS clouds.mesh across frames (added once) —
+          // restore the parent after the probe render (scene graph hygiene:
+          // the main scene must own the mesh for the user frame).
+          const prevParent = clouds.mesh.parent;
+          const prevColor = renderer.getClearColor(new THREE.Color());
+          const prevAlpha = renderer.getClearAlpha();
+          renderer.setRenderTarget(cloudPxTarget);
+          renderer.setClearColor(0x000000, 1);
+          renderer.clear(true, false, false);
+          const prevMat = clouds.mesh.material;
+          clouds.mesh.material = cloudPxMat;
+          clouds.mesh.frustumCulled = false;
+          renderer.render(occSceneOccless(), camera);
+          clouds.mesh.material = prevMat;
+          renderer.readRenderTargetPixels(cloudPxTarget, 0, 0, 96, 54, cloudPxBuf);
+          renderer.setRenderTarget(null);
+          renderer.setClearColor(prevColor, prevAlpha);
+          if (prevParent) prevParent.add(clouds.mesh);
+          // count white (cloud, a>0.15) inside the terrain-sky mask:
+          // occBuf is 256×144, cloudPxBuf is 96×54 — nearest mapping.
+          // G43 accumulates in the SAME loop: cloud px over TERRAIN.
+          let skyN = 0;
+          let cloudN = 0;
+          let terrN = 0;
+          let cloudOnTerr = 0;
+          const denseAlphas: number[] = [];
+          for (let yy = 0; yy < 54; yy++) {
+            for (let xx = 0; xx < 96; xx++) {
+              const mx = Math.min(255, Math.floor((xx / 96) * 256));
+              const my = Math.min(143, Math.floor((yy / 54) * 144));
+              const mo = (my * 256 + mx) * 4;
+              const co = (yy * 96 + xx) * 4;
+              const isSky = (occBuf[mo] as number) < 8 && (occBuf[mo + 1] as number) < 8 && (occBuf[mo + 2] as number) < 8;
+              const isCloud = (cloudPxBuf[co] as number) > 128;
+              if (isSky) {
+                skyN++;
+                if (isCloud) {
+                  cloudN++;
+                  denseAlphas.push((cloudPxBuf[co + 3] as number) / 255);
                 }
+              } else {
+                terrN++;
+                if (isCloud) cloudOnTerr++;
               }
             }
-            const coverPx = skyN > 0 ? cloudN / skyN : 0;
-            (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx = coverPx;
-            const skyPx = (window as unknown as { __skyFrac?: number }).__skyFrac ?? -1;
-            const blue = skyPx >= 0 ? Math.min(1, Math.max(0, skyPx * (1 - coverPx))) : -1;
-            (window as unknown as { __blueSky?: number }).__blueSky = blue;
-          } catch {
-            (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx = -1;
-            (window as unknown as { __blueSky?: number }).__blueSky = -1;
           }
+          const coverPx = skyN > 0 ? cloudN / skyN : 0;
+          (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx = coverPx;
+          (window as unknown as { __cloudCoverPxErr?: string }).__cloudCoverPxErr = "";
+          const skyPx = (window as unknown as { __skyFrac?: number }).__skyFrac ?? -1;
+          const blue = skyPx >= 0 ? Math.min(1, Math.max(0, skyPx * (1 - coverPx))) : -1;
+          (window as unknown as { __blueSky?: number }).__blueSky = blue;
+          // G42 reads the presented frame buf (already read above for
+          // __luma — same buffer, no second readPixels).
+          publishCloudColor(buf, w, h);
+          // G41: density decile — 10% densest cloud px alpha (must be ≥0.8:
+          // cores, not veil). G43: cloud-on-terrain fraction (≤0.05).
+          denseAlphas.sort((a, b) => b - a);
+          const g41 = denseAlphas.length >= 10
+            ? denseAlphas.slice(0, Math.max(1, Math.floor(denseAlphas.length / 10))).reduce((t, v) => t + v, 0) / Math.max(1, Math.floor(denseAlphas.length / 10))
+            : -1;
+          (window as unknown as { __cloudDense?: number }).__cloudDense = g41;
+          (window as unknown as { __cloudOnTerr?: number }).__cloudOnTerr = terrN > 0 ? cloudOnTerr / terrN : 0;
         } else {
           (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx = -1;
           (window as unknown as { __blueSky?: number }).__blueSky = -1;
+          (window as unknown as { __cloudDense?: number }).__cloudDense = -1;
+          (window as unknown as { __cloudOnTerr?: number }).__cloudOnTerr = -1;
+          (window as unknown as { __cloudLuma?: number }).__cloudLuma = -1;
+          (window as unknown as { __cloudChroma?: number }).__cloudChroma = -1;
         }
       }
       // §4b FASE 4 (G19-nube): el bucle del rastro bajo las nubes — el ID

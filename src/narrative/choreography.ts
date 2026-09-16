@@ -107,15 +107,25 @@ export const SKY_SAT = 2.0; // §4b FASE 3b: elevation-weighted saturation — f
 export const SKY_EXPOSURE = 0.55; // DEAD (§4 correction): dimming via exposure dragged the terrain with the sky; exposure is 1.0 again, the dome carries the dimming. Kept so git history explains itself.
 export const HEMI_GRAY_MIX = 0.6; // §4b FASE 5 paso a: 0.4 -> 0.6 (la sombra pierde tinte, no brillo)
 export const CLOUD_COVERAGE = 0.3; // alpha-weighted target at 12:00 (the metric is already corrected)
-export const CLOUD_MASK = 0.18; // §4b FASE 4b: 0.12 -> 0.18 (new fBm atlas has a softer veil; 0.18 keeps dense cores, kills inter-puff veil — pixel-meter calibration with scale 0.75)
-export const CLOUD_PUFF_SCALE = 0.75; // §4b FASE 4b: 1.0 -> 0.75 (pixel-meter calibration: slab+gate put 14-71 puffs in frame; scale 1.0 overshoots to 44-45%, 0.75 lands ~29-36% — prod decides)
-/** §4b FASE 4b: cloud band above the camera — base = camYmax + 250, top = base + 400. */
+export const CLOUD_MASK = 0.20; // §4b FASE 4c: 0.18 -> 0.20 (aimed far family fills horizons; mask trims inter-puff veil — prod honest mask decides)
+export const CLOUD_PUFF_SCALE = 1.10; // §4b FASE 4c: 0.75 -> 1.10 (dense [0.75,0.95] alpha + aimed far family: predictor 32.6/18.5 @SKYFRAC=0.35 — s=0.80 slot overlap caps it; prod honest per-s mask decides)
+/** §4b FASE 4c: main band — base = camYmax + 250, top = base + 400 (as 4b
+ * required). The slab experiment [camYmin+300, camYmax+650] parked the
+ * camera INSIDE the band (camYmax 2570): fly-through + meter blind to
+ * near puffs. Main band strictly above every framing. */
 export const CLOUD_BAND_LIFT_M = 250;
-/** §4b FASE 4b: cloud band depth above its base. */
+/** §4b FASE 4c: main band depth. */
 export const CLOUD_BAND_DEPTH_M = 400;
-/** §4b FASE 4b: slab base = min(camY) + 300 over the pose sweep. Low
- * framings see the low puffs far away (under the top ray); the 3D gate
- * keeps them out of every flight path. */
+/** §4b FASE 4c: distant family — ≥ 3 km plan from EVERY sampled camera
+ * pose, low band [2000, 2400] fixed: horizon-only puffs for the low acts
+ * (s < 0.10) that the high main band cannot serve. */
+export const CLOUD_FAR_BAND_LO_M = 2000;
+/** §4b FASE 4c: distant family band top. */
+export const CLOUD_FAR_BAND_HI_M = 2400;
+/** §4b FASE 4c: distant family plan clearance to every pose. */
+export const CLOUD_FAR_MIN_M = 3000;
+/** §4b FASE 4c: DEAD slab constants (4b experiment parked the camera inside
+ * the band). Kept so git history explains itself — layout ignores them. */
 export const CLOUD_BAND_LO_M = 300;
 /** §4b FASE 4b: corridor puffs keep ≥ 900 m (3D) to sampled poses near in
  * s (|Δs| ≤ 0.2 — the cameras that could see them large). */

@@ -179,16 +179,19 @@ function coverageAt(s: number, hour: number): { cov: number; dens: number; n: nu
   const uX = -rZ * fy;
   const uY = rZ * fx - rX * fz;
   const uZ = rX * fy;
-  // PRODUCTION curve (lightingAt) × user 1.0 × cap 1.0 — §4b FASE 4: NO
-  // halving (matches setDensity). §4b FASE 4b: the DISC model dies here —
-  // the pixel meter (occScene, flat probe, a>0.15 inside the terrain-sky
-  // mask) is the gate. This predictor keeps the analytic model ONLY as a
-  // placement diagnostic (in-frustum counts), not as a coverage number.
+  // §4b FASE 4c: mirror the DRAWN rule — seed alpha × on-fraction
+  // (threshold 0.70+0.30·density over a 0.05 window) × texel 0.45 × mask
+  // kept-mass. uDensity NEVER scales opacity (no veil).
   const rawDens = lightingAt(hour).cloudDensity;
   const hElev = lightingAt(hour).sunElevation;
   void hElev;
   const dens = Math.min(1, Math.max(0, rawDens));
   const kept = maskKept(mask);
+  const onFrac = (seed: number): number => {
+    const thr = 0.7 + 0.3 * dens;
+    const t = Math.min(1, Math.max(0, (thr - (seed - 0.05)) / 0.1));
+    return t * t * (3 - 2 * t);
+  };
   let area = 0;
   let n = 0;
   // §4b FASE 4b: pixel-model approximation — project puff CENTRES to the
@@ -242,9 +245,9 @@ function coverageAt(s: number, hour: number): { cov: number; dens: number; n: nu
     if (Math.abs(xV / (depth * tanHalf * (16 / 9))) > 1 || Math.abs(yV / (depth * tanHalf)) > 1) continue;
     n++;
     const dist = Math.hypot(vx, vy, vz);
-    // analytic disc (legacy diagnostic only)
+    // analytic disc (legacy diagnostic only, 4c rule)
     const rPx = ((p.scale / 2 / dist) * (VH / (2 * tanHalf)));
-    area += Math.PI * rPx * rPx * p.alpha * dens * 0.45 * kept;
+    area += Math.PI * rPx * rPx * p.alpha * onFrac(p.alpha) * 0.45 * kept;
     // pixel splat: NDC → 96×54 cells, paint alpha there (max wins)
     const nx = (xV / (depth * tanHalf * (16 / 9))) * 0.5 + 0.5;
     const ny = (yV / (depth * tanHalf)) * 0.5 + 0.5;
@@ -252,7 +255,7 @@ function coverageAt(s: number, hour: number): { cov: number; dens: number; n: nu
     const ccy = Math.min(GH - 1, Math.max(0, Math.floor(ny * GH)));
     // splat radius in cells (CSS px per cell: VW/GW × VH/GH)
     const rCell = (rPx / (VW / GW) + rPx / (VH / GH)) / 2;
-    const aCell = p.alpha * dens * kept;
+    const aCell = p.alpha * onFrac(p.alpha) * kept;
     const rr = Math.max(1, Math.ceil(rCell));
     for (let oy = -rr; oy <= rr; oy++) {
       for (let ox = -rr; ox <= rr; ox++) {
@@ -305,10 +308,12 @@ for (const c of camPoses) {
   if (c.z > camYmax) camYmax = c.z;
   if (c.z < camYmin) camYmin = c.z;
 }
-// Slab mirrors cloudLayout: base = min(camY) + 300, top = max(camY) + 650.
-const bandBaseEff = camYmin + 300;
-const bandTopEff = camYmax + 650;
-console.log(`camYmax=${camYmax.toFixed(0)} camYmin=${camYmin.toFixed(0)} band=[${bandBaseEff.toFixed(0)},${bandTopEff.toFixed(0)}]`);
+// §4b FASE 4c: MAIN band mirrors cloudLayout (base = max(camY) + 250,
+// top = base + 400) + DISTANT family [2000, 2400] ≥ 3 km plan. Printed for
+// the audit; the layout itself owns the numbers (imported, never copied).
+const bandBaseEff = camYmax + 250;
+const bandTopEff = bandBaseEff + 400;
+console.log(`camYmax=${camYmax.toFixed(0)} main=[${bandBaseEff.toFixed(0)},${bandTopEff.toFixed(0)}] far=[2000,2400]+3km`);
 for (const p of cloudLayout(meta, elevFull, { n: r.n, x: r.x, y: r.y }, camPoses)) {
   layoutBase.push({ x: p.x, y: p.y, z: p.z, scale: p.scale * scaleRatio, alpha: p.alpha });
 }

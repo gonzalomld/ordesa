@@ -914,7 +914,7 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   const constsOk =
     SKY_TURBIDITY === 1.7 && SKY_RAYLEIGH === 1.6 && SKY_MIE === 0.004 && SKY_G === 0.8 &&
     SKY_SCALE === 0.22 && SKY_SAT === 2.0 && HEMI_GRAY_MIX === 0.6 && CLOUD_COVERAGE === 0.3 &&
-    CLOUD_MASK === 0.18 && CLOUD_PUFF_SCALE === 0.75 && CLOUD_COUNT === 160 &&
+    CLOUD_MASK === 0.20 && CLOUD_PUFF_SCALE === 1.10 && CLOUD_COUNT === 160 &&
     G24_HZ_RATIO === 2.2 && G24_ZEN_MIN === "#2a68b8" && G24_ZEN_MAX === "#3e86d2";
   const ok = hasProbe && readbackOk && noClone && equirect && sharedU && ownCam && constsOk
     && dispSpace && auditTrail && hotLoopGone && cadence30 && skyFlag && blitOk;
@@ -955,7 +955,7 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   const cloudSrc35 = readFileSync("src/engine/clouds.ts", "utf8");
   const noGate = !sunSrc35.includes("cloudDensity: e <=");
   const dayF = sunSrc35.includes("cloudDayF") && viewerSrc35.includes("cloudDayF")
-    && cloudSrc35.includes("uDayF") && cloudSrc35.includes("mix(nightCol, dayCol, uDayF)");
+    && cloudSrc35.includes("uDayF") && cloudSrc35.includes("top * uDayF");
   const ok = noGate && dayF;
   gate("G35-continuity", ok,
     ok
@@ -963,16 +963,15 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
       : `continuity broken (noGate=${noGate} dayF=${dayF})`);
 }
 
-// --- G36 band clearance (§4b FASE 4b): s-AWARE 3D gate — a puff anchored
-// at route fraction ps clears ≥ 900 m 3D vs poses with |s − ps| ≤ 0.2,
-// ≥ 400 m vs the rest. Slab = [min(camY) + 300, max(camY) + 650].
-// Node RECOMPUTES it with the production cloudLayout (poses carry s;
-// world→EPSG is x+cx / cy−z) and audits with POSITION anchor s (nearest
-// route fraction of the pushed puff — grading by draw index audited a
-// different puff than the one placed).
+// --- G36 band clearance (§4b FASE 4c): MAIN band strictly above every
+// lens (base = camYmax + 250) + DISTANT family ≥ 3 km plan in the low
+// band. Node RECOMPUTES both with the production cloudLayout (poses carry
+// s) and audits the s-aware 3D gate (≥900 near-in-s, ≥400 far) by POSITION
+// anchor s + the distant family's plan clearance.
 {
   const cloudSrc36 = readFileSync("src/engine/clouds.ts", "utf8");
-  const hasBand = cloudSrc36.includes("CLOUD_BAND_LO_M") && cloudSrc36.includes("CLOUD_FAR_MARGIN_M");
+  const hasBand = cloudSrc36.includes("CLOUD_BAND_LIFT_M") && cloudSrc36.includes("CLOUD_FAR_MIN_M")
+    && cloudSrc36.includes("CLOUD_FAR_BAND_LO_M");
   // recompute: pose sweep (verify ropeAt + safety + floor) in EPSG frame
   const { cloudLayout: cl36 } = await import("../src/engine/clouds.ts");
   const poses36: { x: number; y: number; z: number }[] = [];
@@ -1030,7 +1029,9 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     if (c.z < camYmin) camYmin = c.z;
   }
   const lay36 = cl36(meta as unknown as Parameters<typeof cl36>[0], elevFull36(), { n: r.n, x: r.x, y: r.y }, poses36);
-  // Audit by POSITION anchor s (nearest route fraction of the pushed puff).
+  // Audit by POSITION anchor s (nearest route fraction of the pushed puff)
+  // + MAIN-vs-DISTANT split: puffs at z ≥ mainBase belong to MAIN (slab
+  // rule), below it to DISTANT (plan-clearance rule).
   const anchorS36 = (x: number, y: number): number => {
     let bi = 0;
     let bd = Infinity;
@@ -1058,14 +1059,32 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
       }
     }
   }
-  const bandBase = camYmin + 300;
-  const bandTop = camYmax + 650;
-  const inSlab = lay36.every((p) => p.z >= bandBase - 1 && p.z <= bandTop + 400);
-  const ok = hasBand && minNear >= 900 && minFar >= 400 && inSlab;
+  const mainBase = camYmax + 250;
+  const mainTop = mainBase + 400;
+  // Families by INDEX (layout push order: main[0:120], far[120:160]) —
+  // never by z (ridge-lift max(ground+120,·) can push a far puff above
+  // mainBase; that is correct placement, not a smuggled fallback).
+  const main = lay36.slice(0, 120);
+  const far = lay36.slice(120);
+  const mainInSlab = main.every((p) => p.z >= mainBase - 1 && p.z <= mainTop + 400);
+  const farInBand = far.every((p) => {
+    const gz = p.z;
+    return gz >= 2000 - 1 && gz <= 2400 + 1200;
+  });
+  // far plan clearance: ≥ 3 km plan to EVERY pose (recomputed, not trusted).
+  let minFarPlan = Infinity;
+  for (const p of far) {
+    for (const c of poses36) {
+      const dp = Math.hypot(p.x - (c.x as number), p.y - (c.y as number));
+      if (dp < minFarPlan) minFarPlan = dp;
+    }
+  }
+  const ok = hasBand && minNear >= 900 && minFar >= 400 && mainInSlab && farInBand
+    && minFarPlan >= 3000 && lay36.length === 160;
   gate("G36-band", ok,
     ok
-      ? `slab [${bandBase.toFixed(0)},${bandTop.toFixed(0)}], min near-in-s 3D ${(minNear).toFixed(0)} m (need ≥900), min far ${(minFar).toFixed(0)} m (need ≥400)`
-      : `band broken (near=${minNear.toFixed(0)} need ≥900, far=${minFar.toFixed(0)} need ≥400, slab=[${bandBase.toFixed(0)},${bandTop.toFixed(0)}])`);
+      ? `main [${mainBase.toFixed(0)},${mainTop.toFixed(0)}] n=${main.length}, far [2000,2400]+3km n=${far.length} minPlan ${(minFarPlan).toFixed(0)}, near ${(minNear).toFixed(0)} (≥900), far ${(minFar).toFixed(0)} (≥400)`
+      : `band broken (near=${minNear.toFixed(0)} ≥900, far=${minFar.toFixed(0)} ≥400, farPlan=${minFarPlan.toFixed(0)} ≥3000, main=${main.length} far=${far.length})`);
 }
 
 // --- heightfield array for the G36 layout recompute (same RG decode) ---
@@ -1080,24 +1099,59 @@ function elevFull36(): Float32Array {
   return out;
 }
 
-// --- G24c cloud cover (§4b FASE 4b: PIXEL meter). __cloudCoverPx in
-// [0.26,0.34] at 12:00 in s=0.18/0.50/0.80, ≥0.15 at 9:00 and 20:50.
-// Node checks the CONTRACT (flat probe pass + sky-mask count + analytic
-// meter beside it + cap on the analytic); the NUMBERS come from prod.
+// --- G24c cloud cover (§4b FASE 4c: PIXEL meter, no try/catch). __cloudCoverPx
+// in [0.26,0.34] at 12:00 in s=0.18/0.50/0.80, ≥0.15 at 9:00 and 20:50.
+// Node checks the CONTRACT (flat probe pass + sky-mask count + G41/G42/G43
+// readers + loud failure path); the NUMBERS come from prod.
 {
   const viewerSrcC = readFileSync("src/engine/viewer.ts", "utf8");
   const cloudSrcC = readFileSync("src/engine/clouds.ts", "utf8");
   const flatPass = viewerSrcC.includes("cloudPxMat") && viewerSrcC.includes("cloudPxTarget")
     && viewerSrcC.includes("probeUniforms");
   const skyMask = viewerSrcC.includes("__cloudCoverPx") && viewerSrcC.includes("occBuf[mo]");
-  const beside = viewerSrcC.includes("clouds.getCoverage()");
-  const capCal = viewerSrcC.includes("clouds.setCap(clouds.getCoverage() > 0.38)");
-  const layoutOk = cloudSrcC.includes("CLOUD_BAND_LIFT_M") && cloudSrcC.includes("CLOUD_CORRIDOR_MIN_M");
-  const ok = flatPass && skyMask && beside && capCal && layoutOk;
+  const loud = viewerSrcC.includes("__cloudCoverPxErr");
+  const parentBack = viewerSrcC.includes("prevParent");
+  const g414243 = viewerSrcC.includes("__cloudDense") && viewerSrcC.includes("__cloudOnTerr")
+    && viewerSrcC.includes("__cloudLuma") && viewerSrcC.includes("publishCloudColor");
+  const layoutOk = cloudSrcC.includes("CLOUD_BAND_LIFT_M") && cloudSrcC.includes("CLOUD_FAR_MIN_M");
+  const ok = flatPass && skyMask && loud && parentBack && g414243 && layoutOk;
   gate("G24c-cover", ok,
     ok
-      ? "flat probe (live uniforms) + sky-mask count → __cloudCoverPx, analytic beside it, cap 0.38 — measure [0.26,0.34] @12:00 (0.18/0.50/0.80), ≥0.15 @9:00/20:50"
-      : `cover contract broken (flat=${flatPass} mask=${skyMask} beside=${beside} cap=${capCal} layout=${layoutOk})`);
+      ? "flat probe (live uniforms, loud errors, parent restore) + sky-mask → __cloudCoverPx + G41/G42/G43 — measure [0.26,0.34] @12:00, ≥0.15 @9:00/20:50"
+      : `cover contract broken (flat=${flatPass} mask=${skyMask} loud=${loud} parent=${parentBack} g414243=${g414243} layout=${layoutOk})`);
+}
+
+// --- G41 dense cores (§4b FASE 4c): top-decile cloud RT alpha ≥ 0.8.
+// Node checks the reader exists; the NUMBER comes from prod.
+{
+  const viewerSrc41 = readFileSync("src/engine/viewer.ts", "utf8");
+  const ok = viewerSrc41.includes("__cloudDense");
+  gate("G41-cores", ok,
+    ok
+      ? "__cloudDense (top-decile RT alpha) published — measure ≥0.8 @12:00"
+      : "no __cloudDense probe in viewer.ts");
+}
+
+// --- G42 cloud colour (§4b FASE 4c): mean canvas colour of cloud pixels —
+// luma ≥ 0.72, chroma ≤ 0.10. Node checks the reader exists; prod decides.
+{
+  const viewerSrc42 = readFileSync("src/engine/viewer.ts", "utf8");
+  const ok = viewerSrc42.includes("__cloudLuma") && viewerSrc42.includes("__cloudChroma");
+  gate("G42-colour", ok,
+    ok
+      ? "__cloudLuma/__cloudChroma published — measure luma≥0.72 chroma≤0.10 @12:00"
+      : "no __cloudLuma/__cloudChroma probe in viewer.ts");
+}
+
+// --- G43 terrain overlap (§4b FASE 4c): cloud-on-terrain ≤ 5% of terrain
+// pixels at s=0.99. Node checks the reader; prod decides.
+{
+  const viewerSrc43 = readFileSync("src/engine/viewer.ts", "utf8");
+  const ok = viewerSrc43.includes("__cloudOnTerr");
+  gate("G43-overlap", ok,
+    ok
+      ? "__cloudOnTerr published — measure ≤0.05 @s=0.99"
+      : "no __cloudOnTerr probe in viewer.ts");
 }
 
 // --- G30 blue sky (§4b FASE 4b: pixel cover). Visible blue ≥ 0.45 of total

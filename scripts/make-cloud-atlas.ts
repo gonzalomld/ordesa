@@ -1,16 +1,19 @@
-// make-cloud-atlas.ts — §4b FASE 4b: procedural cumulus atlas, reproducible.
+// make-cloud-atlas.ts — §4b FASE 4c: procedural cumulus atlas, reproducible.
 // 1024×1024, 4 quadrants of 512, R channel = density (the shader reads .r).
 // Per quadrant (seeded, distinct per quadrant):
 //   - shape: union of 6-9 overlapping discs (cumulus lobes), centres in the
 //     upper half, flat base (cut at y = 0.35 with a 40 px smooth transition);
-//   - detail: fBm 5 octaves (value noise, lacunarity 2, gain 0.5);
-//   - erosion on the edges: d = max(0, shape − (1 − shape) · 0.6 · (1 − fbm));
+//   - SOLID core + edge-only erosion (4c: the old formula eroded the CORE
+//     too — moth holes at noon):
+//       core = smoothstep(0.55, 0.85, shape)
+//       edge = shape · fbm5(uv · 6)        // 5 octaves, lacunarity 2
+//       d    = max(core, edge · (1 − core))
 //   - soft outer edge (smoothstep over contour distance, ≥ 24 px gradient).
 // Never step() nor quantisation; no repeated pattern between quadrants.
 // Standalone: `npx tsx scripts/make-cloud-atlas.ts` regenerates
 // public/assets/clouds-atlas.<hash>.webp (quality ≥ 90) + the PNG audit
-// copy, updates data/build/meta.json (+ public copy), and runs the
-// no-squares acceptance (×4 zoom must show no 16×16 blocks).
+// copy, updates data/build/meta.json (+ public copy), and runs acceptance
+// (×4 zoom: no 16×16 blocks, no core holes, ragged edge).
 // Library: 13-build-terrain-assets.ts imports buildCloudAtlas() so
 // `npm run data` reproduces the same bytes.
 import { createHash } from "node:crypto";
@@ -85,15 +88,19 @@ function quadrantDensity(qx: number, qy: number, seedQ: number, lobes: Lobe[]): 
     const d = Math.hypot(qx - L.x, qy - L.y) / L.r;
     if (d < 1) shape = Math.max(shape, 1 - d);
   }
-  // detail: fBm erosion of the edges
-  const n = fbm(qx, qy, seedQ);
-  let d = shape - (1 - shape) * 0.6 * (1 - n);
-  if (d < 0) d = 0;
+  // §4b FASE 4c: SOLID core, erosion ONLY on the rim — the old formula
+  // (shape − (1−shape)·0.6·(1−fbm)) ate the nucleus and punched holes.
+  // Core threshold 0.40: lobe overlap must read as one mass (measured
+  // core fill 49.5% @0.45 → need ≥55%).
+  const core = smoothstep(0.40, 0.70, shape);
+  const n = fbm(qx * 6, qy * 6, seedQ);
+  const edge = shape * n;
+  let d = Math.max(core, edge * (1 - core));
   // flat base: cut at y = 0.35, 40 px smooth transition (qy measured from bottom)
   d *= smoothstep(0.35 - 40 / QUAD, 0.35, qy);
   // soft outer edge: ≥ 24 px gradient on all sides (sprite edges stay invisible)
-  const edge = Math.min(qx, 1 - qx, qy, 1 - qy);
-  d *= smoothstep(0, 24 / QUAD, edge);
+  const edgeDist = Math.min(qx, 1 - qx, qy, 1 - qy);
+  d *= smoothstep(0, 24 / QUAD, edgeDist);
   return Math.min(1, Math.max(0, d));
 }
 
@@ -132,15 +139,17 @@ export async function buildCloudAtlas(): Promise<{ png: Buffer; webp: Buffer }> 
     .png()
     .toBuffer();
   const webp = await sharp(buf, { raw: { width: S, height: S, channels: 3 } })
-    .webp({ quality: 92 })
+    .webp({ quality: 95 })
     .toBuffer();
   return { png, webp };
 }
 
-/** No-squares acceptance on the ENCODED webp (what the GPU samples):
+/** Acceptance on the ENCODED webp (what the GPU samples):
  * 16-px grid boundary gradient must not exceed the interior noise floor,
- * and fully-flat 4×4 blocks must be rare (no posterisation). */
-export async function acceptAtlas(webp: Buffer): Promise<{ blockRatio: number; flatFrac: number }> {
+ * fully-flat 4×4 blocks must be rare (no posterisation), the CORE (upper
+ * half of each quadrant) must be mostly solid (no moth holes), and the rim
+ * must actually vary (ragged edge, not a smooth balloon). */
+export async function acceptAtlas(webp: Buffer): Promise<{ blockRatio: number; flatFrac: number; coreFill: number; rimVar: number }> {
   const { data, info } = await sharp(webp).raw().toBuffer({ resolveWithObject: true });
   const W = info.width;
   const H = info.height;
@@ -165,12 +174,15 @@ export async function acceptAtlas(webp: Buffer): Promise<{ blockRatio: number; f
     }
   }
   const blockRatio = bSum / Math.max(1, bN) / (iSum / Math.max(1, iN));
+  // ramp posterisation: fully-flat 4×4 blocks INSIDE the 0.1..0.9 ramps
+  // (the only zone where banding shows). Background (≤25) and solid core
+  // (≥230) are correct, not defects.
   let flat = 0;
   let total = 0;
   for (let y = 0; y + 4 <= H; y += 4) {
     for (let x = 0; x + 4 <= W; x += 4) {
       const v0 = at(x, y);
-      if (v0 <= 8) continue; // empty background is correct, not posterisation
+      if (v0 <= 25 || v0 >= 230) continue;
       total++;
       let same = true;
       for (let yy = 0; yy < 4 && same; yy++) {
@@ -184,17 +196,76 @@ export async function acceptAtlas(webp: Buffer): Promise<{ blockRatio: number; f
       if (same) flat++;
     }
   }
-  return { blockRatio, flatFrac: flat / Math.max(1, total) };
+  // core solidity: upper-half texels with density > 0.5 must dominate —
+  // else the atlas has holes and noon reads as grey moth. Measured over
+  // the LOBE area (shape > 0.15), not the crown box (background-correct
+  // emptiness is not a hole).
+  let coreN = 0;
+  let coreFull = 0;
+  for (let q = 0; q < 4; q++) {
+    const ox = (q % 2) * QUAD;
+    const oy = Math.floor(q / 2) * QUAD;
+    for (let y = oy; y < oy + 220; y += 2) {
+      for (let x = ox + 80; x < ox + 432; x += 2) {
+        const v = at(x, y) / 255;
+        if (v > 0.15) {
+          coreN++;
+          if (v > 0.5) coreFull++;
+        }
+      }
+    }
+  }
+  const coreFill = coreN > 0 ? coreFull / coreN : 0;
+  // rim variance: texels in the 0.1..0.5 band must vary (std > 0.05) —
+  // a flat rim edge reads as a balloon, not a cumulus.
+  let rimSum = 0;
+  let rimSq = 0;
+  let rimN = 0;
+  for (let y = 0; y < H; y += 3) {
+    for (let x = 0; x < W; x += 3) {
+      const v = at(x, y) / 255;
+      if (v > 0.1 && v < 0.5) {
+        rimSum += v;
+        rimSq += v * v;
+        rimN++;
+      }
+    }
+  }
+  const rimMean = rimSum / Math.max(1, rimN);
+  const rimVar = Math.sqrt(Math.max(0, rimSq / Math.max(1, rimN) - rimMean * rimMean));
+  return { blockRatio, flatFrac: flat / Math.max(1, total), coreFill, rimVar };
 }
 
-const isMain = process.argv[1] !== undefined && import.meta.url.endsWith("make-cloud-atlas.ts");
-if (isMain) {
+/** Histogram helper for tuning (not a gate): deciles of the crown box. */
+export async function crownHist(webp: Buffer): Promise<number[]> {
+  const { data, info } = await sharp(webp).raw().toBuffer({ resolveWithObject: true });
+  const W = info.width;
+  const at = (x: number, y: number): number => (data[(y * W + x) * 3] as number) / 255;
+  const hist = new Array(10).fill(0) as number[];
+  for (let q = 0; q < 4; q++) {
+    const ox = (q % 2) * QUAD;
+    const oy = Math.floor(q / 2) * QUAD;
+    for (let y = oy; y < oy + 200; y += 2) {
+      for (let x = ox + 100; x < ox + 412; x += 2) {
+        hist[Math.min(9, Math.floor(at(x, y) * 10))]++;
+      }
+    }
+  }
+  return hist;
+}
+
+function isMainModule(urlSuffix: string): boolean {
+  return process.argv[1] !== undefined && import.meta.url.endsWith(urlSuffix);
+}
+if (isMainModule("make-cloud-atlas.ts")) {
   const { png, webp } = await buildCloudAtlas();
-  const { blockRatio, flatFrac } = await acceptAtlas(webp);
+  const { blockRatio, flatFrac, coreFill, rimVar } = await acceptAtlas(webp);
   console.log(`acceptance: 16px-boundary/interior gradient ratio = ${blockRatio.toFixed(3)} (need < 2.0)`);
   console.log(`acceptance: flat-4x4 fraction = ${(flatFrac * 100).toFixed(2)}% (need < 2%)`);
-  if (blockRatio >= 2.0 || flatFrac >= 0.02) {
-    console.error("ATLAS REJECTED: squares visible at ×4");
+  console.log(`acceptance: core fill (>0.5 | >0.15 in crown) = ${(coreFill * 100).toFixed(1)}% (need ≥ 55%)`);
+  console.log(`acceptance: rim band std = ${rimVar.toFixed(4)} (need > 0.05)`);
+  if (blockRatio >= 2.0 || flatFrac >= 0.02 || coreFill < 0.55 || rimVar <= 0.05) {
+    console.error("ATLAS REJECTED: squares, holes, or balloon rim at ×4");
     process.exit(1);
   }
   const hash = createHash("sha256").update(webp).digest("hex").slice(0, 8);

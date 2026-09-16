@@ -254,9 +254,11 @@ async function save(kind: string, buf: Buffer): Promise<void> {
 {
   const { buildCloudAtlas, acceptAtlas } = await import("./make-cloud-atlas.ts");
   const { png, webp } = await buildCloudAtlas();
-  const { blockRatio, flatFrac } = await acceptAtlas(webp);
-  console.log(`cloud atlas acceptance: blockRatio=${blockRatio.toFixed(3)} flat=${(flatFrac * 100).toFixed(2)}%`);
-  if (blockRatio >= 2.0 || flatFrac >= 0.02) throw new Error("ATLAS REJECTED: squares visible at ×4");
+  const { blockRatio, flatFrac, coreFill, rimVar } = await acceptAtlas(webp);
+  console.log(`cloud atlas acceptance: blockRatio=${blockRatio.toFixed(3)} flat=${(flatFrac * 100).toFixed(2)}% core=${(coreFill * 100).toFixed(1)}% rimStd=${rimVar.toFixed(4)}`);
+  if (blockRatio >= 2.0 || flatFrac >= 0.02 || coreFill < 0.55 || rimVar <= 0.05) {
+    throw new Error("ATLAS REJECTED: squares, holes, or balloon rim at ×4");
+  }
   const { createHash } = await import("node:crypto");
   const h = createHash("sha256").update(webp).digest("hex").slice(0, 8);
   writeFileSync(`${OUT}/clouds-atlas.${h}.webp`, webp);

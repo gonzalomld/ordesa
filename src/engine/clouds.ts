@@ -1,20 +1,24 @@
-// clouds.ts — S1 + §4b FASE 4: convection billboards that sit ABOVE the
+// clouds.ts — S1 + §4b FASE 4c: convection billboards that sit ABOVE the
 // terrain, with the production layout exported for the Node coverage
 // predictor (scripts/predict-clouds.ts) so the meter and the drawing can
 // never drift apart again.
 //
-// Placement is terrain-relative (ground + 500-800 m, sampled bilinear from
-// the decoded heightmap), quads are 250-600 m, alpha caps at 0.55, density
-// is halved. Soft intersection fade comes from a real heightfield sample in
-// the fragment shader (uHeightMap): alpha → 0 where the fragment is at or
-// below the terrain, so no hard quad cuts against crests.
+// Coverage comes from NUMBER and SIZE of puffs, never transparency:
+// per-puff alpha in [0.75, 0.95]; uDensity gates HOW MANY puffs are on
+// (lowest seed-alpha first), never their opacity. Soft intersection fade
+// comes from a real heightfield sample in the fragment shader (uHeightMap).
 import * as THREE from "three";
-import { CLOUD_BAND_DEPTH_M, CLOUD_BAND_LIFT_M, CLOUD_BAND_LO_M, CLOUD_CORRIDOR_MIN_M, CLOUD_FAR_MARGIN_M, CLOUD_MASK, CLOUD_PUFF_SCALE } from "../narrative/choreography.ts";
+import { CLOUD_BAND_DEPTH_M, CLOUD_BAND_LIFT_M, CLOUD_CORRIDOR_MIN_M, CLOUD_FAR_BAND_HI_M, CLOUD_FAR_BAND_LO_M, CLOUD_FAR_MARGIN_M, CLOUD_FAR_MIN_M, CLOUD_MASK, CLOUD_PUFF_SCALE } from "../narrative/choreography.ts";
 import type { Meta } from "./terrain.ts";
 
 /** §4b FASE 4: instance count (step b knob: +20% per step). */
 export const CLOUD_COUNT = 160;
-const ALPHA_CAP = 0.55;
+/** §4b FASE 4c: per-puff alpha floor/ceiling — coverage via number+size,
+ * never transparency (≤0.55 made everything veil). */
+export const CLOUD_ALPHA_LO = 0.75;
+export const CLOUD_ALPHA_HI = 0.95;
+/** §4b FASE 4c: distant-family share (horizon-only puffs for low acts). */
+export const CLOUD_FAR_COUNT = 40;
 
 export interface Clouds {
   group: THREE.Group;
@@ -82,44 +86,44 @@ export interface CloudCamPose {
   s?: number;
 }
 
-/** §4b FASE 4b: the production layout — a WIDE slab serving all framings.
- * Slab = [min(camY) + 300, max(camY) + 650] from the pose sweep: low
- * framings see the low puffs far away (elevation under the top ray), high
- * framings see the high puffs. A single base (camYmax + 250) sat above
- * every top ray at s=0.18 → 0 puffs in frame (measured).
- * The 3D gate (≥ 900 m to EVERY pose, plan + altitude) keeps the slab out
- * of the flight path: a low puff far in plan from a high camera passes.
- * First quarter (40): ORIGINAL uniform draws (mulberry(20260816), same
- * call order — background depth, unchanged numbers).
- * Rest (120): corridor-biased (seed 20260418) — random route point
+/** §4b FASE 4c: the production layout — MAIN band strictly above every
+ * framing + distant horizon family for the low acts.
+ * MAIN band = [camYmax + 250, +400] (as 4b required): the slab experiment
+ * parked the camera INSIDE the band — fly-through + blind meter. Above
+ * every lens, always.
+ * DISTANT family (40): ≥ 3 km plan from EVERY pose, fixed low band
+ * [2000, 2400]: horizon-only puffs the high main band cannot serve at
+ * s < 0.10. Published in __cloudBand as both families.
+ * The 3D gate (≥ 900 m near-in-s, ≥ 400 m far) keeps both out of lenses.
+ * First quarter of MAIN (30): ORIGINAL uniform draws (mulberry(20260816),
+ * same call order — background depth, unchanged numbers).
+ * Rest of MAIN (90): corridor-biased (seed 20260418) — random route point
  * ±(900-1800 m) lateral. predict-clouds.ts imports this, never a copy. */
 export function cloudLayout(
   meta: CloudLayoutMeta,
   elev: Float32Array,
   route?: CloudRoute,
-  /** §4b FASE 4b: EPSG-plan camera samples ({x, y} ground coords, z =
-   * altitude). Slab = [min(camY) + 300, max(camY) + 650]; corridor
-   * rejection tests 3D distance in metres (no world transform — the
-   * layout never mixes frames). */
+  /** §4b FASE 4c: EPSG-plan camera samples ({x, y} ground coords, z =
+   * altitude). MAIN band = [max(camY) + 250, +400]; DISTANT family in the
+   * fixed low band, ≥ 3 km plan from every pose. Rejection is 3D
+   * (no world transform — the layout never mixes frames). */
   camPoses?: CloudCamPose[],
 ): CloudPuff[] {
   const rnd = mulberry(20260816);
   const spanX = meta.bbox.maxx - meta.bbox.minx;
   const out: CloudPuff[] = [];
-  // §4b FASE 4b: slab serving every framing — base = min(camY) + 300,
-  // top = max(camY) + 650. The caller owns the geometry (viewer boot sweep
-  // passes the camY range through camPoses z); the layout honours the slab.
+  // §4b FASE 4c: MAIN band above every lens — base = max(camY) + 250,
+  // top = base + 400. The caller owns the geometry (viewer boot sweep
+  // passes camYmax through camPoses z); the layout honours the band.
   let bandBase = 1900;
   let bandTop = 2300;
   if (camPoses && camPoses.length > 0) {
     let top = -Infinity;
-    let bot = Infinity;
     for (const c of camPoses) {
       if (c.z > top) top = c.z;
-      if (c.z < bot) bot = c.z;
     }
-    bandBase = bot + CLOUD_BAND_LO_M;
-    bandTop = top + CLOUD_BAND_DEPTH_M + CLOUD_BAND_LIFT_M;
+    bandBase = top + CLOUD_BAND_LIFT_M;
+    bandTop = bandBase + CLOUD_BAND_DEPTH_M;
   }
   // Anchor s of an arbitrary plan position ≈ nearest route fraction
   // (route is uniform-arc by construction). Lets uniform draws be graded
@@ -170,7 +174,9 @@ export function cloudLayout(
       y,
       z,
       scale,
-      alpha: Math.min(ALPHA_CAP, 0.15 + rr() * 0.4),
+      // §4b FASE 4c: coverage via NUMBER and SIZE, never transparency —
+      // per-puff alpha in [0.75, 0.95] (≤0.55 made everything veil).
+      alpha: CLOUD_ALPHA_LO + rr() * (CLOUD_ALPHA_HI - CLOUD_ALPHA_LO),
       quad: Math.floor(rr() * 4),
       rot: rr() * Math.PI * 2,
     });
@@ -184,12 +190,12 @@ export function cloudLayout(
     const y = meta.bbox.miny + (0.3 + rr() * 0.7) * (meta.bbox.maxy - meta.bbox.miny);
     pushUniformAt(rr, x, y);
   };
-  // §4b FASE 4: corridor share — 3/4 of the puffs ride the route so every
-  // act has skyline puffs (uniform-only left s=0.18 with 1 puff in frame).
-  // §4b FASE 4b: the uniform quarter ALSO respects the 900 m gate when
-  // poses are known (a uniform draw inside any pose disc is rejected and
-  // retried — the gate is about the CAMERA, not the route).
-  const half = Math.floor(CLOUD_COUNT / 4);
+  // §4b FASE 4c: MAIN family = CLOUD_COUNT − CLOUD_FAR_COUNT. First
+  // quarter of MAIN: ORIGINAL uniform draws (mulberry(20260816), same call
+  // order — background depth, unchanged numbers). Rest of MAIN:
+  // corridor-biased (seed 20260418). DISTANT family appended after.
+  const mainCount = CLOUD_COUNT - CLOUD_FAR_COUNT;
+  const half = Math.floor(mainCount / 4);
   for (let i = 0; i < half; i++) {
     if (camPoses && camPoses.length > 0) {
       // uniform draws are graded by POSITION anchor s (nearest route
@@ -212,7 +218,7 @@ export function cloudLayout(
   // Corridor puffs: route point + lateral offset (own rng, so the uniform
   // draws above keep their EXACT original sequence).
   const rnd2 = mulberry(20260418);
-  for (let i = half; i < CLOUD_COUNT; i++) {
+  for (let i = half; i < mainCount; i++) {
     if (route && route.n > 1) {
       let placed = false;
       for (let attempt = 0; attempt < 24 && !placed; attempt++) {
@@ -230,16 +236,7 @@ export function cloudLayout(
         // the one pushed (measured: 451 m near-gate violation from a draw
         // graded far). EPSG plan + altitude, no world transform.
         if (!gate3D(x, y, z, anchorS(x, y))) continue;
-        const scale = (250 + rnd2() * 350) * CLOUD_PUFF_SCALE;
-        out.push({
-          x,
-          y,
-          z,
-          scale,
-          alpha: Math.min(ALPHA_CAP, 0.15 + rnd2() * 0.4),
-          quad: Math.floor(rnd2() * 4),
-          rot: rnd2() * Math.PI * 2,
-        });
+        pushPuff(rnd2, x, y, z);
         placed = true;
       }
       if (!placed) {
@@ -259,6 +256,84 @@ export function cloudLayout(
       }
     } else {
       pushUniform(rnd2);
+    }
+  }
+  // §4b FASE 4c: DISTANT family (horizon-only for low acts) — own rng
+  // (seed 20260501), fixed low band, ≥ 3 km plan from EVERY pose. AIMED,
+  // not uniform-random: 40 random-far puffs give ~1 in-frame by solid
+  // angle (measured: 0/160 everywhere). Each puff picks a random pose,
+  // steps 3.5-6 km along the TRAVEL direction (pose[i+1]−pose[i] ≈ view
+  // dir, no new imports), jitters ±1 km lateral, and lands in the band.
+  // Rejected candidates retry; EVERY fallback stays in the FAR band +
+  // far gate (a main-slab pushUniform here would smuggle far puffs into
+  // the main band and break the family audit — measured).
+  const rnd3 = mulberry(20260501);
+  const pushFarAt = (x: number, y: number): number => {
+    const ground = sampleElev(elev, meta as Meta, x, y);
+    return Math.max(ground + 120, CLOUD_FAR_BAND_LO_M + rnd3() * (CLOUD_FAR_BAND_HI_M - CLOUD_FAR_BAND_LO_M));
+  };
+  const farClear = (x: number, y: number): boolean => {
+    if (!camPoses || camPoses.length === 0) return true;
+    for (const c of camPoses) {
+      if (Math.hypot(x - c.x, y - c.y) < CLOUD_FAR_MIN_M) return false;
+    }
+    return true;
+  };
+  const aimFar = (): { x: number; y: number } => {
+    // random pose → forward along travel → 3.5-6 km out → ±1 km lateral
+    const n = camPoses && camPoses.length > 1 ? camPoses.length : 0;
+    if (n < 2) {
+      return {
+        x: meta.bbox.minx + rnd3() * spanX,
+        y: meta.bbox.miny + rnd3() * (meta.bbox.maxy - meta.bbox.miny),
+      };
+    }
+    const k = Math.floor(rnd3() * (n - 1));
+    const a = camPoses[k] as CloudCamPose;
+    const b = camPoses[k + 1] as CloudCamPose;
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    const dl = Math.hypot(dx, dy) || 1;
+    dx /= dl;
+    dy /= dl;
+    const dist = 3500 + rnd3() * 2500;
+    const lat = (rnd3() * 2 - 1) * 1000;
+    return {
+      x: a.x + dx * dist - dy * lat,
+      y: a.y + dy * dist + dx * lat,
+    };
+  };
+  for (let i = 0; i < CLOUD_FAR_COUNT; i++) {
+    let placed = false;
+    for (let attempt = 0; attempt < 24 && !placed; attempt++) {
+      const { x: rx, y: ry } = aimFar();
+      const x = Math.min(meta.bbox.maxx - 100, Math.max(meta.bbox.minx + 100, rx));
+      const y = Math.min(meta.bbox.maxy - 100, Math.max(meta.bbox.miny + 100, ry));
+      const z = pushFarAt(x, y);
+      if (!farClear(x, y)) continue;
+      pushPuff(rnd3, x, y, z);
+      placed = true;
+    }
+    if (!placed) {
+      // far-gated fallback (own draws, bounded, SAME band + gate)
+      for (let attempt = 0; attempt < 24 && !placed; attempt++) {
+        const { x: rx, y: ry } = aimFar();
+        const x = Math.min(meta.bbox.maxx - 100, Math.max(meta.bbox.minx + 100, rx));
+        const y = Math.min(meta.bbox.maxy - 100, Math.max(meta.bbox.miny + 100, ry));
+        const z = pushFarAt(x, y);
+        if (!farClear(x, y)) continue;
+        pushPuff(rnd3, x, y, z);
+        placed = true;
+      }
+      if (!placed) {
+        // last resort: far corner of the bbox (still far-gated; if even
+        // that fails the bbox is too small for 40 far puffs — loud).
+        const x = meta.bbox.minx + 100;
+        const y = meta.bbox.miny + 100;
+        if (!farClear(x, y)) throw new Error("cloudLayout: bbox too small for CLOUD_FAR_COUNT far puffs");
+        pushPuff(rnd3, x, y, pushFarAt(x, y));
+        placed = true;
+      }
     }
   }
   return out;
@@ -351,7 +426,8 @@ export function buildClouds(
     blendDst: THREE.OneMinusSrcAlphaFactor,
     vertexShader: `
       attribute vec4 aData; // x: quadrant, y: rotation, z: scale, w: alpha seed
-      varying vec2 vUv; varying float vShade; varying float vAlpha; varying vec3 vWPos; varying float vBelow;
+      varying vec2 vUv; varying float vFace; varying float vAlpha; varying vec3 vWPos; varying float vAbove;
+      varying float vSeed;
       uniform vec3 uSunDir; uniform float uDensity; uniform float uTime; uniform float uCap; uniform float uMask;
       uniform float uCamY;
       void main(){
@@ -365,46 +441,51 @@ export function buildClouds(
         vec3 up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
         vec3 wp = c.xyz + right * rp.x + up * rp.y;
         vWPos = wp;
-        // §4b FASE 4b: per-puff epilogue height fade — puffs ≥ 500 m below
-        // the camera vanish, horizon puffs stay (G37 keeps the loop clear).
-        vBelow = smoothstep(uCamY - 500.0, uCamY - 150.0, c.y);
-        // wrap lighting with the real sun dir (cheap backlight rim)
+        // §4b FASE 4c: per-puff ABOVE fade — 1 when the puff is at/above
+        // the camera, 0 when ≥ 400 m below (epilogue from above: the loop
+        // stays clear, horizon puffs stay). Replaces belowFade (dead).
+        vAbove = 1.0 - smoothstep(100.0, 400.0, cameraPosition.y - c.y);
+        // sun-facing factor for the lit/shade split (vertex, cheap).
         vec3 toSun = normalize(uSunDir);
-        float facing = clamp(dot(normalize(cameraPosition - wp), toSun)*0.5+0.5, 0.0, 1.0);
-        vShade = 0.55 + 0.65*facing;
-        vAlpha = aData.w * uDensity * uCap;
+        vFace = clamp(dot(normalize(cameraPosition - wp), toSun)*0.5+0.5, 0.0, 1.0);
+        vSeed = aData.w;
+        // §4b FASE 4c: uDensity gates HOW MANY puffs are on — seeds in
+        // [0.75,0.95], threshold = 0.70+0.30·density (smooth 0.05 window,
+        // never a pop): dawn (0.45) lights the low-seed half, noon lights
+        // all. Alpha itself is NOT scaled (coverage via number+size).
+        float onF = smoothstep(vSeed - 0.05, vSeed + 0.05, 0.70 + 0.30 * uDensity);
+        vAlpha = aData.w * onF * uCap;
         gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
       }`,
     fragmentShader: `
-      varying vec2 vUv; varying float vShade; varying float vAlpha; varying vec3 vWPos; varying float vBelow;
+      varying vec2 vUv; varying float vFace; varying float vAlpha; varying vec3 vWPos; varying float vAbove;
+      varying float vSeed;
       uniform sampler2D uMap; uniform sampler2D uHeightMap;
       uniform vec2 uHMin; uniform vec2 uHSize; uniform float uHMaxY; uniform vec2 uHCenter;
       uniform float uZenithFade; uniform float uMask; uniform float uBelowFade;
       uniform vec3 uSunColor; uniform vec3 uHemiSky; uniform float uDayF;
+      float hemiLuma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
       void main(){
         // soft particles: fade where the fragment meets the terrain
         vec2 epsg = vec2(vWPos.x + uHCenter.x, uHCenter.y - vWPos.z);
         vec2 huv = vec2((epsg.x - uHMin.x) / uHSize.x, (uHMaxY - epsg.y) / uHSize.y);
         float terr = texture2D(uHeightMap, huv).r;
         float soft = smoothstep(terr + 20.0, terr + 150.0, vWPos.y);
-        // §4 correction: puff MASK — the atlas texel must clear uMask
-        // (smoothstep uMask..uMask+0.08) or the fragment dies. This is the
-        // knob that sets the 0.30 coverage: raising the mask eats the faint
-        // veil first (the 45% of texels below 0.012 go at any mask > 0) and
-        // keeps the dense cores. uMask = CLOUD_MASK.
+        // puff mask (atlas texel must clear uMask) — dense cores survive.
         float tex = texture2D(uMap, vUv).r;
         float m = smoothstep(uMask, uMask + 0.08, tex);
-        // A9: from above, billboards read as stains on the ground, not
-        // clouds. Fade toward the zenith; grazing views keep full density.
-        // §4b FASE 4b: below-fade (epilogue from above) multiplies with A9.
-        float a = tex * m * vAlpha * soft * (1.0 - uZenithFade) * mix(1.0, vBelow, uBelowFade);
+        // A9: from above, billboards read as stains — fade to zenith.
+        // §4b FASE 4c: above-fade (from above, ≥400 m below vanishes).
+        float a = tex * m * vAlpha * soft * (1.0 - uZenithFade) * mix(1.0, vAbove, uBelowFade);
         if (a < 0.004) discard;
-        // §4b FASE 4b: continuous presence — dayF fades the LIGHT, never
-        // the alpha (G35). Night/twilight: blue-grey masses; day: sun-white
-        // with the wrap shade. uHemiSky comes from the same valley fill.
-        vec3 nightCol = uHemiSky * 0.9;
-        vec3 dayCol = uSunColor * vShade;
-        vec3 col = mix(nightCol, dayCol, uDayF);
+        // §4b FASE 4c: VOLUME — crown lit, base shaded. top = vUv.y
+        // (sprite top = cumulus crown). lit = sun with facing; shade =
+        // desaturated hemisphere (cool, never violet). At dusk only the
+        // sun-side crown warms; at night (dayF 0) all is shade.
+        float top = smoothstep(0.25, 0.75, vUv.y);
+        vec3 lit = uSunColor * (0.85 + 0.35 * vFace);
+        vec3 shade = mix(uHemiSky, vec3(hemiLuma(uHemiSky)), 0.5) * 0.9;
+        vec3 col = mix(shade, lit, top * uDayF);
         gl_FragColor = vec4(col * a, a);
       }`,
   });
@@ -437,12 +518,10 @@ export function buildClouds(
   });
 
   // V3: alpha-weighted coverage, recomputed every 6th frame.
-  // Old metric summed full quad discs (alpha 0.05 counted like 1.0 → 100%).
-  // Now each disc contributes its mean fragment alpha, so the number tracks
-  // what is actually seen and the 20% cap makes sense.
-  // §4 correction: the metric ALSO applies the puff mask (mean kept-mass
-  // fraction at uMask, measured on the real atlas) — otherwise the mask
-  // would change the DRAWN sky while the meter stood still.
+  // §4b FASE 4c: the analytic meter mirrors the DRAWN rule — per-puff
+  // alpha (seed) × on-fraction (density gates count: smoothstep over the
+  // 0.05 window) × cap × texel 0.45 × mask kept-mass. uDensity NEVER
+  // scales opacity directly (that made everything veil).
   let coverage = 0;
   let tick = 0;
   const pv = new THREE.Vector3();
@@ -470,9 +549,8 @@ export function buildClouds(
       };
     },
     setDensity(d, sunDir) {
-      // §4b FASE 4: NO halving — the 0.5 dated from the 20%-cap era. With
-      // the honest meter + 0.38 cap, density 1.0 at noon is the working
-      // point: overshoot self-regulates via setCap (limit cycle ~band).
+      // §4b FASE 4c: uDensity gates HOW MANY puffs are on (vertex smoothstep
+      // over the seed window) — never their opacity. d = 1 → all on.
       uniforms.uDensity.value = Math.min(1, Math.max(0, d));
       uniforms.uSunDir.value.copy(sunDir);
     },
@@ -491,14 +569,16 @@ export function buildClouds(
     setZenithFade(f: number) {
       uniforms.uZenithFade.value = Math.min(1, Math.max(0, f));
     },
-    /** §4b FASE 4b: epilogue height fade — 1 = puff at/above the camera,
-     * 0 = puff ≥ 500 m below (horizon puffs stay). Multiplies with A9. */
+    /** §4b FASE 4c: epilogue above-fade — on when the camera flies above
+     * the band (puffs ≥ 400 m below vanish), off otherwise. Replaces the
+     * dead belowFade (camY-relative smoothstep never engaged). */
     setBelowFade(f: number) {
       uniforms.uBelowFade.value = Math.min(1, Math.max(0, f));
     },
-    /** §4b FASE 4b: camera height for the per-puff below-fade. */
-    setCamY(y: number) {
-      uniforms.uCamY.value = y;
+    /** DEAD (§4b FASE 4c): uCamY no longer feeds any fade — kept so call
+     * sites don't churn. */
+    setCamY(_y: number) {
+      void _y;
     },
     update(time, camera, vw, vh) {
       if (!group.visible) return; // T1.1: cut group ⇒ skip CPU work too
@@ -506,7 +586,8 @@ export function buildClouds(
       if ((tick++ % 6) !== 0 || vw <= 0 || vh <= 0) return;
       const persp = camera as THREE.PerspectiveCamera;
       const tanHalf = Math.tan(((persp.fov ?? 50) * Math.PI) / 180 / 2);
-      const dens = (uniforms.uDensity.value as number) * (uniforms.uCap.value as number);
+      const rawDens = uniforms.uDensity.value as number;
+      const cap = uniforms.uCap.value as number;
       const kept = maskKept(uniforms.uMask.value as number);
       // §4b FASE 4: behind-camera rejection. Vector3.project() mirrors
       // points behind the camera into NDC (w<0 flips) where they PASS the
@@ -533,10 +614,14 @@ export function buildClouds(
         const dist = camera.position.distanceTo(centers[i] as THREE.Vector3);
         if (dist <= 0) continue;
         const rPx = (((scales[i] as number) * 0.5) / dist) * (vh / (2 * tanHalf));
-        // V3: weight by the instance's effective alpha (seed × density × cap
-        // × mean puff texel ≈ seed × density × cap × 0.45), times the mask
-        // kept-mass fraction so the meter tracks the DRAWN puffs.
-        area += Math.PI * rPx * rPx * (seedAlpha[i] as number) * dens * 0.45 * kept;
+        // §4b FASE 4c: weight by the DRAWN rule — seed alpha × on-fraction
+        // (threshold 0.70+0.30·density over a 0.05 window) × cap × texel
+        // 0.45 × mask kept-mass. uDensity never scales opacity (no veil).
+        const seed = seedAlpha[i] as number;
+        const thr = 0.7 + 0.3 * rawDens;
+        const t = Math.min(1, Math.max(0, (thr - (seed - 0.05)) / 0.1));
+        const onF = t * t * (3 - 2 * t);
+        area += Math.PI * rPx * rPx * seed * onF * cap * 0.45 * kept;
       }
       coverage = Math.min(1, area / (vw * vh));
     },
