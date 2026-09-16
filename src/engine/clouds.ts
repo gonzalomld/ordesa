@@ -1,4 +1,7 @@
-// clouds.ts — S1: convection billboards that sit ABOVE the terrain.
+// clouds.ts — S1 + §4b FASE 4: convection billboards that sit ABOVE the
+// terrain, with the production layout exported for the Node coverage
+// predictor (scripts/predict-clouds.ts) so the meter and the drawing can
+// never drift apart again.
 //
 // Placement is terrain-relative (ground + 500-800 m, sampled bilinear from
 // the decoded heightmap), quads are 250-600 m, alpha caps at 0.55, density
@@ -6,10 +9,11 @@
 // the fragment shader (uHeightMap): alpha → 0 where the fragment is at or
 // below the terrain, so no hard quad cuts against crests.
 import * as THREE from "three";
-import { CLOUD_MASK } from "../narrative/choreography.ts";
+import { CLOUD_MASK, CLOUD_PUFF_SCALE } from "../narrative/choreography.ts";
 import type { Meta } from "./terrain.ts";
 
-const COUNT = 160;
+/** §4b FASE 4: instance count (step b knob: +20% per step). */
+export const CLOUD_COUNT = 160;
 const ALPHA_CAP = 0.55;
 
 export interface Clouds {
@@ -21,6 +25,99 @@ export interface Clouds {
   update(time: number, camera: THREE.Camera, vw: number, vh: number): void;
   getCoverage(): number;
   dispose(): void;
+}
+
+export interface CloudPuff {
+  x: number;
+  y: number;
+  z: number;
+  scale: number;
+  alpha: number;
+  quad: number;
+  rot: number;
+}
+
+export interface CloudLayoutMeta {
+  bbox: { minx: number; maxx: number; miny: number; maxy: number };
+  width: number;
+  height: number;
+  resX: number;
+  resY: number;
+  originX: number;
+  originY: number;
+}
+
+export interface CloudRoute {
+  n: number;
+  x: ArrayLike<number>;
+  y: ArrayLike<number>;
+}
+
+/** §4b FASE 4: the production layout.
+ * First half (80): the ORIGINAL uniform draws (mulberry(20260816), same
+ * call order — background depth, unchanged numbers).
+ * Second half (80): corridor-biased (seed 20260418) — random route point
+ * ±(200-1200 m) lateral, so every act has skyline puffs. Without them
+ * s=0.18 sees 1 puff in frame and no scale factor on earth reaches 30%.
+ * predict-clouds.ts imports this, never a copy. */
+export function cloudLayout(meta: CloudLayoutMeta, elev: Float32Array, route?: CloudRoute): CloudPuff[] {
+  const rnd = mulberry(20260816);
+  const spanX = meta.bbox.maxx - meta.bbox.minx;
+  const out: CloudPuff[] = [];
+  // §4b FASE 4: corridor share — 3/4 of the puffs ride the route so every
+  // act has skyline puffs (uniform-only left s=0.18 with 1 puff in frame).
+  const half = Math.floor(CLOUD_COUNT / 4);
+  const pushUniform = (rr: () => number): void => {
+    const x = meta.bbox.minx + rr() * spanX;
+    // convection band over the rim and valley edges, with gaps
+    const y = meta.bbox.miny + (0.3 + rr() * 0.7) * (meta.bbox.maxy - meta.bbox.miny);
+    // S1a: terrain-relative. Cumulus band 1900-2300 m; over high ridges
+    // the band rides up (max(ground+120): never buries a puff in a crest).
+    const ground = sampleElev(elev, meta as Meta, x, y);
+    const z = Math.max(ground + 120, 1900 + rr() * 400);
+    const scale = (250 + rr() * 350) * CLOUD_PUFF_SCALE;
+    out.push({
+      x,
+      y,
+      z,
+      scale,
+      alpha: Math.min(ALPHA_CAP, 0.15 + rr() * 0.4),
+      quad: Math.floor(rr() * 4),
+      rot: rr() * Math.PI * 2,
+    });
+  };
+  for (let i = 0; i < half; i++) pushUniform(rnd);
+  // Corridor half: route point + lateral offset (own rng, so the uniform
+  // draws above keep their EXACT original sequence).
+  const rnd2 = mulberry(20260418);
+  for (let i = half; i < CLOUD_COUNT; i++) {
+    if (route && route.n > 1) {
+      const k = Math.floor(rnd2() * route.n);
+      const rx = route.x[k] as number;
+      const ry = route.y[k] as number;
+      const ang = rnd2() * Math.PI * 2;
+      // §4b FASE 4: 600 m minimum — closer puffs white out the frame
+      // (a 600 m puff at 300 m fills the meter AND the screen).
+      const off = 600 + rnd2() * 900;
+      const x = Math.min(meta.bbox.maxx - 100, Math.max(meta.bbox.minx + 100, rx + Math.cos(ang) * off));
+      const y = Math.min(meta.bbox.maxy - 100, Math.max(meta.bbox.miny + 100, ry + Math.sin(ang) * off));
+      const ground = sampleElev(elev, meta as Meta, x, y);
+      const z = Math.max(ground + 120, 1900 + rnd2() * 400);
+      const scale = (250 + rnd2() * 350) * CLOUD_PUFF_SCALE;
+      out.push({
+        x,
+        y,
+        z,
+        scale,
+        alpha: Math.min(ALPHA_CAP, 0.15 + rnd2() * 0.4),
+        quad: Math.floor(rnd2() * 4),
+        rot: rnd2() * Math.PI * 2,
+      });
+    } else {
+      pushUniform(rnd2);
+    }
+  }
+  return out;
 }
 
 function mulberry(seed: number): () => number {
@@ -57,9 +154,9 @@ export function buildClouds(
   meta: Meta,
   elev: Float32Array,
   atlasUrl: string,
+  route?: CloudRoute,
 ): Clouds {
   const group = new THREE.Group();
-  const rnd = mulberry(20260816);
   const geo = new THREE.PlaneGeometry(1, 1);
 
   // half-res heightfield texture for the soft-intersection fade
@@ -150,35 +247,26 @@ export function buildClouds(
         gl_FragColor = vec4(col * a, a);
       }`,
   });
-  const mesh = new THREE.InstancedMesh(geo, mat, COUNT);
+  const mesh = new THREE.InstancedMesh(geo, mat, CLOUD_COUNT);
   mesh.frustumCulled = false;
   mesh.renderOrder = 10;
   const dummy = new THREE.Object3D();
-  const data = new Float32Array(COUNT * 4);
+  const data = new Float32Array(CLOUD_COUNT * 4);
   const centers: THREE.Vector3[] = [];
   const scales: number[] = [];
-  const spanX = meta.bbox.maxx - meta.bbox.minx;
-  for (let i = 0; i < COUNT; i++) {
-    const x = meta.bbox.minx + rnd() * spanX;
-    // convection band over the rim and valley edges, with gaps
-    const y = meta.bbox.miny + (0.3 + rnd() * 0.7) * (meta.bbox.maxy - meta.bbox.miny);
-    // S1a: terrain-relative — what real convection does. §4: absolute
-    // cumulus band 1900-2300 m; over high ridges the band rides up
-    // (max(ground+120): never buries a puff inside a crest). No shadows
-    // yet — the 512 texture on the directional light comes after §2 bloom
-    // if msPost allows it.
-    const ground = sampleElev(elev, meta, x, y);
-    const z = Math.max(ground + 120, 1900 + rnd() * 400);
-    dummy.position.set(x - cx, z, -(y - cy));
+  // Production layout (exported above for the Node predictor — same array).
+  const layout = cloudLayout(meta, elev, route);
+  for (let i = 0; i < CLOUD_COUNT; i++) {
+    const p = layout[i] as CloudPuff;
+    dummy.position.set(p.x - cx, p.z, -(p.y - cy));
     dummy.updateMatrix();
     mesh.setMatrixAt(i, dummy.matrix);
-    const scale = 250 + rnd() * 350;
-    data[i * 4] = Math.floor(rnd() * 4);
-    data[i * 4 + 1] = rnd() * Math.PI * 2;
-    data[i * 4 + 2] = scale;
-    data[i * 4 + 3] = Math.min(ALPHA_CAP, 0.15 + rnd() * 0.4);
+    data[i * 4] = p.quad;
+    data[i * 4 + 1] = p.rot;
+    data[i * 4 + 2] = p.scale;
+    data[i * 4 + 3] = p.alpha;
     centers.push(dummy.position.clone());
-    scales.push(scale);
+    scales.push(p.scale);
   }
   geo.setAttribute("aData", new THREE.InstancedBufferAttribute(data, 4));
   group.add(mesh);
@@ -199,7 +287,7 @@ export function buildClouds(
   const pv = new THREE.Vector3();
   // mean fragment alpha per instance ≈ seed alpha × current uniforms
   const seedAlpha: number[] = [];
-  for (let i = 0; i < COUNT; i++) seedAlpha.push(data[i * 4 + 3] as number);
+  for (let i = 0; i < CLOUD_COUNT; i++) seedAlpha.push(data[i * 4 + 3] as number);
   // §4: mean kept-mass fraction of the atlas at the live uMask (measured
   // 0.96 at mask 0.12 — the mask eats veil texels, not mass). The metric
   // multiplies by it so meter and drawing agree.
@@ -211,7 +299,10 @@ export function buildClouds(
   return {
     group,
     setDensity(d, sunDir) {
-      uniforms.uDensity.value = Math.min(1, Math.max(0, d)) * 0.5;
+      // §4b FASE 4: NO halving — the 0.5 dated from the 20%-cap era. With
+      // the honest meter + 0.38 cap, density 1.0 at noon is the working
+      // point: overshoot self-regulates via setCap (limit cycle ~band).
+      uniforms.uDensity.value = Math.min(1, Math.max(0, d));
       uniforms.uSunDir.value.copy(sunDir);
     },
     setCap(on) {
@@ -230,9 +321,27 @@ export function buildClouds(
       const tanHalf = Math.tan(((persp.fov ?? 50) * Math.PI) / 180 / 2);
       const dens = (uniforms.uDensity.value as number) * (uniforms.uCap.value as number);
       const kept = maskKept(uniforms.uMask.value as number);
+      // §4b FASE 4: behind-camera rejection. Vector3.project() mirrors
+      // points behind the camera into NDC (w<0 flips) where they PASS the
+      // pv.z check — the meter counted invisible puffs (s=0.18 read 14%
+      // with 1 puff actually in frame). The GPU clips them; the meter must
+      // too: camera forward = -Z column of the world-inverse rotation.
+      const me = camera.matrixWorldInverse.elements;
+      const fwdX = -(me[2] as number);
+      const fwdY = -(me[6] as number);
+      const fwdZ = -(me[10] as number);
       let area = 0;
-      for (let i = 0; i < COUNT; i++) {
-        pv.copy(centers[i] as THREE.Vector3).project(camera);
+      for (let i = 0; i < CLOUD_COUNT; i++) {
+        const c = centers[i] as THREE.Vector3;
+        if (
+          (c.x - camera.position.x) * fwdX +
+            (c.y - camera.position.y) * fwdY +
+            (c.z - camera.position.z) * fwdZ <=
+          0
+        ) {
+          continue;
+        }
+        pv.copy(c).project(camera);
         if (pv.z > 1 || pv.z < -1) continue;
         const dist = camera.position.distanceTo(centers[i] as THREE.Vector3);
         if (dist <= 0) continue;

@@ -88,10 +88,19 @@ function skyPixel(dir: number[], sunDir: number[], sunE: number, sunfade: number
   const L0d = L0.map((l, i) => l + sunE * 19000 * Fex[i] * sundisk);
   const tex = [0, 1, 2].map((i) => (Lin[i] + L0d[i]) * 0.04 + [0, 0.0003, 0.00075][i]);
   const ret = tex.map((t) => Math.pow(Math.max(0, t), 1 / (1.2 + 1.2 * sunfade)));
-  // SKY_SAT + SKY_SCALE (same block as dome + capture)
+  // SKY_SAT (elevation-weighted like dome + capture) + SKY_SCALE.
+  // dirY = view-direction Y (called per-pixel with the real direction).
+  const dirY = dir[1];
+  const wEl = smoothstep(0.05, 0.45, dirY);
+  const sEff = 1 + (sat - 1) * wEl;
   const l = 0.2126 * ret[0] + 0.7152 * ret[1] + 0.0722 * ret[2];
-  return ret.map((v) => Math.max(0, l + (v - l) * sat) * scale);
+  return ret.map((v) => Math.max(0, l + (v - l) * sEff) * scale);
 }
+
+const smoothstep = (e0: number, e1: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
 
 function sunVec(h: number): { dir: number[]; e: number; fade: number } {
   const p = sunPosition(42.645, -0.055, 2026, 8, 16, h, 120);

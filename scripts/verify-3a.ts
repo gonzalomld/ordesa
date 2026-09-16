@@ -5,7 +5,7 @@
 // · G16 nod · G17 void · G18 align · G19 rim · + OrbitControls anti-bundle
 // (C10: chunk-name based, the minifier mangles identifiers).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CORRIDOR_HALF_M, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G4_EXEMPT, G4_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROUTE_DIVERGE_PCT, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
+import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CORRIDOR_HALF_M, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_EXEMPT, G4_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
 import { alongTrackRun, anchorPlan, bisectSunset, epilogueBlend, followAt, resolveAnchors, resolveFollowProfile, ropeHeadingDeg, trackAt, zRawAt } from "../src/narrative/anchors.ts";
 import { resolveFollowSafety } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
@@ -389,12 +389,60 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
 // --- G11 luminance probe contract (audit A6): threshold + grid live in
 // choreography.ts; the browser exposes window.__luma with ?luma=1. Node
 // checks the contract exists and the threshold is sane (the number itself
-// is measured in-browser at ?s=0.10, never invented here). ---
+// is measured in-browser at s=0.18 y s=0.80 con ?debug=1&skyfrac=1&luma=1&t=12:00,
+// §4b FASE 5: umbral 0.15). ---
 {
   const src = readFileSync("src/engine/viewer.ts", "utf8");
   const hasProbe = src.includes("__luma") && src.includes('has("luma")');
-  gate("G11-luma-probe", hasProbe && G11_LUMA_MIN > 0 && LUMA_GRID >= 16,
-    hasProbe ? `probe in viewer (?luma=1 -> window.__luma), threshold ${G11_LUMA_MIN}, grid ${LUMA_GRID}x${LUMA_GRID} — measure at ?s=0.10` : "no __luma probe in viewer.ts");
+  gate("G11-luma-probe", hasProbe && G11_LUMA_MIN === 0.15 && LUMA_GRID >= 16,
+    hasProbe ? `probe in viewer (?luma=1 -> window.__luma), threshold ${G11_LUMA_MIN}, grid ${LUMA_GRID}x${LUMA_GRID} — measure at s=0.18/0.80, ?t=12:00` : "no __luma probe in viewer.ts");
+}
+
+// --- G31/G32/G33 (§4b FASE 5: sombras + métrica de etiquetas). Node checks
+// the CONTRACT (constantes + sonda + crono); the NUMBERS come from prod
+// (?debug=1&skyfrac=1&luma=1&t=12:00, s=0.18 y s=0.80):
+// G31: __lumaShadow >= 0.045 (luma lineal media del cuartil más oscuro de
+//   píxeles de terreno) en ambos s.
+// G32: __chromaShadow <= 0.35 a las 12:00 (media de (max-min)/max en el
+//   cuartil; 0 = gris, 1 = saturado).
+// G33: js etiq <= 1 ms en 10 lecturas consecutivas, sin flags (el crono
+//   envuelve SOLO updateLabels).
+{
+  const viewerSrcG31 = readFileSync("src/engine/viewer.ts", "utf8");
+  const debugSrcG31 = readFileSync("src/engine/debug.ts", "utf8");
+  const shadowProbe =
+    viewerSrcG31.includes("__lumaShadow") &&
+    viewerSrcG31.includes("__chromaShadow") &&
+    viewerSrcG31.includes("__litOver") &&
+    viewerSrcG31.includes("occNeeded");
+  const shadowHud =
+    debugSrcG31.includes("lumaShadow") &&
+    debugSrcG31.includes("chromaShadow") &&
+    debugSrcG31.includes("sombra L");
+  const jsChrono =
+    viewerSrcG31.includes("const tl = performance.now();") &&
+    viewerSrcG31.includes("metrics.jsLabels = performance.now() - tl;");
+  gate("G31-shadow-luma", shadowProbe && shadowHud && G31_LUMA_SHADOW_MIN === 0.045,
+    shadowProbe && shadowHud
+      ? `shadow probe (?luma=1 -> __lumaShadow/__chromaShadow/__litOver, HUD "sombra L C"), threshold ${G31_LUMA_SHADOW_MIN} — measure at s=0.18/0.80, ?t=12:00`
+      : "no shadow probe in viewer.ts (needs __lumaShadow/__chromaShadow/__litOver + occNeeded mask)");
+  gate("G32-shadow-chroma", shadowProbe && G32_CHROMA_SHADOW_MAX === 0.35,
+    `chroma threshold ${G32_CHROMA_SHADOW_MAX} at 12:00 (probe=${shadowProbe}) — shadow cool-grey, not navy`);
+  gate("G33-js-labels", jsChrono && G33_JS_LABELS_MAX_MS === 1,
+    jsChrono
+      ? `js etiq wraps updateLabels only (tl -> metrics.jsLabels), threshold ${G33_JS_LABELS_MAX_MS} ms x10, no flags — measure 10 consecutive reads in prod`
+      : "jsLabels chrono still spans the render (needs tl around updateLabels only)");
+  // FASE 5 pasos a-d (una variable por paso, valores publicados):
+  // HEMI_GRAY_MIX 0.6 (tinte) · HEMI_LUMA_FLOOR 0.20 (nivel) ·
+  // HEMI_DAY 1.08 (+20 %, paso c) · SHADOW_INTENSITY 0.55 (paso d).
+  const hemiOk =
+    HEMI_GRAY_MIX === 0.6 && HEMI_LUMA_FLOOR === 0.2 &&
+    HEMI_DAY === 1.08 && SHADOW_INTENSITY === 0.55 &&
+    viewerSrcG31.includes("sun.shadow.intensity = SHADOW_INTENSITY");
+  gate("fase5-hemi", hemiOk,
+    hemiOk
+      ? `HEMI_GRAY_MIX=${HEMI_GRAY_MIX} HEMI_LUMA_FLOOR=${HEMI_LUMA_FLOOR} HEMI_DAY=${HEMI_DAY} SHADOW_INTENSITY=${SHADOW_INTENSITY} (sun.shadow.intensity applied) — measure luma/__lumaShadow/__chromaShadow per step`
+      : `hemi steps drifted (mix=${HEMI_GRAY_MIX} floor=${HEMI_LUMA_FLOOR} day=${HEMI_DAY} shadow=${SHADOW_INTENSITY}, applied=${viewerSrcG31.includes("sun.shadow.intensity = SHADOW_INTENSITY")})`);
 }
 
 // --- G12 sky band contract (FOLLOW, píxeles): [0.12, 0.30] por pase de
@@ -860,11 +908,13 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   const blitOk = viewerSrcG24.includes("OrthographicCamera(-1, 1, 1, -1, -1, 1)")
     && viewerSrcG24.includes("renderer.autoClear = false")
     && viewerSrcG24.includes("renderOrder = 999");
-  const { G24_ZEN_MIN, G24_ZEN_MAX, G24_HZ_RATIO, SKY_TURBIDITY, SKY_RAYLEIGH, SKY_MIE, SKY_G, SKY_SCALE, SKY_SAT, HEMI_GRAY_MIX, CLOUD_COVERAGE } =
+  const { G24_ZEN_MIN, G24_ZEN_MAX, G24_HZ_RATIO, SKY_TURBIDITY, SKY_RAYLEIGH, SKY_MIE, SKY_G, SKY_SCALE, SKY_SAT, HEMI_GRAY_MIX, CLOUD_COVERAGE, CLOUD_MASK, CLOUD_PUFF_SCALE } =
     await import("../src/narrative/choreography.ts");
+  const { CLOUD_COUNT } = await import("../src/engine/clouds.ts");
   const constsOk =
     SKY_TURBIDITY === 1.7 && SKY_RAYLEIGH === 1.6 && SKY_MIE === 0.004 && SKY_G === 0.8 &&
-    SKY_SCALE === 0.32 && SKY_SAT === 1.0 && HEMI_GRAY_MIX === 0.4 && CLOUD_COVERAGE === 0.3 &&
+    SKY_SCALE === 0.22 && SKY_SAT === 2.0 && HEMI_GRAY_MIX === 0.6 && CLOUD_COVERAGE === 0.3 &&
+    CLOUD_MASK === 0.12 && CLOUD_PUFF_SCALE === 1.3 && CLOUD_COUNT === 160 &&
     G24_HZ_RATIO === 2.2 && G24_ZEN_MIN === "#2a68b8" && G24_ZEN_MAX === "#3e86d2";
   const ok = hasProbe && readbackOk && noClone && equirect && sharedU && ownCam && constsOk
     && dispSpace && auditTrail && hotLoopGone && cadence30 && skyFlag && blitOk;
@@ -872,6 +922,50 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     ok
       ? `equirect capture + display-space probe (ACES+sRGB, raw audit) @30f debug-only + ?skymap=1 blit; band [${G24_ZEN_MIN},${G24_ZEN_MAX}], hz/z <= ${G24_HZ_RATIO} — measure at ?t=12:00`
       : `contract broken (probe=${hasProbe} readback=${readbackOk} noClone=${noClone} equirect=${equirect} sharedU=${sharedU} ownCam=${ownCam} consts=${constsOk} disp=${dispSpace} audit=${auditTrail} hotGone=${hotLoopGone} cad30=${cadence30} skyFlag=${skyFlag} blit=${blitOk})`);
+}
+
+// --- G24c cloud cover (§4b FASE 4): coverage in [0.26,0.34] at 12:00 in
+// s=0.18 AND s=0.80, ≥0.15 at 9:00. Node checks the CONTRACT (curve with
+// floor, layout import, behind-camera rejection, predictor in sync);
+// the NUMBERS come from prod (?debug=1&skyfrac=1&luma=1).
+{
+  const sunSrc = readFileSync("src/engine/sun.ts", "utf8");
+  const cloudSrc = readFileSync("src/engine/clouds.ts", "utf8");
+  const curveFloor = sunSrc.includes("0.45 + 0.55");
+  const layoutImport = cloudSrc.includes("export function cloudLayout") && cloudSrc.includes("mulberry(20260418)");
+  const behindFix = cloudSrc.includes("fwdX") && cloudSrc.includes("matrixWorldInverse");
+  const noHalve = !cloudSrc.includes("* 0.5") || cloudSrc.includes("NO halving");
+  const predSync = existsSync("scripts/predict-clouds.ts") && readFileSync("scripts/predict-clouds.ts", "utf8").includes("cloudLayout");
+  const corridor = cloudSrc.includes("CLOUD_COUNT / 4");
+  const ok = curveFloor && layoutImport && behindFix && noHalve && predSync && corridor;
+  gate("G24c-cover", ok,
+    ok
+      ? "curve 0.45+0.55r/3h + corridor layout (120/40) + honest meter + predictor in sync — measure [0.26,0.34] @12:00 both s, ≥0.15 @9:00"
+      : `cover contract broken (floor=${curveFloor} layout=${layoutImport} behind=${behindFix} noHalve=${noHalve} pred=${predSync} corridor=${corridor})`);
+}
+
+// --- G30 blue sky (§4b FASE 4): visible blue ≥ 0.45 of total sky at 12:00.
+// Node checks the probe exists (__blueSky = skyFrac × (1−coverage));
+// the NUMBER comes from prod (?skyfrac=1).
+{
+  const viewerSrcG30 = readFileSync("src/engine/viewer.ts", "utf8");
+  const ok = viewerSrcG30.includes("__blueSky") && viewerSrcG30.includes("skyPx * (1 - cov)");
+  gate("G30-blue", ok,
+    ok
+      ? "__blueSky = skyFrac × (1−coverage) published — measure ≥0.45 @12:00 both s"
+      : "no __blueSky probe in viewer.ts");
+}
+
+// --- G19-nube (§4b FASE 4): the epilogue loop under the clouds — ≥90% of
+// the track pixels unhidden at s=0.99. Node checks the probe exists
+// (__trackOcc = { on, off, frac }); the NUMBER comes from prod (?trackpx=1).
+{
+  const viewerSrcG19 = readFileSync("src/engine/viewer.ts", "utf8");
+  const ok = viewerSrcG19.includes("__trackOcc") && viewerSrcG19.includes("1 - cov");
+  gate("G19-nube", ok,
+    ok
+      ? "__trackOcc = off × (1−coverage) published — measure frac ≥0.90 @s=0.99"
+      : "no __trackOcc probe in viewer.ts");
 }
 
 // --- G26 skymap blit (§4b FASE 2b): with ?debug=1&skymap=1 the frame shows

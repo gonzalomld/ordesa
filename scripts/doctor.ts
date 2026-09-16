@@ -141,8 +141,13 @@ console.log(
     const { lightingAt } = await import("../src/engine/sun.ts");
     const { SKY_SAT, SKY_SCALE } = await import("../src/narrative/choreography.ts");
     const L = lightingAt(12);
+    const L9 = lightingAt(9);
     console.log(
       `  sky@12:00 turbidity=${L.turbidity} rayleigh=${L.rayleigh} mieCoefficient=${L.mieCoefficient} mieDirectionalG=${L.mieDirectionalG} uSkyScale=${SKY_SCALE} uSkySat=${SKY_SAT} exposure=${L.exposure}`,
+    );
+    // §4b FASE 4: convection curve audit — floor at dawn, full at noon.
+    console.log(
+      `  clouds: density(9:00)=${L9.cloudDensity.toFixed(2)} density(12:00)=${L.cloudDensity.toFixed(2)} (need 0.45 / 1.00)`,
     );
   }
   // RASTRO gl_InstanceID: no attribute left — distance IS the index.

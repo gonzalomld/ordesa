@@ -5,7 +5,6 @@
 // Now: msFrame is a moving average of REAL rAF-to-rAF deltas (the actual
 // frame), plus an EXT_disjoint_timer_query_webgl2 GPU split (terrain vs
 // clouds) when the extension exists. JS slices stay as jsTerrain/jsLabels.
-import * as THREE from "three";
 import type { ProgressState } from "../narrative/progress.ts";
 
 export interface Metrics {
@@ -48,6 +47,11 @@ export interface Metrics {
   /** G16 (pasada rig puro): damped H correction the camera flies with. */
   corrH: number;
   luma: number;
+  /** §4b FASE 5 (G31/G32): sonda de sombra — luma lineal media del cuartil
+   * más oscuro de píxeles de terreno (?luma=1, -1 = pendiente). */
+  lumaShadow: number;
+  /** §4b FASE 5: croma media (max-min)/max en ese cuartil (0 = gris). */
+  chromaShadow: number;
   warn: string;
 }
 
@@ -157,6 +161,8 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     holgura: Infinity,
     corrH: 0,
     luma: -1,
+    lumaShadow: -1,
+    chromaShadow: -1,
     warn: "",
   };
   (window as unknown as { __metrics: Metrics }).__metrics = metrics;
@@ -179,6 +185,8 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
       // G16: corrH (damped H correction) rides along — nodding reads here.
       `s ${metrics.s.toFixed(4)} · d ${(metrics.d / 1000).toFixed(2)} km · hora ${metrics.hour} · yaw ${mod360(metrics.yaw).toFixed(1)}° (${metrics.yaw.toFixed(1)}°) · pitch ${metrics.pitch.toFixed(1)}° · dist ${metrics.dist.toFixed(0)} m · holgura ${Number.isFinite(metrics.holgura) ? metrics.holgura.toFixed(0) + " m" : "—"} · corrH ${metrics.corrH.toFixed(0)} m` +
       (metrics.luma >= 0 ? ` · luma ${metrics.luma.toFixed(3)}` : "") +
+      // §4b FASE 5: "sombra L … C …" (HUD) = __lumaShadow/__chromaShadow.
+      (metrics.lumaShadow >= 0 ? ` · sombra L ${metrics.lumaShadow.toFixed(3)} C ${metrics.chromaShadow.toFixed(2)}` : "") +
       (metrics.warn ? `\nAVISO ${metrics.warn}` : "") +
       (metrics.steep ? `\nsteep MAP · hasRock ${metrics.hasRock} · peso roca ${Math.round(metrics.rockWeightShown * 100)} %` : "");
     if (s !== last) {

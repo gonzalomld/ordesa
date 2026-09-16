@@ -76,17 +76,22 @@ export const EPILOGUE_S = 0.98; // E2/R3: epilogue transition; the full loop dra
 // is blue, not black). Dome colour comes from the same zenith estimate the
 // debug overlay prints; floor is limestone in shadow. Day factor stays 1
 // between sunrise and sunset and dies only after sunset (epilogue).
-export const HEMI_DAY = 0.9; // hemisphere intensity while the sun is up (fraction of sky visible ~ sky dome)
+export const HEMI_DAY = 1.08; // §4b FASE 5 paso c: 0.9 -> 1.08 (+20 %): la sombra de mediodía sube sin tocar exposición ni sol
 export const HEMI_NIGHT = 0.06; // ...after sunset (faint skyglow, never pure black)
 export const HEMI_SKY_RGB: [number, number, number] = [0.42, 0.55, 0.78]; // zenith-blue dome base (linear-ish, modulated by lightingAt rayleigh/elevation)
 export const HEMI_GROUND_RGB: [number, number, number] = [0.32, 0.3, 0.26]; // limestone in shadow
 // R1b floor (BLOCKER): early acts read 0.009-0.037 against a 0.06 target.
 // The fill keeps the real sky hue and only lifts the level:
 // uHemiSky = skyPreetham · max(1, HEMI_LUMA_FLOOR / luma(skyPreetham)).
-export const HEMI_LUMA_FLOOR = 0.14; // linear-luma floor (was 0.10): Pradera 0.049 and mirador 0.042 still below 0.06
+export const HEMI_LUMA_FLOOR = 0.2; // §4b FASE 5 paso b: 0.14 -> 0.20 (la sombra sube; el tinte ya se trató en el paso a)
+export const SHADOW_INTENSITY = 0.55; // §4b FASE 5 paso d: la sombra PROYECTADA (shadow map) nunca más oscura que la ambiente de la ladera — LightShadow.intensity mix(1.0, shadow, k); 0 = sin sombra proyectada, 1 = plena (three 0.170 lo soporta en LightShadow)
 // G14: the published slope is a 200 m moving window, not the raw ±5 m stair.
 export const SLOPE_WINDOW_M = 200; // misma ventana que la cifra publicada en sources.md; el crudo sobre 5 m llega a 493 % y no es publicable
-export const G11_LUMA_MIN = 0.06; // mean linear framebuffer luminance at s=0.10 (audit A6, 32x32 readPixels grid)
+export const G11_LUMA_MIN = 0.15; // §4b FASE 5: 0.06 -> 0.15 (s=0,18 y s=0,80 a las 12:00 con ?debug=1&skyfrac=1&luma=1&t=12:00)
+export const G31_LUMA_SHADOW_MIN = 0.045; // §4b FASE 5: __lumaShadow (luma lineal media del cuartil más oscuro de píxeles de terreno) >= 0,045 en ambos s
+export const G32_CHROMA_SHADOW_MAX = 0.35; // §4b FASE 5: __chromaShadow (media de (max-min)/max en ese cuartil) <= 0,35 a las 12:00
+export const G33_JS_LABELS_MAX_MS = 1; // §4b FASE 5: js etiq <= 1 ms en 10 lecturas consecutivas (sin flags)
+export const G_LUMA_LIT_MAX = 0.9; // §4b FASE 5: ningún píxel de terreno iluminado directamente supera luma lineal 0,9 (cuenta en rejilla = 0)
 export const LUMA_GRID = 32; // G11 readPixels grid (audit A6); measured in-browser via ?luma=1, every 30th frame
 
 // --- §4 sky (Preetham starting values, measured with the probe) ---
@@ -96,12 +101,13 @@ export const SKY_MIE = 0.004; // (was 0.006)
 export const SKY_G = 0.8; // mieDirectionalG
 // §4 correction: the SKY dims in the DOME (uSkyScale), not with the renderer
 // exposure — exposure 0.55 starved the terrain (luma 0.023 at noon).
-export const SKY_SCALE = 0.32; // sky-dome radiance multiplier before tone mapping
-export const SKY_SAT = 1.0; // §4b FASE 3: saturation knob around grey (1.0 = no change) — Preetham at turbidity 2.2 gives B/R ≈ 2.5 linear, high-mountain noon needs ≈ 8-13; injected as a constant like SKY_SCALE, same block in dome + capture
+export const SKY_SCALE = 0.22; // §4b FASE 3b: 0.32 -> 0.22 (SAT 2.0 raises luma; dim back so G stays in band — gain model then lands (70,149,196), R edge low but B/R alpine; next steps per brief rules, measuring in prod)
+export const SKY_SAT = 2.0; // §4b FASE 3b: elevation-weighted saturation — full above 27° elevation, horizon intact (dawns/dusks); same block in dome + capture
 export const SKY_EXPOSURE = 0.55; // DEAD (§4 correction): dimming via exposure dragged the terrain with the sky; exposure is 1.0 again, the dome carries the dimming. Kept so git history explains itself.
-export const HEMI_GRAY_MIX = 0.4; // shadow stays cool, not tinted: mix(sky, grey(luma), 0.4)
+export const HEMI_GRAY_MIX = 0.6; // §4b FASE 5 paso a: 0.4 -> 0.6 (la sombra pierde tinte, no brillo)
 export const CLOUD_COVERAGE = 0.3; // alpha-weighted target at 12:00 (the metric is already corrected)
 export const CLOUD_MASK = 0.12; // puff-mask threshold: veil texels die first, dense cores stay (atlas-measured)
+export const CLOUD_PUFF_SCALE = 1.3; // §4b FASE 4 paso a: 1.0 -> 1.3 (predictor: s=0.18 needs ~4x from scale-1.15 baseline; scale² gives 1.28x — the rest comes from corridor share 3/4 + density un-halving, ONE calibrated step, prod decides)
 export const G24_ZEN_MIN = "#2a68b8"; // saturated blue, not grey
 export const G24_ZEN_MAX = "#3e86d2"; // saturated blue, not grey
 export const G24_HZ_RATIO = 2.2; // horizon luma / zenith luma <= 2.2 (today ~4: white horizon)

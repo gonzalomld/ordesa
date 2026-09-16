@@ -179,11 +179,15 @@ const CAPTURE_FRAG = (skySat: string, skyScale: string): string => /* glsl */ `
 
     vec3 retColor = pow( texColor, vec3( 1.0 / ( 1.2 + ( 1.2 * vSunfade ) ) ) );
 
-    // SAME dome dimming (SKY_SCALE) + saturation (SKY_SAT) so haze matches
-    // drawn sky. Linear out: no tonemapping/colorspace includes — working
-    // data, not display.
+    // SAME dome dimming (SKY_SCALE) + elevation-weighted saturation
+    // (SKY_SAT) so haze matches drawn sky. Full saturation above 27°
+    // elevation (smoothstep(0.05,0.45) on equirect dir Y); the horizon —
+    // dawns and dusks — stays at sat 1.0. Linear out: no
+    // tonemapping/colorspace includes — working data, not display.
+    float skyWE1 = smoothstep( 0.05, 0.45, direction.y );
+    float skySat = mix( 1.0, ${skySat}, skyWE1 );
     float skyL = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );
-    retColor = max( vec3( 0.0 ), mix( vec3( skyL ), retColor, ${skySat} ) );
+    retColor = max( vec3( 0.0 ), mix( vec3( skyL ), retColor, skySat ) );
     gl_FragColor = vec4( retColor * ${skyScale}, 1.0 );
   }`;
 

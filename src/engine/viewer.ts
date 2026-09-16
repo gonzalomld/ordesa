@@ -24,6 +24,7 @@ import {
   SHADOW_EPS_DEG,
   SHADOW_EXTENT_M,
   SHADOW_FAR_M,
+  SHADOW_INTENSITY,
   SHADOW_LIGHT_DIST_M,
   SHADOW_MIN_FRAMES,
   SHADOW_MOVE_EPS_M,
@@ -157,6 +158,10 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     sun.shadow.mapSize.set(2048, 2048);
     sun.shadow.bias = -0.0002;
     sun.shadow.normalBias = 3;
+    // §4b FASE 5 paso d: la sombra PROYECTADA nunca más oscura que la
+    // ambiente de la ladera (LightShadow.intensity: mix en el shader entre
+    // 1.0 y la sombra; 0 = sin sombra proyectada, 1 = plena).
+    sun.shadow.intensity = SHADOW_INTENSITY;
   }
   scene.add(sun, sun.target);
   let shadowNeedsUpdate = true;
@@ -184,9 +189,11 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   sky.renderOrder = -10;
   scene.add(sky);
   const skyU = sky.material.uniforms as Record<string, { value: unknown }>;
-  // §4b FASE 3: saturation around grey BEFORE the SKY_SCALE dimming
-  // (SKY_SAT constant, same block in dome + capture so haze and probe
-  // see the same sky). max() guards below-black on extreme settings.
+  // §4b FASE 3b: elevation-weighted saturation BEFORE the SKY_SCALE
+  // dimming (SKY_SAT constant, same block in dome + capture so haze and
+  // probe see the same sky). Full saturation above 27° elevation
+  // (smoothstep(0.05,0.45) on view dir Y); the horizon — dawns and dusks —
+  // stays at sat 1.0. max() guards below-black on extreme settings.
   {
     const skym = sky.material as THREE.ShaderMaterial & { onBeforeCompile: (s: { fragmentShader: string }) => void };
     const prevSky = skym.onBeforeCompile.bind(skym);
@@ -194,8 +201,11 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       prevSky(s);
       s.fragmentShader = s.fragmentShader.replace(
         "gl_FragColor = vec4( retColor, 1.0 );",
-        `float skyL = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );
-        retColor = max( vec3( 0.0 ), mix( vec3( skyL ), retColor, ${(SKY_SAT as number).toFixed(2)} ) );
+        `float skyDirY = normalize( vWorldPosition - cameraPosition ).y;
+        float skyWE1 = smoothstep( 0.05, 0.45, skyDirY );
+        float skySat = mix( 1.0, ${(SKY_SAT as number).toFixed(2)}, skyWE1 );
+        float skyL = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );
+        retColor = max( vec3( 0.0 ), mix( vec3( skyL ), retColor, skySat ) );
         gl_FragColor = vec4( retColor * ${(SKY_SCALE as number).toFixed(3)}, 1.0 );`,
       );
     };
@@ -743,8 +753,15 @@ float wgrain(vec2 lp){
     }).catch(() => undefined);
   }
 
-  // clouds (S1: terrain-relative placement needs the decoded heightmap)
-  const clouds = buildClouds(meta, elev, `/${meta.assets?.["clouds-atlas"] ?? "assets/clouds-atlas.webp"}`);
+  // clouds (S1: terrain-relative placement needs the decoded heightmap).
+  // §4b FASE 4: corridor-biased half needs the route (every act gets
+  // skyline puffs — uniform-only left s=0.18 with 1 puff in frame).
+  const clouds = buildClouds(
+    meta,
+    elev,
+    `/${meta.assets?.["clouds-atlas"] ?? "assets/clouds-atlas.webp"}`,
+    { n: route.n, x: route.x, y: route.y },
+  );
   scene.add(clouds.group);
   gate.setProgress(0.8, 5);
   await nextFrame();
@@ -1002,7 +1019,16 @@ float wgrain(vec2 lp){
   // in the LOWER half are void under the horizon.
   // G15 (?trackpx=1 -> window.__trackpx): ID pass WITH the cut — the solid
   // Line2 alone into 256x144, non-null pixels counted. Threshold: >= 40 px.
+  // §4b FASE 5: la sonda de sombra usa la MISMA rejilla LUMA_GRID y la
+  // máscara del pase oclusor para quedarse SOLO con píxeles de terreno.
   const lumaOn = new URLSearchParams(location.search).has("luma");
+  // Occluder geometry is required by the luma-shadow probe (?luma=1), the
+  // sky fraction (?skyfrac=1) AND the blue-sky probe (?skyfrac=1, G30):
+  // the mask source, not the flag.
+  const occNeeded = ((): boolean => {
+    const q = new URLSearchParams(location.search);
+    return q.has("luma") || q.has("skyfrac");
+  })();
   const skyfracOn = new URLSearchParams(location.search).has("skyfrac");
   const trackpxOn = new URLSearchParams(location.search).has("trackpx");
   void G11_LUMA_MIN;
@@ -1049,7 +1075,6 @@ float wgrain(vec2 lp){
     }
     const st = progress.getState();
     const hour = st.hourDec;
-    const t2 = performance.now();
     applyLighting(hour);
     // E2: progressive cut at the walker (epilogue draws the whole loop).
     // BLOQUEANTE ?track=all: isolation probe — uProgressDist = lengthM,
@@ -1197,7 +1222,12 @@ float wgrain(vec2 lp){
       glPassErr.main = glProbe.getError();
     }
     // T1: labels AFTER render, every frame, no throttle (js etiq ~0.1 ms).
+    // §4b FASE 5 (G33): el crono envuelve SOLO updateLabels — t2 se movía
+    // antes de applyLighting, corte del rastro, sombra y renderer.render,
+    // así que "js etiq" medía el render, no las etiquetas.
+    const tl = performance.now();
     updateLabels(labelRts, camera, window.innerWidth, window.innerHeight, 30000);
+    metrics.jsLabels = performance.now() - tl;
     // §4b FASE 2b (?skymap=1): 384×192 CSS px bottom-left, NDC scene,
     // AFTER main render + labels. autoClear=false: composites, never wipes.
     // Renderer path only, never raw GL.
@@ -1211,9 +1241,7 @@ float wgrain(vec2 lp){
         metrics.passes = 2;
       }
     }
-    const t3 = performance.now();
     metrics.jsTerrain = 0; // terrain JS slice is inside rebuilds, not the loop
-    metrics.jsLabels = Math.max(0, t3 - t2);
     metrics.msPost = 0;
     // G11 (audit A6): mean linear luminance over a LUMA_GRID^2 readPixels
     // grid, every 30th frame, only with ?luma=1 (a per-frame readPixels
@@ -1272,7 +1300,11 @@ float wgrain(vec2 lp){
       // G12/G17: occluder pass — terrain only, flat white, clear black.
       // Black = sky (nothing occludes). Lower-half black = void (G17).
       // readPixels immediately after render (R1 lesson), same camera.
-      if (skyfracOn && terrain) {
+      // §4b FASE 5: la sonda de sombra usa ESTA máscara con ?luma=1 (aunque
+      // no esté ?skyfrac=1) para quedarse solo con píxeles de terreno; por
+      // eso el pase corre con occNeeded (luma||skyfrac), no con skyfracOn.
+      let occRan = false;
+      if (occNeeded && terrain) {
         if (!occMesh) {
           occMesh = new THREE.Mesh(terrain.geometry, occMat);
           occMesh.frustumCulled = false;
@@ -1280,29 +1312,125 @@ float wgrain(vec2 lp){
         } else if (occMesh.geometry !== terrain.geometry) {
           occMesh.geometry = terrain.geometry;
         }
+        occRan = true;
         const sky = renderCount(renderer, occTarget, occBuf, occScene, camera, 256, 144,
           (rr, gg, bb) => rr < 8 && gg < 8 && bb < 8);
-        (window as unknown as { __skyFrac?: number }).__skyFrac = sky / (256 * 144);
-        // G17 free: black pixels in the LOWER half (rows 0..71) = void under
-        // the horizon. Same buffer just read — no second render.
-        let voidPx = 0;
-        for (let yy = 0; yy < 72; yy++) {
-          for (let xx = 0; xx < 256; xx++) {
-            const o = (yy * 256 + xx) * 4;
-            if ((occBuf[o] as number) < 8 && (occBuf[o + 1] as number) < 8 && (occBuf[o + 2] as number) < 8) voidPx++;
+        if (skyfracOn) {
+          (window as unknown as { __skyFrac?: number }).__skyFrac = sky / (256 * 144);
+          // G17 free: black pixels in the LOWER half (rows 0..71) = void under
+          // the horizon. Same buffer just read — no second render.
+          let voidPx = 0;
+          for (let yy = 0; yy < 72; yy++) {
+            for (let xx = 0; xx < 256; xx++) {
+              const o = (yy * 256 + xx) * 4;
+              if ((occBuf[o] as number) < 8 && (occBuf[o + 1] as number) < 8 && (occBuf[o + 2] as number) < 8) voidPx++;
+            }
           }
+          (window as unknown as { __voidPx?: number }).__voidPx = voidPx;
         }
-        (window as unknown as { __voidPx?: number }).__voidPx = voidPx;
       }
-      // G15: offscreen ID pass (solid Line2 alone, 256x144). Runs on the
-      // same 30-frame cadence as G11/G12; result in window.__trackpx.
-      // G22: getError() after the probes names them too — renderCount and
-      // countIdPixels each restore setRenderTarget(null) on the way out.
+      // §4b FASE 5 (G31/G32): sonda de sombra, solo con ?luma=1, misma
+      // rejilla LUMA_GRID de readPixels que __luma. Sin oclusor no hay
+      // máscara de terreno: publica -1 (pendiente) en vez de un número.
+      // Cuartil más oscuro de píxeles de TERRENO (no-cielo según occBuf):
+      // __lumaShadow = luma lineal media del cuartil; __chromaShadow =
+      // media de (max-min)/max en ese cuartil (0 = gris, 1 = saturado).
+      // El conteo de quemados viaja en la misma muestra: píxeles de
+      // terreno con luma lineal >= 0,9 (puerta: 0).
+      if (lumaOn) {
+        if (occRan) {
+          const lumOf = (c: number): number => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+          const terrLumas: number[] = [];
+          const terrChromas: number[] = [];
+          let litOver = 0;
+          const gridW = 256;
+          const gridH = 144;
+          // Misma rejilla conceptual que __luma (g×g sobre la imagen):
+          // paso en píxeles del canvas -> paso proporcional en la máscara.
+          for (let gy = 0; gy < g; gy++) {
+            for (let gx = 0; gx < g; gx++) {
+              const fx = Math.min(w - 1, Math.floor((gx + 0.5) * (w / g)));
+              const fy = Math.min(h - 1, Math.floor((gy + 0.5) * (h / g)));
+              const mx = Math.min(gridW - 1, Math.floor((fx / Math.max(1, w)) * gridW));
+              const my = Math.min(gridH - 1, Math.floor((fy / Math.max(1, h)) * gridH));
+              const mo = (my * gridW + mx) * 4;
+              if ((occBuf[mo] as number) < 8 && (occBuf[mo + 1] as number) < 8 && (occBuf[mo + 2] as number) < 8) continue; // cielo
+              const o = (fy * w + fx) * 4;
+              const rr = (buf[o] as number) / 255;
+              const gg = (buf[o + 1] as number) / 255;
+              const bb = (buf[o + 2] as number) / 255;
+              const lr = lumOf(rr);
+              const lg = lumOf(gg);
+              const lb = lumOf(bb);
+              const luma = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+              const mxc = Math.max(lr, lg, lb);
+              const mnc = Math.min(lr, lg, lb);
+              terrLumas.push(luma);
+              terrChromas.push(mxc > 1e-6 ? (mxc - mnc) / mxc : 0);
+              if (luma >= 0.9) litOver++;
+            }
+          }
+          if (terrLumas.length > 0) {
+            const order = terrLumas.map((_, i) => i).sort((a, b) => (terrLumas[a] as number) - (terrLumas[b] as number));
+            const q = Math.max(1, Math.floor(order.length / 4));
+            let sumL = 0;
+            let sumC = 0;
+            for (let i = 0; i < q; i++) {
+              sumL += terrLumas[order[i] as number] as number;
+              sumC += terrChromas[order[i] as number] as number;
+            }
+            (window as unknown as { __lumaShadow?: number }).__lumaShadow = sumL / q;
+            (window as unknown as { __chromaShadow?: number }).__chromaShadow = sumC / q;
+            if (boot.debug) {
+              metrics.lumaShadow = (window as unknown as { __lumaShadow?: number }).__lumaShadow ?? -1;
+              metrics.chromaShadow = (window as unknown as { __chromaShadow?: number }).__chromaShadow ?? -1;
+            }
+            (window as unknown as { __litOver?: number }).__litOver = litOver;
+          } else {
+            (window as unknown as { __lumaShadow?: number }).__lumaShadow = -1;
+            (window as unknown as { __chromaShadow?: number }).__chromaShadow = -1;
+            (window as unknown as { __litOver?: number }).__litOver = -1;
+          }
+        } else {
+          (window as unknown as { __lumaShadow?: number }).__lumaShadow = -1;
+          (window as unknown as { __chromaShadow?: number }).__chromaShadow = -1;
+          (window as unknown as { __litOver?: number }).__litOver = -1;
+        }
+      } // cierre if (lumaOn)
+      // §4b FASE 2b (G26 medible) + G22: sin cambios — el blit y getError
+      // ya viven en el bloque de 30 frames; la sonda de sombra no mueve
+      // nada (misma rejilla, misma máscara, solo aritmética JS).
+      // §4b FASE 4 (G30 cielo azul): con ?skyfrac=1, fracción de cielo NO
+      // cubierta por nubes = píxeles de cielo (máscara oclusora) × (1 −
+      // cobertura alfa-ponderada). La cobertura del meter es de frame, no
+      // de cielo: se reescala por (cielo/frame). Sin oclusor no hay
+      // máscara: publica -1 (pendiente).
+      if (skyfracOn) {
+        if (occRan) {
+          const skyPx = (window as unknown as { __skyFrac?: number }).__skyFrac ?? -1;
+          const cov = clouds.getCoverage();
+          const blue = skyPx >= 0 ? Math.min(1, Math.max(0, skyPx * (1 - cov))) : -1;
+          (window as unknown as { __blueSky?: number }).__blueSky = blue;
+        } else {
+          (window as unknown as { __blueSky?: number }).__blueSky = -1;
+        }
+      }
+      // §4b FASE 4 (G19-nube): el bucle del rastro bajo las nubes — el ID
+      // pass corre en escena propia (sin nubes): OFF = medida directa y
+      // ON = OFF × (1 − cobertura). Cota superior honesta: la cobertura
+      // es de todo el frame y el rastro ocupa el centro-bajo; si ni así
+      // frac baja de 0.90, el bucle está libre. Misma cadencia de 30
+      // frames, solo con ?trackpx=1: publica __trackOcc = { on, off }.
       if (trackpxOn) {
         try {
-          (window as unknown as { __trackpx?: number }).__trackpx = line.countIdPixels(renderer, camera);
+          const off = line.countIdPixels(renderer, camera);
+          (window as unknown as { __trackpx?: number }).__trackpx = off;
+          const cov = clouds.group.visible ? clouds.getCoverage() : 0;
+          const frac = off > 0 ? Math.min(1, Math.max(0, 1 - cov)) : 1;
+          (window as unknown as { __trackOcc?: { on: number; off: number; frac: number } }).__trackOcc = { on: Math.round(off * frac), off, frac };
         } catch {
           (window as unknown as { __trackpx?: number }).__trackpx = -1;
+          (window as unknown as { __trackOcc?: { on: number; off: number; frac: number } }).__trackOcc = { on: -1, off: -1, frac: -1 };
         }
       }
       // §4b FASE 2b (G26 medible): one canvas pixel at (16, h-16) — inside
@@ -1323,7 +1451,7 @@ float wgrain(vec2 lp){
           (window as unknown as { __skymapPx?: string }).__skymapPx = "#000000";
         }
       }
-      if (boot.debug && (skyfracOn || trackpxOn)) {
+      if (boot.debug && (skyfracOn || trackpxOn || lumaOn)) {
         glPassErr.probe = glProbe.getError();
       }
       if (boot.debug) {
