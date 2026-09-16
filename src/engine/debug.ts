@@ -25,6 +25,9 @@ export interface Metrics {
   rockWeightShown: number; // live uRockWeight value
   drawCalls: number;
   triangles: number;
+  /** §4b FASE 2b: renderer.render() calls per frame (1 main; +1 skymap blit;
+   * probes run inside the 30-frame block and are NOT counted here). */
+  passes: number;
   maxTextureSize: number;
   dpr: number;
   lod: number;
@@ -126,13 +129,16 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     jsLabels: 0,
     fps: 0,
     cloudCoverage: 0,
-    zenithHex: "#000000",
+    // §4b FASE 3: written ONLY by the 30-frame capture probe (display
+    // values). "—" until the probe first runs (G28: single writer).
+    zenithHex: "—",
     fog10km: 0,
     steep: false,
     hasRock: 0,
     rockWeightShown: 1,
-    drawCalls: 0,
-    triangles: 0,
+  drawCalls: 0,
+  triangles: 0,
+  passes: 1,
     maxTextureSize: 0,
     dpr: Math.min(window.devicePixelRatio, 2),
     lod: 2,
@@ -160,16 +166,14 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
   document.body.appendChild(el);
   let last = "";
   const id = window.setInterval(() => {
-    const r = (window as unknown as { __renderer?: THREE.WebGLRenderer }).__renderer;
-    if (r) {
-      metrics.drawCalls = r.info.render.calls;
-      metrics.triangles = r.info.render.triangles;
-    }
+    // §4b FASE 2b: drawCalls/triangles are written by the LOOP right after
+    // the main render (main pass only). The poll never reads renderer.info
+    // (it would see the last probe/blit pass of the frame — "calls 1").
     const gpu = (v: number): string => (v < 0 ? "n/a" : `${v.toFixed(1)} ms`);
     const s =
       `frame ${metrics.msFrame.toFixed(1)} ms (${metrics.fps.toFixed(0)} fps) · js terr ${metrics.jsTerrain.toFixed(1)} · js etiq ${metrics.jsLabels.toFixed(1)}\n` +
       `gpu terr ${gpu(metrics.msTerrain)} · nub ${gpu(metrics.msClouds)} · cobertura ${(metrics.cloudCoverage * 100).toFixed(0)}%\n` +
-      `calls ${metrics.drawCalls} · tris ${(metrics.triangles / 1e6).toFixed(2)}M · maxTex ${metrics.maxTextureSize} · dpr ${metrics.dpr} · lod ${metrics.lod} · ${metrics.texLevel}\n` +
+      `calls ${metrics.drawCalls} · tris ${(metrics.triangles / 1e6).toFixed(2)}M · pases ${metrics.passes} · maxTex ${metrics.maxTextureSize} · dpr ${metrics.dpr} · lod ${metrics.lod} · ${metrics.texLevel}\n` +
       `${metrics.time} · cam ${metrics.cam} · cenit ${metrics.zenithHex} · niebla10km ${metrics.fog10km.toFixed(2)}\n` +
       // A10: yaw printed mod 360 (readable); unwrapped in parens for debug.
       // G16: corrH (damped H correction) rides along — nodding reads here.

@@ -139,10 +139,10 @@ console.log(
   // applyLighting feeds the dome at noon; print it.
   {
     const { lightingAt } = await import("../src/engine/sun.ts");
-    const { SKY_SCALE } = await import("../src/narrative/choreography.ts");
+    const { SKY_SAT, SKY_SCALE } = await import("../src/narrative/choreography.ts");
     const L = lightingAt(12);
     console.log(
-      `  sky@12:00 turbidity=${L.turbidity} rayleigh=${L.rayleigh} mieCoefficient=${L.mieCoefficient} mieDirectionalG=${L.mieDirectionalG} uSkyScale=${SKY_SCALE} exposure=${L.exposure}`,
+      `  sky@12:00 turbidity=${L.turbidity} rayleigh=${L.rayleigh} mieCoefficient=${L.mieCoefficient} mieDirectionalG=${L.mieDirectionalG} uSkyScale=${SKY_SCALE} uSkySat=${SKY_SAT} exposure=${L.exposure}`,
     );
   }
   // RASTRO gl_InstanceID: no attribute left — distance IS the index.

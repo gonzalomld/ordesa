@@ -20,7 +20,7 @@
 // the target is linear working data for fog + meter.
 // No offscreen pass uses the main scene; raw GL is never written (AGENTS.md).
 import * as THREE from "three";
-import { SKY_EPS_DEG, SKY_SCALE } from "../narrative/choreography.ts";
+import { SKY_EPS_DEG, SKY_SAT, SKY_SCALE } from "../narrative/choreography.ts";
 import { fogUniforms } from "./height-fog.ts";
 
 export interface SkyCapture {
@@ -105,9 +105,11 @@ const CAPTURE_VERT = /* glsl */ `
   }`;
 
 // Fragment: Sky body verbatim; ONLY direction differs (uv equirect instead
-// of vWorldPosition - cameraPosition) + SKY_SCALE inline + no tonemapping
-// /colorspace includes (linear working data, like the dome pre-tonemap).
-const CAPTURE_FRAG = (skyScale: string): string => /* glsl */ `
+// of vWorldPosition - cameraPosition) + SKY_SAT/SKY_SCALE inline + no
+// tonemapping/colorspace includes (linear working data, like the dome
+// pre-tonemap). The saturation block is IDENTICAL to the dome's (viewer.ts)
+// so haze and probe see the same sky.
+const CAPTURE_FRAG = (skySat: string, skyScale: string): string => /* glsl */ `
   varying vec2 vUv;
   varying vec3 vSunDirection;
   varying float vSunfade;
@@ -177,8 +179,11 @@ const CAPTURE_FRAG = (skyScale: string): string => /* glsl */ `
 
     vec3 retColor = pow( texColor, vec3( 1.0 / ( 1.2 + ( 1.2 * vSunfade ) ) ) );
 
-    // SAME dome dimming (SKY_SCALE) so haze matches drawn sky. Linear out:
-    // no tonemapping/colorspace includes — working data, not display.
+    // SAME dome dimming (SKY_SCALE) + saturation (SKY_SAT) so haze matches
+    // drawn sky. Linear out: no tonemapping/colorspace includes — working
+    // data, not display.
+    float skyL = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );
+    retColor = max( vec3( 0.0 ), mix( vec3( skyL ), retColor, ${skySat} ) );
     gl_FragColor = vec4( retColor * ${skyScale}, 1.0 );
   }`;
 
@@ -215,7 +220,7 @@ export function createSkyCapture(
       up: domeU["up"],
     },
     vertexShader: CAPTURE_VERT,
-    fragmentShader: CAPTURE_FRAG((SKY_SCALE as number).toFixed(3)),
+    fragmentShader: CAPTURE_FRAG((SKY_SAT as number).toFixed(2), (SKY_SCALE as number).toFixed(3)),
     depthTest: false,
     depthWrite: false,
   });

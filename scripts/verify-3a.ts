@@ -855,12 +855,16 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   const cadence30 = viewerSrcG24.includes("frames % 30 === 5") && viewerSrcG24.includes("boot.debug && skyCap && boot.skycap");
   // FASE 2: ?skymap=1 independent (combinable with ?debug=1), blit composites.
   const skyFlag = debugSrc.includes('q.get("skymap") === "1"') && !debugSrc.includes('q.get("debug") === "skymap"');
-  const blitOk = viewerSrcG24.includes("renderer.autoClear = false") && viewerSrcG24.includes("h / 2, -0.5");
-  const { G24_ZEN_MIN, G24_ZEN_MAX, G24_HZ_RATIO, SKY_TURBIDITY, SKY_RAYLEIGH, SKY_MIE, SKY_G, SKY_SCALE, HEMI_GRAY_MIX, CLOUD_COVERAGE } =
+  // FASE 2b: NDC blit (camera -1..1 fixed, mesh sized in NDC, depth off,
+  // order 999) — pixel camera + z=-0.5 checks retired.
+  const blitOk = viewerSrcG24.includes("OrthographicCamera(-1, 1, 1, -1, -1, 1)")
+    && viewerSrcG24.includes("renderer.autoClear = false")
+    && viewerSrcG24.includes("renderOrder = 999");
+  const { G24_ZEN_MIN, G24_ZEN_MAX, G24_HZ_RATIO, SKY_TURBIDITY, SKY_RAYLEIGH, SKY_MIE, SKY_G, SKY_SCALE, SKY_SAT, HEMI_GRAY_MIX, CLOUD_COVERAGE } =
     await import("../src/narrative/choreography.ts");
   const constsOk =
-    SKY_TURBIDITY === 2.2 && SKY_RAYLEIGH === 1.6 && SKY_MIE === 0.004 && SKY_G === 0.8 &&
-    SKY_SCALE === 0.32 && HEMI_GRAY_MIX === 0.4 && CLOUD_COVERAGE === 0.3 &&
+    SKY_TURBIDITY === 1.7 && SKY_RAYLEIGH === 1.6 && SKY_MIE === 0.004 && SKY_G === 0.8 &&
+    SKY_SCALE === 0.32 && SKY_SAT === 1.0 && HEMI_GRAY_MIX === 0.4 && CLOUD_COVERAGE === 0.3 &&
     G24_HZ_RATIO === 2.2 && G24_ZEN_MIN === "#2a68b8" && G24_ZEN_MAX === "#3e86d2";
   const ok = hasProbe && readbackOk && noClone && equirect && sharedU && ownCam && constsOk
     && dispSpace && auditTrail && hotLoopGone && cadence30 && skyFlag && blitOk;
@@ -870,21 +874,75 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
       : `contract broken (probe=${hasProbe} readback=${readbackOk} noClone=${noClone} equirect=${equirect} sharedU=${sharedU} ownCam=${ownCam} consts=${constsOk} disp=${dispSpace} audit=${auditTrail} hotGone=${hotLoopGone} cad30=${cadence30} skyFlag=${skyFlag} blit=${blitOk})`);
 }
 
-// --- G26 skymap blit (§4b FASE 2): with ?debug=1&skymap=1 the frame shows
-// terrain + HUD + the 384×192 map bottom-left; calls = 6; no black frames.
-// Node checks the composite (autoClear=false + clearDepth, z=-0.5,
-// after-labels order); the PICTURE is measured in-browser.
+// --- G26 skymap blit (§4b FASE 2b): with ?debug=1&skymap=1 the frame shows
+// terrain + HUD + the 384×192 map bottom-left; __skymapPx ≠ black and ≈
+// the capture horizon pixel; no black frames. Node checks the composite
+// (NDC camera, autoClear=false, depth off, renderOrder 999, after-labels
+// order, 1-px readback); the PICTURE is measured in-browser.
 {
   const viewerSrcG26 = readFileSync("src/engine/viewer.ts", "utf8");
   const afterLabels = viewerSrcG26.indexOf("updateLabels(labelRts") < viewerSrcG26.indexOf("skymapBlit.scene, skymapBlit.cam");
+  const ndcCam = viewerSrcG26.includes("OrthographicCamera(-1, 1, 1, -1, -1, 1)");
+  const depthOff = viewerSrcG26.includes("depthTest: false") && viewerSrcG26.includes("depthWrite: false");
+  const order999 = viewerSrcG26.includes("renderOrder = 999");
+  const pxProbe = viewerSrcG26.includes("__skymapPx");
   const ok = viewerSrcG26.includes("renderer.autoClear = false")
-    && viewerSrcG26.includes("renderer.clearDepth()")
-    && viewerSrcG26.includes("h / 2, -0.5")
+    && ndcCam && depthOff && order999 && pxProbe
     && afterLabels;
   gate("G26-blit", ok,
     ok
-      ? "?skymap=1 blit composites (autoClear=false, clearDepth, z=-0.5, after labels) — measure calls=6 + terrain+HUD+map in-browser"
-      : "blit would wipe the frame (autoClear) or miss depth/plane/order");
+      ? "?skymap=1 blit composites (NDC cam, autoClear=false, depth off, order 999, after labels, __skymapPx) — measure map visible + px≈horizon in-browser"
+      : `blit contract broken (ndc=${ndcCam} depthOff=${depthOff} order999=${order999} px=${pxProbe} afterLabels=${afterLabels})`);
+}
+
+// --- G29 main-pass counter (§4b FASE 2b): the HUD reads calls/tris from
+// the MAIN pass only (info.reset + read right after the main render;
+// passes counts render() calls). Node checks the mechanism; the NUMBERS
+// (calls=5/tris=1.8M/passes=1; skymap → passes=2, calls still 5) come
+// from prod.
+{
+  const viewerSrcG29 = readFileSync("src/engine/viewer.ts", "utf8");
+  const debugSrcG29 = readFileSync("src/engine/debug.ts", "utf8");
+  const resetFirst = viewerSrcG29.indexOf("renderer.info.reset()") < viewerSrcG29.indexOf("renderer.render(scene, camera)");
+  const readAfter = viewerSrcG29.indexOf("metrics.drawCalls = renderer.info.render.calls")
+    < viewerSrcG29.indexOf("updateLabels(labelRts");
+  const passesField = debugSrcG29.includes("passes: number") && debugSrcG29.includes("pases ${metrics.passes}");
+  const pollClean = !debugSrcG29.includes("r.info.render.calls");
+  const ok = resetFirst && readAfter && passesField && pollClean;
+  gate("G29-counter", ok,
+    ok
+      ? "HUD calls/tris = main pass (info.reset + read after main render, passes counted) — measure calls=5/passes=1 (skymap→2) in-browser"
+      : `counter broken (resetFirst=${resetFirst} readAfter=${readAfter} passes=${passesField} pollClean=${pollClean})`);
+}
+
+// --- G24d dawn/dusk sanity (§4b FASE 3): at 9:00 and 19:00 the capture
+// shader must stay in gamut (no channel 0/255 at zenith row or horizon)
+// and hz ≤ 3.0. Node checks the PREDICTOR contract (predict-sky.ts exists
+// + covers 9/12/19 + clamps); the NUMBERS come from prod captures.
+{
+  const predSrc = existsSync("scripts/predict-sky.ts") ? readFileSync("scripts/predict-sky.ts", "utf8") : "";
+  const ok = predSrc.includes("[9, 12, 19]") && predSrc.includes("Math.min(1, v)");
+  gate("G24d-sanity", ok,
+    ok
+      ? "predict-sky.ts covers 9/12/19 with clamped linear — measure prod 9:00/19:00 (no 0/255 channels, hz ≤ 3.0)"
+      : "predict-sky.ts missing 9/12/19 sweep or linear clamp");
+}
+
+// --- G28 single writer (§4b FASE 3): metrics.zenithHex is written ONLY by
+// the 30-frame probe. Node checks statically: exactly one assignment in
+// src + init "—". The STABILITY (10 reads, 1 s, same value) is measured
+// in-browser (probe writes every 30th frame; between writes the value is
+// untouched — no second writer exists to race it).
+{
+  const viewerSrcG28 = readFileSync("src/engine/viewer.ts", "utf8");
+  const debugSrcG28 = readFileSync("src/engine/debug.ts", "utf8");
+  const writes = [...viewerSrcG28.matchAll(/metrics\.zenithHex\s*=/g)].length;
+  const initDash = debugSrcG28.includes('zenithHex: "—"');
+  const ok = writes === 1 && initDash;
+  gate("G28-writer", ok,
+    ok
+      ? 'metrics.zenithHex: 1 writer (30f probe) + init "—" — measure 10 reads/1 s stability in-browser'
+      : `zenithHex writers=${writes} (need 1), init-dash=${initDash}`);
 }
 
 // --- G27 probeless production (§4b FASE 2): without ?debug=1 the loop runs

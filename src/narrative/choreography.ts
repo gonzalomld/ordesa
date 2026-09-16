@@ -90,13 +90,14 @@ export const G11_LUMA_MIN = 0.06; // mean linear framebuffer luminance at s=0.10
 export const LUMA_GRID = 32; // G11 readPixels grid (audit A6); measured in-browser via ?luma=1, every 30th frame
 
 // --- §4 sky (Preetham starting values, measured with the probe) ---
-export const SKY_TURBIDITY = 2.2; // (today ~8-10: what whitens the horizon)
+export const SKY_TURBIDITY = 1.7; // §4b FASE 3a: 2.2 -> 1.7 (predictor: B/R barely moves — turbidity alone never reaches alpine blue; next: rayleigh)
 export const SKY_RAYLEIGH = 1.6; // flat, no low-sun branch
 export const SKY_MIE = 0.004; // (was 0.006)
 export const SKY_G = 0.8; // mieDirectionalG
 // §4 correction: the SKY dims in the DOME (uSkyScale), not with the renderer
 // exposure — exposure 0.55 starved the terrain (luma 0.023 at noon).
 export const SKY_SCALE = 0.32; // sky-dome radiance multiplier before tone mapping
+export const SKY_SAT = 1.0; // §4b FASE 3: saturation knob around grey (1.0 = no change) — Preetham at turbidity 2.2 gives B/R ≈ 2.5 linear, high-mountain noon needs ≈ 8-13; injected as a constant like SKY_SCALE, same block in dome + capture
 export const SKY_EXPOSURE = 0.55; // DEAD (§4 correction): dimming via exposure dragged the terrain with the sky; exposure is 1.0 again, the dome carries the dimming. Kept so git history explains itself.
 export const HEMI_GRAY_MIX = 0.4; // shadow stays cool, not tinted: mix(sky, grey(luma), 0.4)
 export const CLOUD_COVERAGE = 0.3; // alpha-weighted target at 12:00 (the metric is already corrected)

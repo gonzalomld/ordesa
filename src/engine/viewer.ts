@@ -28,6 +28,7 @@ import {
   SHADOW_MIN_FRAMES,
   SHADOW_MOVE_EPS_M,
   SHADOW_NEAR_M,
+  SKY_SAT,
   SKY_SCALE,
   SUNSET_ELEV_DEG,
 } from "../narrative/choreography.ts";
@@ -183,10 +184,9 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   sky.renderOrder = -10;
   scene.add(sky);
   const skyU = sky.material.uniforms as Record<string, { value: unknown }>;
-  // §4 correction: the dome dims ITSELF (patched ShaderMaterial scale —
-  // the Sky shader has no hook, so onBeforeCompile multiplies the outgoing
-  // radiance BEFORE tonemapping/colorspace). Renderer exposure stays 1.0:
-  // dimming via exposure starved the terrain (luma 0.023 at noon).
+  // §4b FASE 3: saturation around grey BEFORE the SKY_SCALE dimming
+  // (SKY_SAT constant, same block in dome + capture so haze and probe
+  // see the same sky). max() guards below-black on extreme settings.
   {
     const skym = sky.material as THREE.ShaderMaterial & { onBeforeCompile: (s: { fragmentShader: string }) => void };
     const prevSky = skym.onBeforeCompile.bind(skym);
@@ -194,7 +194,9 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       prevSky(s);
       s.fragmentShader = s.fragmentShader.replace(
         "gl_FragColor = vec4( retColor, 1.0 );",
-        `gl_FragColor = vec4( retColor * ${(SKY_SCALE as number).toFixed(3)}, 1.0 );`,
+        `float skyL = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );
+        retColor = max( vec3( 0.0 ), mix( vec3( skyL ), retColor, ${(SKY_SAT as number).toFixed(2)} ) );
+        gl_FragColor = vec4( retColor * ${(SKY_SCALE as number).toFixed(3)}, 1.0 );`,
       );
     };
     sky.material.needsUpdate = true;
@@ -268,12 +270,10 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     routeDim = 1 - L.nightMix * 0.3;
     cloudDensity = L.cloudDensity;
     if (boot.debug) {
-      const ray = L.rayleigh;
-      const elevF = Math.max(0, Math.min(1, sp.elevationDeg / 60));
-      const zr = Math.round(Math.min(255, Math.max(0, 255 * (0.12 + 0.1 * elevF + 0.05 * ray))));
-      const zg = Math.round(Math.min(255, Math.max(0, 255 * (0.32 + 0.22 * elevF))));
-      const zb = Math.round(Math.min(255, Math.max(0, 255 * (0.62 + 0.2 * elevF - 0.08 * ray))));
-      metrics.zenithHex = `#${zr.toString(16).padStart(2, "0")}${zg.toString(16).padStart(2, "0")}${zb.toString(16).padStart(2, "0")}`;
+      // §4b FASE 3: metrics.zenithHex has ONE writer — the 30-frame capture
+      // probe below (display-space ACES+sRGB, what the user sees). The old
+      // analytic estimate wrote here too and raced the probe (G28): deleted.
+      // Until the probe first runs, zenithHex stays "—" (mountDebug init).
       const dfog = fogUniforms.uFogDensity.value as number;
       const x10 = 10000 / 9000;
       const df10 = 1 - Math.exp(-x10 * x10 * x10 * x10 * 3.4);
@@ -942,36 +942,46 @@ float wgrain(vec2 lp){
     const { mountPathOverlay } = await import("../narrative/debug-path.ts");
     mountPathOverlay({ route, world, elev, meta, progress, rig });
   }
-  // §4b FASE 2 (?skymap=1): blit the 64×32 capture target ×6 in the
-  // lower-left corner, own ortho scene (never the main scene), after the
-  // main render + labels. Static objects (built once): the ONLY per-frame
-  // cost is one extra render call (calls 5 → 6), and only with the flag.
-  // FASE 2 fix: autoClear=false + clearDepth around the blit (the default
-  // autoClear wiped the main frame → black screen, calls 0); mesh at
-  // z=-0.5 with near=-1/far=1 so it never sits on the near plane.
+  // §4b FASE 2b (?skymap=1): blit the 64×32 capture target, 384×192 CSS px
+  // bottom-left, own NDC ortho scene (never the main scene), after the main
+  // render + labels. NDC camera (-1..1) is NEVER moved: the mesh is sized
+  // and placed in NDC from CSS px (384/w, 192/h), recomputed on resize.
+  // depthTest/Write off + renderOrder 999: composites over the frame.
+  // autoClear=false around the pass (the default wiped the frame → black).
   let skymapBlit: {
     scene: THREE.Scene;
     cam: THREE.OrthographicCamera;
     mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   } | null = null;
+  function layoutSkymapBlit(): void {
+    if (!skymapBlit) return;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const bw = (2 * 384) / w;
+    const bh = (2 * 192) / h;
+    skymapBlit.mesh.geometry.dispose();
+    skymapBlit.mesh.geometry = new THREE.PlaneGeometry(bw, bh);
+    skymapBlit.mesh.position.set(-1 + bw / 2, -1 + bh / 2, 0);
+  }
   function ensureSkymapBlit(): void {
     if (skymapBlit || !skyCap) return;
-    const w = 64 * 6;
-    const h = 32 * 6;
     const bscene = new THREE.Scene();
-    const bcam = new THREE.OrthographicCamera(0, window.innerWidth, 0, window.innerHeight, -1, 1);
-    const bmat = new THREE.MeshBasicMaterial({ map: skyCap.texture(), toneMapped: false });
-    const bmesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), bmat);
-    bmesh.position.set(w / 2, h / 2, -0.5);
+    const bcam = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+    const bmat = new THREE.MeshBasicMaterial({
+      map: skyCap.texture(),
+      toneMapped: false,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const bmesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), bmat);
+    bmesh.renderOrder = 999;
     bmesh.frustumCulled = false;
     bscene.add(bmesh);
     skymapBlit = { scene: bscene, cam: bcam, mesh: bmesh };
+    layoutSkymapBlit();
   }
   window.addEventListener("resize", () => {
-    if (!skymapBlit) return;
-    skymapBlit.cam.right = window.innerWidth;
-    skymapBlit.cam.top = window.innerHeight;
-    skymapBlit.cam.updateProjectionMatrix();
+    layoutSkymapBlit();
   });
   // G12/G17 occluder pass (respuesta G12): terrain ONLY — no dome, no
   // clouds, no track, no labels. overrideMaterial flat white, clear black:
@@ -1169,7 +1179,17 @@ float wgrain(vec2 lp){
     // SAME matrix that just rendered. Projecting before rig.update() trails
     // one frame behind the canvas — invisible when still, swimming on scroll.
     camera.updateMatrixWorld(true);
+    renderer.info.reset();
     renderer.render(scene, camera);
+    // §4b FASE 2b: HUD counter reads the MAIN pass only — info.reset()
+    // before the render zeroes the accumulator, so info.render.calls/tris
+    // are the main pass even when probes/blits run later in the frame.
+    // (renderer.info.autoReset resets per render() call; the blit/probes
+    // after this point would otherwise overwrite the numbers with their
+    // own — "calls 1" was the 2-triangle blit counted as the frame.)
+    metrics.drawCalls = renderer.info.render.calls;
+    metrics.triangles = renderer.info.render.triangles;
+    metrics.passes = 1;
     if (boot.debug) {
       // G22: name the failing pass — capture recorded above, main here,
       // probes below (their own scenes). Always drains; the per-frame label
@@ -1178,18 +1198,17 @@ float wgrain(vec2 lp){
     }
     // T1: labels AFTER render, every frame, no throttle (js etiq ~0.1 ms).
     updateLabels(labelRts, camera, window.innerWidth, window.innerHeight, 30000);
-    // §4b FASE 2 (?skymap=1): capture target ×6, lower-left, own ortho
-    // scene, AFTER main render + labels. autoClear=false + clearDepth: the
-    // blit composites over the frame, never wipes it (FASE 1 wiped it →
-    // black screen). Renderer path only, never raw GL.
+    // §4b FASE 2b (?skymap=1): 384×192 CSS px bottom-left, NDC scene,
+    // AFTER main render + labels. autoClear=false: composites, never wipes.
+    // Renderer path only, never raw GL.
     if (boot.skymap && skyCap && boot.skycap) {
       ensureSkymapBlit();
       if (skymapBlit) {
         const prevAutoClear = renderer.autoClear;
         renderer.autoClear = false;
-        renderer.clearDepth();
         renderer.render(skymapBlit.scene, skymapBlit.cam);
         renderer.autoClear = prevAutoClear;
+        metrics.passes = 2;
       }
     }
     const t3 = performance.now();
@@ -1284,6 +1303,24 @@ float wgrain(vec2 lp){
           (window as unknown as { __trackpx?: number }).__trackpx = line.countIdPixels(renderer, camera);
         } catch {
           (window as unknown as { __trackpx?: number }).__trackpx = -1;
+        }
+      }
+      // §4b FASE 2b (G26 medible): one canvas pixel at (16, h-16) — inside
+      // the 384×192 blit — read AFTER the blit, BEFORE present, same
+      // mechanism as __luma. Only with ?skymap=1 (and debug cadence):
+      // production never pays it. Must ≈ the capture's lower-centre pixel
+      // (horizon), never #000000, never terrain colour.
+      if (boot.skymap && skyCap && boot.skycap) {
+        try {
+          const gl = renderer.getContext() as WebGL2RenderingContext;
+          const pxBuf = new Uint8Array(4);
+          const dh = Math.max(1, Math.floor(renderer.domElement.height / (window.devicePixelRatio || 1)));
+          gl.readPixels(16, dh - 16, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pxBuf);
+          const hx = (v: number): string => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0");
+          (window as unknown as { __skymapPx?: string }).__skymapPx =
+            `#${hx((pxBuf[0] as number) / 255)}${hx((pxBuf[1] as number) / 255)}${hx((pxBuf[2] as number) / 255)}`;
+        } catch {
+          (window as unknown as { __skymapPx?: string }).__skymapPx = "#000000";
         }
       }
       if (boot.debug && (skyfracOn || trackpxOn)) {
