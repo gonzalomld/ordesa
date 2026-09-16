@@ -20,7 +20,7 @@
 // the target is linear working data for fog + meter.
 // No offscreen pass uses the main scene; raw GL is never written (AGENTS.md).
 import * as THREE from "three";
-import { SKY_EPS_DEG, SKY_SAT, SKY_SCALE } from "../narrative/choreography.ts";
+import { SKY_EPS_DEG, SKY_SAT } from "../narrative/choreography.ts";
 import { fogUniforms } from "./height-fog.ts";
 
 export interface SkyCapture {
@@ -28,19 +28,25 @@ export interface SkyCapture {
   refreshIfNeeded(elevDeg: number): boolean;
   /** Rastro isolation (?skycap=0): skip the capture (zenith frozen). */
   setEnabled(on: boolean): void;
+  /** Sun azimuth (deg) driving the current capture — for the sun/anti
+   * horizon columns (§4b FASE 3c). Set by refresh(); Infinity = stale. */
+  sunAzimuthDeg(): number;
   /** §4b FASE 2: read zenith + horizon luma from the capture (renderer
    * path only, no raw GL). Zenith = top-centre of the 64×32 equirect,
    * horizon = vertical middle. Returns DISPLAY values: the capture bytes
    * through EXACTLY the three ACES filmic (exposure 1.0, /0.6) +
    * linear→sRGB the dome pixels take on screen — so the gate compares
    * what the user sees, not linear working data. raw = pre-tonemap bytes
-   * (audit trail, kept for __zenithLinear).
+   * (audit trail, kept for __zenithLinear). sun/anti = sun-side +
+   * anti-sun horizon rows (§4b FASE 3c: __hzSunHex/__hzAntiHex).
    * Precondition: the capture target is UnsignedByteType (readable).
    * DEBUG-ONLY cadence (call site: every 30th frame with ?debug=1) — a
    * readRenderTargetPixels sync every frame costs ~3 ms for everyone. */
   readZenith(): {
     disp: { zen: [number, number, number]; hor: [number, number, number] };
     raw: { zen: [number, number, number]; hor: [number, number, number] };
+    sun: { hor: [number, number, number] };
+    anti: { hor: [number, number, number] };
   };
   /** ?skymap=1 blit source (live texture, no copy). */
   texture(): THREE.Texture;
@@ -105,11 +111,11 @@ const CAPTURE_VERT = /* glsl */ `
   }`;
 
 // Fragment: Sky body verbatim; ONLY direction differs (uv equirect instead
-// of vWorldPosition - cameraPosition) + SKY_SAT/SKY_SCALE inline + no
-// tonemapping/colorspace includes (linear working data, like the dome
-// pre-tonemap). The saturation block is IDENTICAL to the dome's (viewer.ts)
-// so haze and probe see the same sky.
-const CAPTURE_FRAG = (skySat: string, skyScale: string): string => /* glsl */ `
+// of vWorldPosition - cameraPosition) + solar-weighted SKY_SAT + shared
+// uSkyScale inline + no tonemapping/colorspace includes (linear working
+// data, like the dome pre-tonemap). The saturation/scale block is IDENTICAL
+// to the dome's (viewer.ts) so haze and probe see the same sky.
+const CAPTURE_FRAG = (skySat: string): string => /* glsl */ `
   varying vec2 vUv;
   varying vec3 vSunDirection;
   varying float vSunfade;
@@ -119,8 +125,10 @@ const CAPTURE_FRAG = (skySat: string, skyScale: string): string => /* glsl */ `
 
   uniform float mieDirectionalG;
   uniform vec3 up;
+  uniform float uSkyScale;
+  uniform float uSunElev;
 
-  const float pi = 3.141592653589793238462643383279502884197169;
+  const float cPi = 3.141592653589793238462643383279502884197169;
 
   const float n = 1.0003;
   const float N = 2.545E25;
@@ -150,7 +158,7 @@ const CAPTURE_FRAG = (skySat: string, skyScale: string): string => /* glsl */ `
     vec3 direction = vec3( cos( el ) * cos( az ), sin( el ), cos( el ) * sin( az ) );
 
     float zenithAngle = acos( max( 0.0, dot( up, direction ) ) );
-    float inverse = 1.0 / ( cos( zenithAngle ) + 0.15 * pow( 93.885 - ( ( zenithAngle * 180.0 ) / pi ), -1.253 ) );
+    float inverse = 1.0 / ( cos( zenithAngle ) + 0.15 * pow( 93.885 - ( ( zenithAngle * 180.0 ) / cPi ), -1.253 ) );
     float sR = rayleighZenithLength * inverse;
     float sM = mieZenithLength * inverse;
 
@@ -169,7 +177,7 @@ const CAPTURE_FRAG = (skySat: string, skyScale: string): string => /* glsl */ `
 
     float theta = acos( direction.y );
     float phi = atan( direction.z, direction.x );
-    vec2 skuv = vec2( phi, theta ) / vec2( 2.0 * pi, pi ) + vec2( 0.5, 0.0 );
+    vec2 skuv = vec2( phi, theta ) / vec2( 2.0 * cPi, cPi ) + vec2( 0.5, 0.0 );
     vec3 L0 = vec3( 0.1 ) * Fex;
 
     float sundisk = smoothstep( sunAngularDiameterCos, sunAngularDiameterCos + 0.00002, cosTheta );
@@ -179,16 +187,17 @@ const CAPTURE_FRAG = (skySat: string, skyScale: string): string => /* glsl */ `
 
     vec3 retColor = pow( texColor, vec3( 1.0 / ( 1.2 + ( 1.2 * vSunfade ) ) ) );
 
-    // SAME dome dimming (SKY_SCALE) + elevation-weighted saturation
-    // (SKY_SAT) so haze matches drawn sky. Full saturation above 27°
-    // elevation (smoothstep(0.05,0.45) on equirect dir Y); the horizon —
-    // dawns and dusks — stays at sat 1.0. Linear out: no
-    // tonemapping/colorspace includes — working data, not display.
+    // SAME dome scale (shared uSkyScale) + solar-weighted saturation
+    // (SKY_SAT × view × sun) so haze matches drawn sky. Below 5° sun the
+    // zenith never saturates (no chemical brown); at noon identical to
+    // phase 3b. Linear out: no tonemapping/colorspace includes — working
+    // data, not display.
     float skyWE1 = smoothstep( 0.05, 0.45, direction.y );
-    float skySat = mix( 1.0, ${skySat}, skyWE1 );
+    float skySunF = smoothstep( 5.0, 25.0, uSunElev );
+    float skySat = mix( 1.0, ${skySat}, skyWE1 * skySunF );
     float skyL = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );
     retColor = max( vec3( 0.0 ), mix( vec3( skyL ), retColor, skySat ) );
-    gl_FragColor = vec4( retColor * ${skyScale}, 1.0 );
+    gl_FragColor = vec4( retColor * uSkyScale, 1.0 );
   }`;
 
 export function createSkyCapture(
@@ -213,7 +222,12 @@ export function createSkyCapture(
   // Own material: Preetham capture shader, uniform OBJECTS shared with the
   // dome (live by reference — turbidity/rayleigh/sunPosition edits in
   // applyLighting reach the capture with no copy step to forget).
+  // §4b FASE 3c: uSkyScale/uSunElev are the VIEWER's shared objects too
+  // (injected into the dome's uniforms in viewer.ts — same reference the
+  // dome holds): one applyLighting write serves dome + capture + fog.
   const domeU = (skyDome.material as THREE.ShaderMaterial).uniforms as Record<string, THREE.IUniform>;
+  const sharedScale = domeU["uSkyScale"] as THREE.IUniform;
+  const sharedSunElev = domeU["uSunElev"] as THREE.IUniform;
   const capMat = new THREE.ShaderMaterial({
     uniforms: {
       sunPosition: domeU["sunPosition"],
@@ -222,9 +236,11 @@ export function createSkyCapture(
       mieCoefficient: domeU["mieCoefficient"],
       mieDirectionalG: domeU["mieDirectionalG"],
       up: domeU["up"],
+      uSkyScale: sharedScale,
+      uSunElev: sharedSunElev,
     },
     vertexShader: CAPTURE_VERT,
-    fragmentShader: CAPTURE_FRAG((SKY_SAT as number).toFixed(2), (SKY_SCALE as number).toFixed(3)),
+    fragmentShader: CAPTURE_FRAG((SKY_SAT as number).toFixed(2)),
     depthTest: false,
     depthWrite: false,
   });
@@ -239,6 +255,13 @@ export function createSkyCapture(
   const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   let lastElev = Infinity;
   let enabled = true;
+  // §4b FASE 3c: sun azimuth (deg) at the last doRefresh — the sun/anti
+  // horizon columns follow the SUN, not a fixed column. Written from the
+  // sunPosition uniform (unit dir the viewer copies in): az = atan2(x, −z).
+  let lastSunAz = Infinity;
+  function sunAzimuthDeg(): number {
+    return lastSunAz;
+  }
   // §4b FASE 2 readback: persistent buffer (no per-frame alloc), read
   // through the renderer — never raw gl. Rows: y=30 zenith, y=16 horizon
   // (equirect: v=1 top), col x=32 (away from the sun seam).
@@ -286,6 +309,10 @@ export function createSkyCapture(
   function readZenith(): {
     disp: { zen: [number, number, number]; hor: [number, number, number] };
     raw: { zen: [number, number, number]; hor: [number, number, number] };
+    /** §4b FASE 3c: sun-side + anti-sun horizon rows (same conversion).
+     * The sun azimuth in equirect-u: u = atan2(z,x)/2π + 0.5. */
+    sun: { hor: [number, number, number] };
+    anti: { hor: [number, number, number] };
   } {
     renderer.readRenderTargetPixels(rt, 0, 0, 64, 32, zenBuf);
     const raw = (x: number, y: number): [number, number, number] => {
@@ -298,13 +325,32 @@ export function createSkyCapture(
     };
     const zenRaw = raw(32, 30);
     const horRaw = raw(32, 16);
+    // sun-side column: the capture fragment uses az = (u−0.5)·2π with
+    // dir = (cos(el)·cos(az), sin(el), cos(el)·sin(az)); the dome writes
+    // sunPosition = (sin(azS)·cos(ev), sin(ev), −cos(azS)·cos(ev)).
+    // Matching x/z: cos(az) = sin(azS), sin(az) = −cos(azS) → az = azS − π/2.
+    const sunU = sunAzimuthDeg();
+    const azS = ((sunU * Math.PI) / 180 - Math.PI / 2) / (2 * Math.PI) + 0.5;
+    const colSun = Math.min(63, Math.max(0, Math.round(azS * 64)));
+    const colAnti = (colSun + 32) % 64;
+    const sunRaw = raw(colSun, 16);
+    const antiRaw = raw(colAnti, 16);
     return {
       disp: { zen: conv(zenRaw), hor: conv(horRaw) },
       raw: { zen: zenRaw, hor: horRaw },
+      sun: { hor: conv(sunRaw) },
+      anti: { hor: conv(antiRaw) },
     };
   }
   function doRefresh(): void {
     if (!enabled) return;
+    // snapshot the sun azimuth driving THIS capture (unit dir → deg).
+    try {
+      const sp = (domeU["sunPosition"] as THREE.IUniform).value as THREE.Vector3;
+      lastSunAz = (Math.atan2(sp.x, -sp.z) * 180) / Math.PI;
+    } catch {
+      /* keep the previous azimuth */
+    }
     const prevTone = renderer.toneMapping;
     renderer.toneMapping = THREE.NoToneMapping;
     renderer.setRenderTarget(rt);
@@ -329,6 +375,7 @@ export function createSkyCapture(
     setEnabled(on: boolean) {
       enabled = on;
     },
+    sunAzimuthDeg,
     readZenith,
     texture() {
       return rt.texture;

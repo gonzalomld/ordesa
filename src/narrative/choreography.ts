@@ -102,6 +102,7 @@ export const SKY_G = 0.8; // mieDirectionalG
 // §4 correction: the SKY dims in the DOME (uSkyScale), not with the renderer
 // exposure — exposure 0.55 starved the terrain (luma 0.023 at noon).
 export const SKY_SCALE = 0.22; // §4b FASE 3b: 0.32 -> 0.22 (SAT 2.0 raises luma; dim back so G stays in band — gain model then lands (70,149,196), R edge low but B/R alpine; next steps per brief rules, measuring in prod)
+export const SKY_SCALE_LOW = 0.60; // §4b FASE 3c: twilight dome factor — below 2° solar elevation the dome keeps 0.60 (Preetham at 0° is already 5-8× dimmer than noon; ×0.22 turned low sun brown). applyLighting blends LOW→SCALE over 2°→20°.
 export const SKY_SAT = 2.0; // §4b FASE 3b: elevation-weighted saturation — full above 27° elevation, horizon intact (dawns/dusks); same block in dome + capture
 export const SKY_EXPOSURE = 0.55; // DEAD (§4 correction): dimming via exposure dragged the terrain with the sky; exposure is 1.0 again, the dome carries the dimming. Kept so git history explains itself.
 export const HEMI_GRAY_MIX = 0.6; // §4b FASE 5 paso a: 0.4 -> 0.6 (la sombra pierde tinte, no brillo)

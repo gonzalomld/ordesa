@@ -31,6 +31,7 @@ import {
   SHADOW_NEAR_M,
   SKY_SAT,
   SKY_SCALE,
+  SKY_SCALE_LOW,
   SUNSET_ELEV_DEG,
 } from "../narrative/choreography.ts";
 import { initProgress, type ProgressHandle } from "../narrative/progress.ts";
@@ -189,11 +190,22 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   sky.renderOrder = -10;
   scene.add(sky);
   const skyU = sky.material.uniforms as Record<string, { value: unknown }>;
-  // §4b FASE 3b: elevation-weighted saturation BEFORE the SKY_SCALE
-  // dimming (SKY_SAT constant, same block in dome + capture so haze and
-  // probe see the same sky). Full saturation above 27° elevation
-  // (smoothstep(0.05,0.45) on view dir Y); the horizon — dawns and dusks —
-  // stays at sat 1.0. max() guards below-black on extreme settings.
+  // §4b FASE 3c: uSkyScale is a SHARED uniform object (dome + capture hold
+  // the same reference — one write in applyLighting reaches both, zero
+  // copies to forget) + uSunElev for the solar-weighted saturation.
+  // Below 2° solar elevation the dome keeps SKY_SCALE_LOW (0.60): Preetham
+  // at 0° is already 5-8× dimmer than noon and ×0.22 turned low sun brown.
+  // The 1.25 twilight exposure is untouched.
+  const uSkyScaleShared = { value: SKY_SCALE };
+  const uSunElevShared = { value: 50 };
+  skyU["uSkyScale"] = uSkyScaleShared;
+  skyU["uSunElev"] = uSunElevShared;
+  // §4b FASE 3c: elevation-weighted saturation (view Y) × SOLAR-weighted
+  // saturation (sun elevation): satEff = mix(1, SKY_SAT, sunF·viewF).
+  // Below 5° sun the zenith is never saturated (avoids chemical
+  // brown/violet); at noon nothing changes. uSkyScale/uSunElev ride on
+  // material.uniforms (three declares `uniform float X;` for each entry
+  // at compile — no string declaration needed); the × constant is gone.
   {
     const skym = sky.material as THREE.ShaderMaterial & { onBeforeCompile: (s: { fragmentShader: string }) => void };
     const prevSky = skym.onBeforeCompile.bind(skym);
@@ -202,11 +214,12 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       s.fragmentShader = s.fragmentShader.replace(
         "gl_FragColor = vec4( retColor, 1.0 );",
         `float skyDirY = normalize( vWorldPosition - cameraPosition ).y;
-        float skyWE1 = smoothstep( 0.05, 0.45, skyDirY );
-        float skySat = mix( 1.0, ${(SKY_SAT as number).toFixed(2)}, skyWE1 );
+        float skyViewF = smoothstep( 0.05, 0.45, skyDirY );
+        float skySunF = smoothstep( 5.0, 25.0, uSunElev );
+        float skySat = mix( 1.0, ${(SKY_SAT as number).toFixed(2)}, skyViewF * skySunF );
         float skyL = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );
         retColor = max( vec3( 0.0 ), mix( vec3( skyL ), retColor, skySat ) );
-        gl_FragColor = vec4( retColor * ${(SKY_SCALE as number).toFixed(3)}, 1.0 );`,
+        gl_FragColor = vec4( retColor * uSkyScale, 1.0 );`,
       );
     };
     sky.material.needsUpdate = true;
@@ -239,6 +252,15 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     (skyU["mieCoefficient"] as { value: number }).value = L.mieCoefficient;
     (skyU["mieDirectionalG"] as { value: number }).value = L.mieDirectionalG;
     (skyU["sunPosition"] as { value: THREE.Vector3 }).value.copy(dir);
+    // §4b FASE 3c: uSkyScale follows the SUN (smoothstep 2°→20°), not the
+    // clock: mix(SKY_SCALE_LOW, SKY_SCALE, f). At noon f = 1 → identical
+    // pixels to before this phase (G24a/b intact by construction).
+    {
+      const t = Math.min(1, Math.max(0, (sp.elevationDeg - 2) / 18));
+      const f = t * t * (3 - 2 * t);
+      uSkyScaleShared.value = SKY_SCALE_LOW + (SKY_SCALE - SKY_SCALE_LOW) * f;
+      uSunElevShared.value = sp.elevationDeg;
+    }
     sky.visible = L.nightMix < 1;
     if (L.nightMix >= 1) {
       scene.background = nightBg;
@@ -1335,15 +1357,19 @@ float wgrain(vec2 lp){
       // so production pays zero readPixels here).
       if (boot.debug && skyCap && boot.skycap) {
         try {
-          const { disp, raw } = skyCap.readZenith();
+          const { disp, raw, sun, anti } = skyCap.readZenith();
           const toHex = (c: [number, number, number]): string =>
             `#${[c[0], c[1], c[2]].map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join("")}`;
           // DISPLAY values (ACES + sRGB, what the user sees) drive the HUD
           // and the ratio. raw stays on window.__zenithLinear (audit trail).
+          // §4b FASE 3c: sun-side + anti-sun horizon rows → __hzSunHex /
+          // __hzAntiHex (the dusk has a direction: warm west, cool east).
           metrics.zenithHex = toHex(disp.zen);
           const luma = (c: [number, number, number]): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
           (window as unknown as { __skyHzRatio?: number }).__skyHzRatio = luma(disp.hor) / Math.max(1e-6, luma(disp.zen));
           (window as unknown as { __zenithLinear?: string }).__zenithLinear = toHex(raw.zen);
+          (window as unknown as { __hzSunHex?: string }).__hzSunHex = toHex(sun.hor);
+          (window as unknown as { __hzAntiHex?: string }).__hzAntiHex = toHex(anti.hor);
         } catch {
           /* probe failed — computed estimate below stays */
         }

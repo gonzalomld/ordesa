@@ -1,18 +1,18 @@
-// scripts/predict-sky.ts — §4b FASE 3: offline Preetham + SKY_SAT + SKY_SCALE
-// + ACES + sRGB predictor for the capture zenith / horizon pixels.
-// Same math as sky-capture.ts CAPTURE_FRAG (verbatim three 0.170 Sky body)
-// + the JS ACES chain in readZenith. Sun position from scripts/lib/sun.ts
-// (same NOAA as the front). Usage:
-//   npx tsx scripts/predict-sky.ts [turb] [ray] [sat] [scale]
+// scripts/predict-sky.ts — §4b FASE 3c: offline Preetham + solar-weighted
+// SKY_SAT + sun-following uSkyScale + ACES + sRGB predictor.
+// Same math as sky-capture.ts CAPTURE_FRAG + applyLighting (uSkyScale =
+// mix(LOW, SCALE, smoothstep(2°,20°,sunElev)); satEff = mix(1, SAT,
+// viewF·sunF)) + the JS ACES chain in readZenith. Usage:
+//   npx tsx scripts/predict-sky.ts [low] [fLo] [fHi]
 // Defaults = current choreography values. Prints display hex + hz for
-// 12:00/9:00/19:00 (Aug 16, Ordesa lat/lon) at zenith + horizon-away.
+// 7.17/12/20.83 (07:10, 12:00, 20:50) at zenith + sun-side + anti-sun
+// horizon (same columns readZenith reads).
 import { sunPosition } from "./lib/sun.ts";
-import { SKY_G, SKY_MIE, SKY_RAYLEIGH, SKY_SAT, SKY_SCALE, SKY_TURBIDITY } from "../src/narrative/choreography.ts";
+import { SKY_G, SKY_MIE, SKY_RAYLEIGH, SKY_SAT, SKY_SCALE, SKY_SCALE_LOW, SKY_TURBIDITY } from "../src/narrative/choreography.ts";
 
-const turb = Number(process.argv[2] ?? SKY_TURBIDITY);
-const ray = Number(process.argv[3] ?? SKY_RAYLEIGH);
-const sat = Number(process.argv[4] ?? SKY_SAT);
-const scale = Number(process.argv[5] ?? SKY_SCALE);
+const low = Number(process.argv[2] ?? SKY_SCALE_LOW);
+const fLo = Number(process.argv[3] ?? 2);
+const fHi = Number(process.argv[4] ?? 20);
 
 const D2R = Math.PI / 180;
 const totalRayleigh = [5.804542996261093e-6, 1.3562911419845635e-5, 3.0265902468824876e-5];
@@ -55,11 +55,11 @@ const hex = (c: number[]): string =>
   `#${c.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join("")}`;
 const luma = (c: number[]): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
 
-function skyPixel(dir: number[], sunDir: number[], sunE: number, sunfade: number): number[] {
-  // vBeta (vertex, uniform-only)
-  const rayCoeff = ray - (1 - (1 - sunfade));
+function skyPixel(dir: number[], sunDir: number[], sunE: number, sunfade: number, sunElevDeg: number): number[] {
+  // vBeta (vertex, uniform-only) — noon values, untouched by this phase.
+  const rayCoeff = SKY_RAYLEIGH - (1 - (1 - sunfade));
   const vBetaR = totalRayleigh.map((t) => t * rayCoeff);
-  const tm = totalMie(turb);
+  const tm = totalMie(SKY_TURBIDITY);
   const vBetaM = tm.map((t) => t * SKY_MIE);
   // fragment body
   const up = [0, 1, 0];
@@ -88,13 +88,19 @@ function skyPixel(dir: number[], sunDir: number[], sunE: number, sunfade: number
   const L0d = L0.map((l, i) => l + sunE * 19000 * Fex[i] * sundisk);
   const tex = [0, 1, 2].map((i) => (Lin[i] + L0d[i]) * 0.04 + [0, 0.0003, 0.00075][i]);
   const ret = tex.map((t) => Math.pow(Math.max(0, t), 1 / (1.2 + 1.2 * sunfade)));
-  // SKY_SAT (elevation-weighted like dome + capture) + SKY_SCALE.
-  // dirY = view-direction Y (called per-pixel with the real direction).
+  // §4b FASE 3c: satEff = mix(1, SAT, viewF·sunF) + uSkyScale =
+  // mix(LOW, SCALE, smoothstep(fLo,fHi,sunElev)) — same as dome + capture.
+  const sstep = (a: number, b: number, x: number): number => {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
   const dirY = dir[1];
-  const wEl = smoothstep(0.05, 0.45, dirY);
-  const sEff = 1 + (sat - 1) * wEl;
+  const viewF = smoothstep(0.05, 0.45, dirY);
+  const sunF = sstep(5, 25, sunElevDeg);
+  const sEff = 1 + (SKY_SAT - 1) * viewF * sunF;
   const l = 0.2126 * ret[0] + 0.7152 * ret[1] + 0.0722 * ret[2];
-  return ret.map((v) => Math.max(0, l + (v - l) * sEff) * scale);
+  const effScale = low + (SKY_SCALE - low) * sstep(fLo, fHi, sunElevDeg);
+  return ret.map((v) => Math.max(0, l + (v - l) * sEff) * effScale);
 }
 
 const smoothstep = (e0: number, e1: number, x: number): number => {
@@ -102,7 +108,7 @@ const smoothstep = (e0: number, e1: number, x: number): number => {
   return t * t * (3 - 2 * t);
 };
 
-function sunVec(h: number): { dir: number[]; e: number; fade: number } {
+function sunVec(h: number): { dir: number[]; e: number; fade: number; elevDeg: number } {
   const p = sunPosition(42.645, -0.055, 2026, 8, 16, h, 120);
   const az = p.azimuthDeg * D2R;
   const ev = p.elevationDeg * D2R;
@@ -112,25 +118,30 @@ function sunVec(h: number): { dir: number[]; e: number; fade: number } {
   const vSunDir = dir.map((v) => v / Math.hypot(...dir));
   const sunE = sunIntensity(vSunDir[1]);
   const fade = 1 - Math.min(1, Math.max(0, 1 - Math.exp(vSunDir[1] / 450000)));
-  return { dir: vSunDir, e: sunE, fade };
+  return { dir: vSunDir, e: sunE, fade, elevDeg: p.elevationDeg };
 }
 
-console.log(`params turb=${turb} ray=${ray} sat=${sat} scale=${scale}`);
-for (const h of [9, 12, 19]) {
-  const { dir, e, fade } = sunVec(h);
+const hhmm = (h: number): string => `${String(Math.floor(h)).padStart(2, "0")}:${String(Math.round((h % 1) * 60)).padStart(2, "0")}`;
+console.log(`params low=${low} f=[${fLo},${fHi}] (SAT=${SKY_SAT} SCALE=${SKY_SCALE})`);
+for (const h of [7 + 10 / 60, 12, 20 + 50 / 60]) {
+  const { dir, e, fade, elevDeg } = sunVec(h);
   const sunAz = Math.atan2(dir[0], -dir[2]);
   // zenith ROW (capture row 30: v=0.953, el=81.6°) — NOT true zenith.
   const elZ = ((30.5 / 32) - 0.5) * Math.PI;
-  const zen = skyPixel([Math.cos(elZ) * Math.cos(sunAz), Math.sin(elZ), Math.cos(elZ) * Math.sin(sunAz)], dir, e, fade);
-  // horizon away + toward the sun (capture col x=32 is a FIXED az — the
-  // gate must hold on the brighter side too).
-  const hzA = skyPixel([Math.cos(sunAz + Math.PI), 0.02, -Math.sin(sunAz + Math.PI)], dir, e, fade);
-  const hzS = skyPixel([Math.cos(sunAz), 0.02, -Math.sin(sunAz)], dir, e, fade);
+  const zen = skyPixel([Math.cos(elZ) * Math.cos(sunAz), Math.sin(elZ), Math.cos(elZ) * Math.sin(sunAz)], dir, e, fade, elevDeg);
+  // sun-side + anti-sun horizon (SAME columns readZenith reads: sun az
+  // mapped through az = azS − π/2, anti = +32 cols).
+  const hzS = skyPixel([Math.cos(sunAz), 0.02, -Math.sin(sunAz)], dir, e, fade, elevDeg);
+  const hzA = skyPixel([Math.cos(sunAz + Math.PI), 0.02, -Math.sin(sunAz + Math.PI)], dir, e, fade, elevDeg);
   const zenD = aces(zen.map((v) => Math.min(1, v))).map(srgb);
-  const hzAD = aces(hzA.map((v) => Math.min(1, v))).map(srgb);
   const hzSD = aces(hzS.map((v) => Math.min(1, v))).map(srgb);
+  const hzAD = aces(hzA.map((v) => Math.min(1, v))).map(srgb);
   const chan = (c: number[]): string => c.map((v) => Math.round(v * 255).toString().padStart(3)).join(",");
+  const brown = (c: number[]): boolean => {
+    const [r, g, b] = c.map((v) => Math.round(v * 255));
+    return (r as number) > (g as number) && (g as number) > (b as number) && (r as number) - (b as number) > 40;
+  };
   console.log(
-    `${h}:00 cenit=${hex(zenD)} (${chan(zenD)}) hzAway=${hex(hzAD)} (${chan(hzAD)}) hzSun=${hex(hzSD)} (${chan(hzSD)}) ratio=${(luma(hzAD) / Math.max(1e-6, luma(zenD))).toFixed(2)} linZ=(${zen.map((v) => v.toFixed(2)).join(",")})`,
+    `${hhmm(h)} (elev ${elevDeg.toFixed(1)}°) cenit=${hex(zenD)} (${chan(zenD)})${brown(zenD) ? " MARRON" : ""} hzSun=${hex(hzSD)} (${chan(hzSD)}) hzAnti=${hex(hzAD)} (${chan(hzAD)}) ratio=${(luma(hzAD) / Math.max(1e-6, luma(zenD))).toFixed(2)}`,
   );
 }

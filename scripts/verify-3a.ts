@@ -1163,17 +1163,41 @@ function elevFull36(): Float32Array {
       : `counter broken (resetFirst=${resetFirst} readAfter=${readAfter} passes=${passesField} pollClean=${pollClean})`);
 }
 
-// --- G24d dawn/dusk sanity (§4b FASE 3): at 9:00 and 19:00 the capture
-// shader must stay in gamut (no channel 0/255 at zenith row or horizon)
-// and hz ≤ 3.0. Node checks the PREDICTOR contract (predict-sky.ts exists
-// + covers 9/12/19 + clamps); the NUMBERS come from prod captures.
+// --- G38 twilight zenith (§4b FASE 3c): at 07:10 and 20:50 the converted
+// zenith has B > R and B ≥ 90; brown (R > G > B with R − B > 40) is
+// forbidden. Node checks the MACHINERY (shared uSkyScale + solar-weighted
+// sat in dome AND capture + predictor sweep at 07:10/20:50 with brown
+// flag); the NUMBERS come from prod.
 {
-  const predSrc = existsSync("scripts/predict-sky.ts") ? readFileSync("scripts/predict-sky.ts", "utf8") : "";
-  const ok = predSrc.includes("[9, 12, 19]") && predSrc.includes("Math.min(1, v)");
-  gate("G24d-sanity", ok,
+  const capSrc38 = readFileSync("src/engine/sky-capture.ts", "utf8");
+  const viewerSrc38 = readFileSync("src/engine/viewer.ts", "utf8");
+  const predSrc38 = existsSync("scripts/predict-sky.ts") ? readFileSync("scripts/predict-sky.ts", "utf8") : "";
+  const shared = viewerSrc38.includes("uSkyScaleShared") && capSrc38.includes("uSkyScale: sharedScale")
+    && viewerSrc38.includes("SKY_SCALE_LOW");
+  const solarSat = capSrc38.includes("uSunElev") && viewerSrc38.includes("skySunF = smoothstep( 5.0, 25.0")
+    && capSrc38.includes("smoothstep( 5.0, 25.0");
+  const pred = predSrc38.includes("7 + 10 / 60") && predSrc38.includes("20 + 50 / 60") && predSrc38.includes("MARRON");
+  const ok = shared && solarSat && pred;
+  gate("G38-dusk", ok,
     ok
-      ? "predict-sky.ts covers 9/12/19 with clamped linear — measure prod 9:00/19:00 (no 0/255 channels, hz ≤ 3.0)"
-      : "predict-sky.ts missing 9/12/19 sweep or linear clamp");
+      ? "shared uSkyScale (LOW→SCALE over 2°→20°) + solar-weighted sat in dome+capture; predictor flags brown — measure B>R,B≥90 @07:10/20:50"
+      : `dusk machinery broken (shared=${shared} solarSat=${solarSat} pred=${pred})`);
+}
+
+// --- G39 dusk direction (§4b FASE 3c): at 20:50 __hzSunHex is warm
+// (R > B, R − B ≥ 40, no 255) and __hzAntiHex is cooler (higher B/R).
+// Node checks the sun/anti columns exist (azimuth-mapped, published);
+// the NUMBERS come from prod.
+{
+  const capSrc39 = readFileSync("src/engine/sky-capture.ts", "utf8");
+  const viewerSrc39 = readFileSync("src/engine/viewer.ts", "utf8");
+  const cols = capSrc39.includes("sunAzimuthDeg") && capSrc39.includes("colAnti = (colSun + 32) % 64");
+  const pub = viewerSrc39.includes("__hzSunHex") && viewerSrc39.includes("__hzAntiHex");
+  const ok = cols && pub;
+  gate("G39-direction", ok,
+    ok
+      ? "sun/anti horizon columns (azimuth-mapped) → __hzSunHex/__hzAntiHex — measure warm sun + cooler anti @20:50"
+      : `direction probe broken (cols=${cols} pub=${pub})`);
 }
 
 // --- G28 single writer (§4b FASE 3): metrics.zenithHex is written ONLY by
