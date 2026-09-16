@@ -247,52 +247,25 @@ async function save(kind: string, buf: Buffer): Promise<void> {
     .toBuffer();
   await save("terrain-normal", nb);
 }
-// cloud atlas: 4 deterministic value-noise puffs in one 1024² webp
+// cloud atlas: §4b FASE 4b — procedural cumulus (make-cloud-atlas.ts).
+// Library import so `npm run data` reproduces the same bytes; the
+// standalone script also writes the files + meta + acceptance when run
+// directly (`npx tsx scripts/make-cloud-atlas.ts`).
 {
-  const S = 1024;
-  const half = S / 2;
-  const buf = Buffer.alloc(S * S * 3, 0);
-  let seed = 1234567;
-  const rnd = (): number => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed / 0x7fffffff;
-  };
-  for (let q = 0; q < 4; q++) {
-    const ox = (q % 2) * half;
-    const oy = Math.floor(q / 2) * half;
-    // value noise grid 16² + radial falloff + threshold
-    const g = 16;
-    const grid: number[] = [];
-    for (let i = 0; i < g * g; i++) grid.push(rnd());
-    for (let y = 0; y < half; y++)
-      for (let x = 0; x < half; x++) {
-        const gx = (x / half) * (g - 1);
-        const gy = (y / half) * (g - 1);
-        const x0 = Math.floor(gx);
-        const y0 = Math.floor(gy);
-        const fx = gx - x0;
-        const fy = gy - y0;
-        const v00 = grid[y0 * g + x0] as number;
-        const v10 = grid[y0 * g + x0 + 1] as number;
-        const v01 = grid[(y0 + 1) * g + x0] as number;
-        const v11 = grid[(y0 + 1) * g + x0 + 1] as number;
-        const sx = fx * fx * (3 - 2 * fx);
-        const sy = fy * fy * (3 - 2 * fy);
-        const v = v00 * (1 - sx) * (1 - sy) + v10 * sx * (1 - sy) + v01 * (1 - sx) * sy + v11 * sx * sy;
-        const dx = (x / half - 0.5) * 2;
-        const dy = (y / half - 0.5) * 2;
-        const fall = Math.max(0, 1 - (dx * dx + dy * dy));
-        const a = Math.min(255, Math.max(0, Math.round((v - 0.35) * 900 * fall)));
-        const i = ((oy + y) * S + (ox + x)) * 3;
-        buf[i] = a;
-        buf[i + 1] = a;
-        buf[i + 2] = a;
-      }
-  }
-  const ab = await sharp(buf, { raw: { width: S, height: S, channels: 3 } })
-    .webp({ quality: 85 })
-    .toBuffer();
-  await save("clouds-atlas", ab);
+  const { buildCloudAtlas, acceptAtlas } = await import("./make-cloud-atlas.ts");
+  const { png, webp } = await buildCloudAtlas();
+  const { blockRatio, flatFrac } = await acceptAtlas(webp);
+  console.log(`cloud atlas acceptance: blockRatio=${blockRatio.toFixed(3)} flat=${(flatFrac * 100).toFixed(2)}%`);
+  if (blockRatio >= 2.0 || flatFrac >= 0.02) throw new Error("ATLAS REJECTED: squares visible at ×4");
+  const { createHash } = await import("node:crypto");
+  const h = createHash("sha256").update(webp).digest("hex").slice(0, 8);
+  writeFileSync(`${OUT}/clouds-atlas.${h}.webp`, webp);
+  writeFileSync(`${OUT}/clouds-atlas.${h}.png`, png);
+  assets["clouds-atlas"] = `assets/clouds-atlas.${h}.webp`;
+  assets["clouds-atlas-png"] = `assets/clouds-atlas.${h}.png`;
+  sizesBytes["clouds-atlas"] = webp.length;
+  sizesBytes["clouds-atlas-png"] = png.length;
+  console.log(`saved: ${OUT}/clouds-atlas.${h}.webp ${(webp.length / 1024).toFixed(1)} KB`);
 }
 
 // --- write corridor + sizes into meta.json (+ public copy) ---

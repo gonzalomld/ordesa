@@ -914,7 +914,7 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   const constsOk =
     SKY_TURBIDITY === 1.7 && SKY_RAYLEIGH === 1.6 && SKY_MIE === 0.004 && SKY_G === 0.8 &&
     SKY_SCALE === 0.22 && SKY_SAT === 2.0 && HEMI_GRAY_MIX === 0.6 && CLOUD_COVERAGE === 0.3 &&
-    CLOUD_MASK === 0.12 && CLOUD_PUFF_SCALE === 1.3 && CLOUD_COUNT === 160 &&
+    CLOUD_MASK === 0.18 && CLOUD_PUFF_SCALE === 0.75 && CLOUD_COUNT === 160 &&
     G24_HZ_RATIO === 2.2 && G24_ZEN_MIN === "#2a68b8" && G24_ZEN_MAX === "#3e86d2";
   const ok = hasProbe && readbackOk && noClone && equirect && sharedU && ownCam && constsOk
     && dispSpace && auditTrail && hotLoopGone && cadence30 && skyFlag && blitOk;
@@ -924,48 +924,202 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
       : `contract broken (probe=${hasProbe} readback=${readbackOk} noClone=${noClone} equirect=${equirect} sharedU=${sharedU} ownCam=${ownCam} consts=${constsOk} disp=${dispSpace} audit=${auditTrail} hotGone=${hotLoopGone} cad30=${cadence30} skyFlag=${skyFlag} blit=${blitOk})`);
 }
 
-// --- G24c cloud cover (§4b FASE 4): coverage in [0.26,0.34] at 12:00 in
-// s=0.18 AND s=0.80, ≥0.15 at 9:00. Node checks the CONTRACT (curve with
-// floor, layout import, behind-camera rejection, predictor in sync);
-// the NUMBERS come from prod (?debug=1&skyfrac=1&luma=1).
+// --- G34 atlas squares (§4b FASE 4b): the procedural atlas must show no
+// 16×16 blocks at ×4 zoom. Node checks the ACCEPTANCE ran (script +
+// embedded thresholds + meta hash wiring); the PICTURE (audit PNG) is
+// eyeballed once per atlas regeneration.
 {
-  const sunSrc = readFileSync("src/engine/sun.ts", "utf8");
-  const cloudSrc = readFileSync("src/engine/clouds.ts", "utf8");
-  const curveFloor = sunSrc.includes("0.45 + 0.55");
-  const layoutImport = cloudSrc.includes("export function cloudLayout") && cloudSrc.includes("mulberry(20260418)");
-  const behindFix = cloudSrc.includes("fwdX") && cloudSrc.includes("matrixWorldInverse");
-  const noHalve = !cloudSrc.includes("* 0.5") || cloudSrc.includes("NO halving");
-  const predSync = existsSync("scripts/predict-clouds.ts") && readFileSync("scripts/predict-clouds.ts", "utf8").includes("cloudLayout");
-  const corridor = cloudSrc.includes("CLOUD_COUNT / 4");
-  const ok = curveFloor && layoutImport && behindFix && noHalve && predSync && corridor;
+  const mkSrc = existsSync("scripts/make-cloud-atlas.ts") ? readFileSync("scripts/make-cloud-atlas.ts", "utf8") : "";
+  const metaAssets = JSON.parse(readFileSync("data/build/meta.json", "utf8")) as {
+    assets: Record<string, string>;
+  };
+  const atlasAsset = metaAssets.assets["clouds-atlas"] ?? "";
+  const atlasFile = `public/${atlasAsset}`;
+  const atlasExists = atlasAsset !== "" && existsSync(atlasFile);
+  const ok = mkSrc.includes("blockRatio >= 2.0") && mkSrc.includes("flatFrac >= 0.02")
+    && mkSrc.includes("fbm") && mkSrc.includes("smoothstep(0, 24 / QUAD")
+    && atlasExists;
+  gate("G34-atlas", ok,
+    ok
+      ? `make-cloud-atlas.ts (fBm lobes, soft edges, acceptance <2.0) → ${atlasAsset} — eyeball the audit PNG at ×4 once`
+      : "no atlas script/acceptance or hashed asset missing from meta");
+}
+
+// --- G35 continuity (§4b FASE 4b): no pop at dawn — cloudDensity never
+// depends on daylight (presence), only the shader light does (dayF).
+// Node checks statically: no `e <= 0` gate on the curve + dayF plumbing
+// (sun → viewer → shader); the 6-sample table is measured in prod.
+{
+  const sunSrc35 = readFileSync("src/engine/sun.ts", "utf8");
+  const viewerSrc35 = readFileSync("src/engine/viewer.ts", "utf8");
+  const cloudSrc35 = readFileSync("src/engine/clouds.ts", "utf8");
+  const noGate = !sunSrc35.includes("cloudDensity: e <=");
+  const dayF = sunSrc35.includes("cloudDayF") && viewerSrc35.includes("cloudDayF")
+    && cloudSrc35.includes("uDayF") && cloudSrc35.includes("mix(nightCol, dayCol, uDayF)");
+  const ok = noGate && dayF;
+  gate("G35-continuity", ok,
+    ok
+      ? "presence continuous (no e-gate) + dayF light path (sun→viewer→shader) — measure 6-sample table in prod (<0.04 steps)"
+      : `continuity broken (noGate=${noGate} dayF=${dayF})`);
+}
+
+// --- G36 band clearance (§4b FASE 4b): s-AWARE 3D gate — a puff anchored
+// at route fraction ps clears ≥ 900 m 3D vs poses with |s − ps| ≤ 0.2,
+// ≥ 400 m vs the rest. Slab = [min(camY) + 300, max(camY) + 650].
+// Node RECOMPUTES it with the production cloudLayout (poses carry s;
+// world→EPSG is x+cx / cy−z) and audits with POSITION anchor s (nearest
+// route fraction of the pushed puff — grading by draw index audited a
+// different puff than the one placed).
+{
+  const cloudSrc36 = readFileSync("src/engine/clouds.ts", "utf8");
+  const hasBand = cloudSrc36.includes("CLOUD_BAND_LO_M") && cloudSrc36.includes("CLOUD_FAR_MARGIN_M");
+  // recompute: pose sweep (verify ropeAt + safety + floor) in EPSG frame
+  const { cloudLayout: cl36 } = await import("../src/engine/clouds.ts");
+  const poses36: { x: number; y: number; z: number }[] = [];
+  for (let s = 0; s <= 0.97; s += 0.005) {
+    const sc = Math.min(1, Math.max(0, s));
+    const d = pchipSD(sc);
+    const prof = followAt(follow, sc);
+    const pAim = trackAt(r, Math.min(r.lengthM, d + prof.lookM));
+    const pA = anchorPlan(r, d, prof.backM);
+    const aim: [number, number, number] = [pAim.x - cx, pAim.z + FOLLOW_H_AIM, -(pAim.y - cy)];
+    const cam: [number, number, number] = [pA.x - cx, pA.z + prof.hCam, -(pA.y - cy)];
+    const pW = trackAt(r, Math.min(r.lengthM, d));
+    const wx = pW.x - cx;
+    const wz = -(pW.y - cy);
+    {
+      let ux = cam[0] - aim[0];
+      let uz = cam[2] - aim[2];
+      let dpAim = Math.hypot(ux, uz);
+      if (dpAim < 1e-6) {
+        const q0 = trackAt(r, Math.max(0, d - 5));
+        ux = q0.x - pW.x;
+        uz = -((q0.y - pW.y));
+        dpAim = Math.hypot(ux, uz) || 1;
+      }
+      ux /= dpAim;
+      uz /= dpAim;
+      const dAim = Math.max(0, FOLLOW_D_MIN - dpAim);
+      let dWalk = 0;
+      const ex = cam[0] - wx;
+      const ez = cam[2] - wz;
+      if (Math.hypot(ex, ez) < FOLLOW_D_MIN) {
+        const b2 = ux * ex + uz * ez;
+        const c = ex * ex + ez * ez - FOLLOW_D_MIN * FOLLOW_D_MIN;
+        const disc = Math.max(0, b2 * b2 - c);
+        dWalk = Math.min(-b2 + Math.sqrt(disc), 3 * dpAim);
+      }
+      const push = Math.max(dAim, Math.max(0, dWalk));
+      if (push > 0) {
+        cam[0] += ux * push;
+        cam[2] += uz * push;
+      }
+    }
+    const safe = resolveFollowSafety(sampleGrid, cx, cy,
+      { camPos: cam, aim, hCam: prof.hCam, lookM: prof.lookM, backM: prof.backM, distPlan: Math.hypot(cam[0] - aim[0], cam[2] - aim[2]) },
+      r, { centerX: cx, centerY: cy, sizeX: 0, sizeZ: 0 });
+    let camY = safe.camPos[1];
+    const floor = sampleGrid(safe.camPos[0] + cx, cy - safe.camPos[2]) + CAM_CLEARANCE_M;
+    if (camY < floor) camY = floor;
+    poses36.push({ x: safe.camPos[0] + cx, y: cy - safe.camPos[2], z: camY, s: sc });
+  }
+  let camYmax = -Infinity;
+  let camYmin = Infinity;
+  for (const c of poses36) {
+    if (c.z > camYmax) camYmax = c.z;
+    if (c.z < camYmin) camYmin = c.z;
+  }
+  const lay36 = cl36(meta as unknown as Parameters<typeof cl36>[0], elevFull36(), { n: r.n, x: r.x, y: r.y }, poses36);
+  // Audit by POSITION anchor s (nearest route fraction of the pushed puff).
+  const anchorS36 = (x: number, y: number): number => {
+    let bi = 0;
+    let bd = Infinity;
+    for (let i = 0; i < r.n; i += 4) {
+      const dx = x - (r.x[i] as number);
+      const dy = y - (r.y[i] as number);
+      const d = dx * dx + dy * dy;
+      if (d < bd) {
+        bd = d;
+        bi = i;
+      }
+    }
+    return bi / Math.max(1, r.n - 1);
+  };
+  let minNear = Infinity;
+  let minFar = Infinity;
+  for (const p of lay36) {
+    const ps = anchorS36(p.x, p.y);
+    for (const c of poses36) {
+      const d = Math.hypot(p.x - (c.x as number), p.y - (c.y as number), p.z - (c.z as number));
+      if (Math.abs((c.s as number) - ps) <= 0.2) {
+        if (d < minNear) minNear = d;
+      } else if (d < minFar) {
+        minFar = d;
+      }
+    }
+  }
+  const bandBase = camYmin + 300;
+  const bandTop = camYmax + 650;
+  const inSlab = lay36.every((p) => p.z >= bandBase - 1 && p.z <= bandTop + 400);
+  const ok = hasBand && minNear >= 900 && minFar >= 400 && inSlab;
+  gate("G36-band", ok,
+    ok
+      ? `slab [${bandBase.toFixed(0)},${bandTop.toFixed(0)}], min near-in-s 3D ${(minNear).toFixed(0)} m (need ≥900), min far ${(minFar).toFixed(0)} m (need ≥400)`
+      : `band broken (near=${minNear.toFixed(0)} need ≥900, far=${minFar.toFixed(0)} need ≥400, slab=[${bandBase.toFixed(0)},${bandTop.toFixed(0)}])`);
+}
+
+// --- heightfield array for the G36 layout recompute (same RG decode) ---
+function elevFull36(): Float32Array {
+  const W = meta.width;
+  const out = new Float32Array(W * meta.height);
+  for (let rr = 0; rr < meta.height; rr++) {
+    for (let cc = 0; cc < W; cc++) {
+      out[rr * W + cc] = pngMeta.minZ + (pngRaw[(rr * W + cc) * 3] as number) * 256 + (pngRaw[(rr * W + cc) * 3 + 1] as number);
+    }
+  }
+  return out;
+}
+
+// --- G24c cloud cover (§4b FASE 4b: PIXEL meter). __cloudCoverPx in
+// [0.26,0.34] at 12:00 in s=0.18/0.50/0.80, ≥0.15 at 9:00 and 20:50.
+// Node checks the CONTRACT (flat probe pass + sky-mask count + analytic
+// meter beside it + cap on the analytic); the NUMBERS come from prod.
+{
+  const viewerSrcC = readFileSync("src/engine/viewer.ts", "utf8");
+  const cloudSrcC = readFileSync("src/engine/clouds.ts", "utf8");
+  const flatPass = viewerSrcC.includes("cloudPxMat") && viewerSrcC.includes("cloudPxTarget")
+    && viewerSrcC.includes("probeUniforms");
+  const skyMask = viewerSrcC.includes("__cloudCoverPx") && viewerSrcC.includes("occBuf[mo]");
+  const beside = viewerSrcC.includes("clouds.getCoverage()");
+  const capCal = viewerSrcC.includes("clouds.setCap(clouds.getCoverage() > 0.38)");
+  const layoutOk = cloudSrcC.includes("CLOUD_BAND_LIFT_M") && cloudSrcC.includes("CLOUD_CORRIDOR_MIN_M");
+  const ok = flatPass && skyMask && beside && capCal && layoutOk;
   gate("G24c-cover", ok,
     ok
-      ? "curve 0.45+0.55r/3h + corridor layout (120/40) + honest meter + predictor in sync — measure [0.26,0.34] @12:00 both s, ≥0.15 @9:00"
-      : `cover contract broken (floor=${curveFloor} layout=${layoutImport} behind=${behindFix} noHalve=${noHalve} pred=${predSync} corridor=${corridor})`);
+      ? "flat probe (live uniforms) + sky-mask count → __cloudCoverPx, analytic beside it, cap 0.38 — measure [0.26,0.34] @12:00 (0.18/0.50/0.80), ≥0.15 @9:00/20:50"
+      : `cover contract broken (flat=${flatPass} mask=${skyMask} beside=${beside} cap=${capCal} layout=${layoutOk})`);
 }
 
-// --- G30 blue sky (§4b FASE 4): visible blue ≥ 0.45 of total sky at 12:00.
-// Node checks the probe exists (__blueSky = skyFrac × (1−coverage));
-// the NUMBER comes from prod (?skyfrac=1).
+// --- G30 blue sky (§4b FASE 4b: pixel cover). Visible blue ≥ 0.45 of total
+// sky at 12:00. __blueSky = skyFrac × (1 − __cloudCoverPx).
 {
   const viewerSrcG30 = readFileSync("src/engine/viewer.ts", "utf8");
-  const ok = viewerSrcG30.includes("__blueSky") && viewerSrcG30.includes("skyPx * (1 - cov)");
+  const ok = viewerSrcG30.includes("__blueSky") && viewerSrcG30.includes("__cloudCoverPx");
   gate("G30-blue", ok,
     ok
-      ? "__blueSky = skyFrac × (1−coverage) published — measure ≥0.45 @12:00 both s"
-      : "no __blueSky probe in viewer.ts");
+      ? "__blueSky = skyFrac × (1−__cloudCoverPx) published — measure ≥0.45 @12:00"
+      : "no pixel-based __blueSky probe in viewer.ts");
 }
 
-// --- G19-nube (§4b FASE 4): the epilogue loop under the clouds — ≥90% of
-// the track pixels unhidden at s=0.99. Node checks the probe exists
-// (__trackOcc = { on, off, frac }); the NUMBER comes from prod (?trackpx=1).
+// --- G37 epilogue loop (§4b FASE 4b): s=0.99 track pixels with clouds ≥
+// 90% of clouds-off. __trackOcc.frac uses the PIXEL cover when present.
 {
   const viewerSrcG19 = readFileSync("src/engine/viewer.ts", "utf8");
-  const ok = viewerSrcG19.includes("__trackOcc") && viewerSrcG19.includes("1 - cov");
-  gate("G19-nube", ok,
+  const ok = viewerSrcG19.includes("__trackOcc") && viewerSrcG19.includes("__cloudCoverPx");
+  gate("G37-epilogue", ok,
     ok
-      ? "__trackOcc = off × (1−coverage) published — measure frac ≥0.90 @s=0.99"
-      : "no __trackOcc probe in viewer.ts");
+      ? "__trackOcc.frac from pixel cover — measure ≥0.90 @s=0.99 (?trackpx=1)"
+      : "no pixel-based __trackOcc probe in viewer.ts");
 }
 
 // --- G26 skymap blit (§4b FASE 2b): with ?debug=1&skymap=1 the frame shows

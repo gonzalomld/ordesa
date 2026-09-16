@@ -17,7 +17,9 @@ export interface Lighting {
   mieDirectionalG: number;
   fogDensity: number; // valley-height fog 0..1
   fogTopM: number; // ceiling of the valley fog
-  cloudDensity: number; // convection 0..1
+  cloudDensity: number; // convection 0..1 (presence — never gated on daylight)
+  /** §4b FASE 4b: 0 = night/twilight cloud light … 1 = full day. */
+  cloudDayF: number; // smoothstep(−4°, +4°) on solar elevation
   exposure: number;
   nightMix: number; // 0 = day sky, 1 = full night
 }
@@ -77,15 +79,22 @@ export function lightingAt(t: string | number): Lighting {
   // the x⁴ distance curve keeps the valley readable, only the far edge melts)
   const fogDensity = e <= 0 ? 1 : Math.max(0.55, 1 - (h - 7.1) / 3.4);
   const fogTopM = lerp(1750, 1400, Math.min(1, Math.max(0, (h - 7) / 3.5)));
-  // §4b FASE 4: convection WITH a floor — cumulus from first light, full
-  // by noon. The old curve (zero before 10:00) gave a bare morning (4.5%
-  // at 9:00 vs ≥15% wanted): the Pradera reference is sun-and-showers,
-  // blue sky between puffs, never flat grey, never bare. Night → 0.
+  // §4b FASE 4b: convection WITH a floor — cumulus from first light, full
+  // by noon, and NEVER zero while the sun is up. The old `e <= 0 ? 0`
+  // gate made clouds pop in one frame at 07:12 (G35). Presence is
+  // continuous: the shader's dayF fades their LIGHT (blue-grey masses at
+  // night/twilight, white with sun shading by day), never their alpha.
   const cloudDensity = Math.min(1, Math.max(0, 0.45 + 0.55 * Math.min(1, Math.max(0, (h - 9) / 3))));
   // §4 correction: day exposure is 1.0 (renderer default) — the SKY dims
   // in the DOME (SKY_SCALE), never via exposure: 0.55 starved the terrain
   // (luma 0.023 at noon against a 0.18 gate). Twilight keeps 1.25.
   const exposure = e <= 0 ? 1.25 : 1.0;
+  // §4b FASE 4b: day factor for CLOUD LIGHT — smoothstep(−4°, +4°) on
+  // solar elevation. Shared with the cloud shader (uDayF): night and
+  // twilight puffs stay as blue-grey masses, day puffs go white with sun
+  // shading. Presence (cloudDensity) never depends on e — no pop at dawn.
+  const cloudDayF = Math.min(1, Math.max(0, (e + 4) / 8));
+  const cc = cloudDayF * cloudDayF * (3 - 2 * cloudDayF);
   return {
     sunAzimuth: azimuthDeg,
     sunElevation: elevationDeg,
@@ -97,7 +106,8 @@ export function lightingAt(t: string | number): Lighting {
     mieDirectionalG: SKY_G,
     fogDensity: Math.min(1, fogDensity),
     fogTopM,
-    cloudDensity: e <= 0 ? 0 : cloudDensity,
+    cloudDensity,
+    cloudDayF: cc,
     exposure,
     nightMix,
   };

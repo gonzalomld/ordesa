@@ -217,6 +217,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   let routeDim = 1;
   const sunDirV = new THREE.Vector3(0, 1, 0);
   let cloudDensity = 0.5;
+  let cloudDayF = 1;
 
   function applyLighting(h: number): void {
     const L = lightingAt(h);
@@ -279,6 +280,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     }
     routeDim = 1 - L.nightMix * 0.3;
     cloudDensity = L.cloudDensity;
+    cloudDayF = L.cloudDayF;
     if (boot.debug) {
       // §4b FASE 3: metrics.zenithHex has ONE writer — the 30-frame capture
       // probe below (display-space ACES+sRGB, what the user sees). The old
@@ -754,14 +756,35 @@ float wgrain(vec2 lp){
   }
 
   // clouds (S1: terrain-relative placement needs the decoded heightmap).
-  // §4b FASE 4: corridor-biased half needs the route (every act gets
-  // skyline puffs — uniform-only left s=0.18 with 1 puff in frame).
+  // §4b FASE 4b: band above the camera — camYmax from a poseAt sweep
+  // (s ∈ [0, 0.97] step 0.005). Poses travel in EPSG plan + altitude
+  // (CloudCamPose {x, y, z}): the layout never mixes frames.
+  const cloudCams: { x: number; y: number; z: number }[] = [];
+  {
+    const w2eX = (wx: number): number => wx + world.centerX;
+    const w2eY = (wz: number): number => world.centerY - wz;
+    for (let s = 0; s <= 0.97; s += 0.005) {
+      const sc = Math.min(0.97, s);
+      const p = rig.poseAt(sc);
+      cloudCams.push({ x: w2eX(p.pos[0]), y: w2eY(p.pos[2]), z: p.pos[1], s: sc });
+    }
+  }
   const clouds = buildClouds(
     meta,
     elev,
     `/${meta.assets?.["clouds-atlas"] ?? "assets/clouds-atlas.webp"}`,
     { n: route.n, x: route.x, y: route.y },
+    cloudCams,
   );
+  (window as unknown as { __cloudBand?: { base: number; top: number; camYmax: number; camYmin: number } }).__cloudBand = (() => {
+    let m = -Infinity;
+    let n = Infinity;
+    for (const c of cloudCams) {
+      if (c.z > m) m = c.z;
+      if (c.z < n) n = c.z;
+    }
+    return { base: n + 300, top: m + 650, camYmax: m, camYmin: n };
+  })();
   scene.add(clouds.group);
   gate.setProgress(0.8, 5);
   await nextFrame();
@@ -1011,19 +1034,59 @@ float wgrain(vec2 lp){
   const occTarget = new THREE.WebGLRenderTarget(256, 144, { depthBuffer: true });
   const occBuf = new Uint8Array(256 * 144 * 4);
   const occMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  // §4b FASE 4b: cloud pixel meter — the SAME InstancedMesh with a flat
+  // probe material (atlas alpha × vAlpha only, no colour) into its own
+  // 96×54 target. Counted inside the TERRAIN-sky mask (occBuf): only sky
+  // pixels can be cloud-covered. Same camera, same frame, no extra scene.
+  // The probe material borrows the LIVE uniform objects (uMap/uDensity/
+  // uCap/uMask) — same values the draw uses, zero copies to forget.
+  // §4b FASE 4b: the pixel meter renders the cloud mesh WITHOUT terrain
+  // (own mini-scene holding just the mesh — terrain would paint the mask
+  // white and hide the clouds). Same mesh object, probe material, same
+  // camera: one draw, no state leaks (material restored right after).
+  const cloudPxScene = new THREE.Scene();
+  function occSceneOccless(): THREE.Scene {
+    if (cloudPxScene.children.length === 0) cloudPxScene.add(clouds.mesh);
+    return cloudPxScene;
+  }
+  const cloudPxTarget = new THREE.WebGLRenderTarget(96, 54, { depthBuffer: false });
+  const cloudPxBuf = new Uint8Array(96 * 54 * 4);
+  const cloudPxMat = new THREE.ShaderMaterial({
+    uniforms: {},
+    vertexShader: `
+      attribute vec4 aData;
+      varying vec2 vUv; varying float vAlpha;
+      void main(){
+        float quad = aData.x;
+        vUv = vec2(mod(quad,2.0)*0.5 + uv.x*0.5, floor(quad/2.0)*0.5 + uv.y*0.5);
+        vec2 p = position.xy * aData.z;
+        vec4 c = modelMatrix * instanceMatrix * vec4(0.0,0.0,0.0,1.0);
+        vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+        vec3 up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+        vAlpha = aData.w;
+        gl_Position = projectionMatrix * viewMatrix * vec4(c.xyz + right * p.x + up * p.y, 1.0);
+      }`,
+    fragmentShader: `
+      varying vec2 vUv; varying float vAlpha;
+      uniform sampler2D uMap; uniform float uDensity; uniform float uCap; uniform float uMask;
+      void main(){
+        float tex = texture2D(uMap, vUv).r;
+        float m = smoothstep(uMask, uMask + 0.08, tex);
+        float a = tex * m * vAlpha * uDensity * uCap;
+        if (a <= 0.15) discard;
+        gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+      }`,
+  });
+  let cloudPxWired = false;
   // G11 probe flag (?luma=1 with ?s=0.10): luminance sampling in the loop.
   // The threshold lives in choreography.ts; the loop exposes window.__luma
   // and the HUD line so the audit reads a number, not an impression.
   // G12 rides the occluder pass (?skyfrac=1 -> window.__skyFrac): black
   // pixels ARE sky (only terrain occludes). G17 rides free: black pixels
   // in the LOWER half are void under the horizon.
-  // G15 (?trackpx=1 -> window.__trackpx): ID pass WITH the cut — the solid
-  // Line2 alone into 256x144, non-null pixels counted. Threshold: >= 40 px.
-  // §4b FASE 5: la sonda de sombra usa la MISMA rejilla LUMA_GRID y la
-  // máscara del pase oclusor para quedarse SOLO con píxeles de terreno.
   const lumaOn = new URLSearchParams(location.search).has("luma");
-  // Occluder geometry is required by the luma-shadow probe (?luma=1), the
-  // sky fraction (?skyfrac=1) AND the blue-sky probe (?skyfrac=1, G30):
+  // Occluder geometry feeds the luma-shadow probe (?luma=1), the sky
+  // fraction + blue-sky + cloud-pixel probes (?skyfrac=1, G12/G30/G24c):
   // the mask source, not the flag.
   const occNeeded = ((): boolean => {
     const q = new URLSearchParams(location.search);
@@ -1157,6 +1220,13 @@ float wgrain(vec2 lp){
     } else {
       clouds.group.visible = true;
       clouds.setDensity(effCloud, sunDirV);
+      // §4b FASE 4b: cloud light follows presence (never gates it, G35).
+      // uHemiSky (valley fill, same hue family) + sun colour + dayF.
+      clouds.setLight(
+        sun.color,
+        hemiSky,
+        cloudDayF,
+      );
       // A9: fade the layer as the view ray steepens (epilogue from above).
       // Elevation of the camera->target ray above horizontal, deg.
       {
@@ -1168,6 +1238,11 @@ float wgrain(vec2 lp){
         const elevDeg = (Math.atan2(-dy, horiz) * 180) / Math.PI;
         const f = Math.min(1, Math.max(0, (elevDeg - CLOUD_FADE_START_DEG) / (90 - CLOUD_FADE_START_DEG)));
         clouds.setZenithFade(f * CLOUD_ZENITH_FADE);
+        // §4b FASE 4b: epilogue height fade — on when the camera flies
+        // above the band, off otherwise (horizon puffs stay either way).
+        const band = (window as unknown as { __cloudBand?: { base: number } }).__cloudBand;
+        clouds.setBelowFade(camera.position.y > (band?.base ?? Infinity) ? 1 : 0);
+        clouds.setCamY(camera.position.y);
       }
       clouds.update(clock.elapsedTime, camera, renderer.domElement.width, renderer.domElement.height);
       metrics.cloudCoverage = clouds.getCoverage();
@@ -1402,30 +1477,78 @@ float wgrain(vec2 lp){
       // nada (misma rejilla, misma máscara, solo aritmética JS).
       // §4b FASE 4 (G30 cielo azul): con ?skyfrac=1, fracción de cielo NO
       // cubierta por nubes = píxeles de cielo (máscara oclusora) × (1 −
-      // cobertura alfa-ponderada). La cobertura del meter es de frame, no
-      // de cielo: se reescala por (cielo/frame). Sin oclusor no hay
-      // máscara: publica -1 (pendiente).
+      // cobertura por PÍXELES). Sin oclusor no hay máscara: -1 (pendiente).
       if (skyfracOn) {
+        // §4b FASE 4b: pixel meter — cloud mesh with the flat probe
+        // material into 96×54, counted inside the terrain-sky mask.
+        // Runs ONLY with ?skyfrac=1 on the 30-frame cadence (production
+        // never pays it). Publishes __cloudCoverPx (sky fraction covered)
+        // next to the analytic __metrics.cloudCoverage so the audit sees
+        // how much the disc meter lies.
         if (occRan) {
-          const skyPx = (window as unknown as { __skyFrac?: number }).__skyFrac ?? -1;
-          const cov = clouds.getCoverage();
-          const blue = skyPx >= 0 ? Math.min(1, Math.max(0, skyPx * (1 - cov))) : -1;
-          (window as unknown as { __blueSky?: number }).__blueSky = blue;
+          try {
+            if (!cloudPxWired) {
+              const pu = clouds.probeUniforms();
+              (cloudPxMat.uniforms["uMap"] as { value: unknown }).value = pu.uMap;
+              (cloudPxMat.uniforms["uDensity"] as { value: unknown }).value = pu.uDensity;
+              (cloudPxMat.uniforms["uCap"] as { value: unknown }).value = pu.uCap;
+              (cloudPxMat.uniforms["uMask"] as { value: unknown }).value = pu.uMask;
+              cloudPxWired = true;
+            }
+            const prevColor = renderer.getClearColor(new THREE.Color());
+            const prevAlpha = renderer.getClearAlpha();
+            renderer.setRenderTarget(cloudPxTarget);
+            renderer.setClearColor(0x000000, 1);
+            renderer.clear(true, false, false);
+            const prevMat = clouds.mesh.material;
+            clouds.mesh.material = cloudPxMat;
+            clouds.mesh.frustumCulled = false;
+            renderer.render(occSceneOccless(), camera);
+            clouds.mesh.material = prevMat;
+            renderer.readRenderTargetPixels(cloudPxTarget, 0, 0, 96, 54, cloudPxBuf);
+            renderer.setRenderTarget(null);
+            renderer.setClearColor(prevColor, prevAlpha);
+            // count white (cloud, a>0.15) inside the terrain-sky mask:
+            // occBuf is 256×144, cloudPxBuf is 96×54 — nearest mapping.
+            let skyN = 0;
+            let cloudN = 0;
+            for (let yy = 0; yy < 54; yy++) {
+              for (let xx = 0; xx < 96; xx++) {
+                const mx = Math.min(255, Math.floor((xx / 96) * 256));
+                const my = Math.min(143, Math.floor((yy / 54) * 144));
+                const mo = (my * 256 + mx) * 4;
+                if ((occBuf[mo] as number) < 8 && (occBuf[mo + 1] as number) < 8 && (occBuf[mo + 2] as number) < 8) {
+                  skyN++;
+                  const co = (yy * 96 + xx) * 4;
+                  if ((cloudPxBuf[co] as number) > 128) cloudN++;
+                }
+              }
+            }
+            const coverPx = skyN > 0 ? cloudN / skyN : 0;
+            (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx = coverPx;
+            const skyPx = (window as unknown as { __skyFrac?: number }).__skyFrac ?? -1;
+            const blue = skyPx >= 0 ? Math.min(1, Math.max(0, skyPx * (1 - coverPx))) : -1;
+            (window as unknown as { __blueSky?: number }).__blueSky = blue;
+          } catch {
+            (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx = -1;
+            (window as unknown as { __blueSky?: number }).__blueSky = -1;
+          }
         } else {
+          (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx = -1;
           (window as unknown as { __blueSky?: number }).__blueSky = -1;
         }
       }
       // §4b FASE 4 (G19-nube): el bucle del rastro bajo las nubes — el ID
       // pass corre en escena propia (sin nubes): OFF = medida directa y
-      // ON = OFF × (1 − cobertura). Cota superior honesta: la cobertura
-      // es de todo el frame y el rastro ocupa el centro-bajo; si ni así
-      // frac baja de 0.90, el bucle está libre. Misma cadencia de 30
-      // frames, solo con ?trackpx=1: publica __trackOcc = { on, off }.
+      // ON = OFF × (1 − cobertura por PÍXELES, __cloudCoverPx cuando hay;
+      // si no, analítica). Misma cadencia de 30 frames, solo con
+      // ?trackpx=1: publica __trackOcc = { on, off, frac }.
       if (trackpxOn) {
         try {
           const off = line.countIdPixels(renderer, camera);
           (window as unknown as { __trackpx?: number }).__trackpx = off;
-          const cov = clouds.group.visible ? clouds.getCoverage() : 0;
+          const covPx = (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx ?? -1;
+          const cov = covPx >= 0 ? covPx : clouds.group.visible ? clouds.getCoverage() : 0;
           const frac = off > 0 ? Math.min(1, Math.max(0, 1 - cov)) : 1;
           (window as unknown as { __trackOcc?: { on: number; off: number; frac: number } }).__trackOcc = { on: Math.round(off * frac), off, frac };
         } catch {

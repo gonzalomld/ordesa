@@ -106,8 +106,22 @@ export const SKY_SAT = 2.0; // §4b FASE 3b: elevation-weighted saturation — f
 export const SKY_EXPOSURE = 0.55; // DEAD (§4 correction): dimming via exposure dragged the terrain with the sky; exposure is 1.0 again, the dome carries the dimming. Kept so git history explains itself.
 export const HEMI_GRAY_MIX = 0.6; // §4b FASE 5 paso a: 0.4 -> 0.6 (la sombra pierde tinte, no brillo)
 export const CLOUD_COVERAGE = 0.3; // alpha-weighted target at 12:00 (the metric is already corrected)
-export const CLOUD_MASK = 0.12; // puff-mask threshold: veil texels die first, dense cores stay (atlas-measured)
-export const CLOUD_PUFF_SCALE = 1.3; // §4b FASE 4 paso a: 1.0 -> 1.3 (predictor: s=0.18 needs ~4x from scale-1.15 baseline; scale² gives 1.28x — the rest comes from corridor share 3/4 + density un-halving, ONE calibrated step, prod decides)
+export const CLOUD_MASK = 0.18; // §4b FASE 4b: 0.12 -> 0.18 (new fBm atlas has a softer veil; 0.18 keeps dense cores, kills inter-puff veil — pixel-meter calibration with scale 0.75)
+export const CLOUD_PUFF_SCALE = 0.75; // §4b FASE 4b: 1.0 -> 0.75 (pixel-meter calibration: slab+gate put 14-71 puffs in frame; scale 1.0 overshoots to 44-45%, 0.75 lands ~29-36% — prod decides)
+/** §4b FASE 4b: cloud band above the camera — base = camYmax + 250, top = base + 400. */
+export const CLOUD_BAND_LIFT_M = 250;
+/** §4b FASE 4b: cloud band depth above its base. */
+export const CLOUD_BAND_DEPTH_M = 400;
+/** §4b FASE 4b: slab base = min(camY) + 300 over the pose sweep. Low
+ * framings see the low puffs far away (under the top ray); the 3D gate
+ * keeps them out of every flight path. */
+export const CLOUD_BAND_LO_M = 300;
+/** §4b FASE 4b: corridor puffs keep ≥ 900 m (3D) to sampled poses near in
+ * s (|Δs| ≤ 0.2 — the cameras that could see them large). */
+export const CLOUD_CORRIDOR_MIN_M = 900;
+/** §4b FASE 4b: …and ≥ 400 m to the rest (far-in-s: no white-out risk,
+ * lens stays clear at folds where the route passes near old cameras). */
+export const CLOUD_FAR_MARGIN_M = 400;
 export const G24_ZEN_MIN = "#2a68b8"; // saturated blue, not grey
 export const G24_ZEN_MAX = "#3e86d2"; // saturated blue, not grey
 export const G24_HZ_RATIO = 2.2; // horizon luma / zenith luma <= 2.2 (today ~4: white horizon)
