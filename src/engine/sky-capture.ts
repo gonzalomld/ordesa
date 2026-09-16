@@ -28,13 +28,21 @@ export interface SkyCapture {
   refreshIfNeeded(elevDeg: number): boolean;
   /** Rastro isolation (?skycap=0): skip the capture (zenith frozen). */
   setEnabled(on: boolean): void;
-  /** G24: read zenith + horizon luma from the capture (renderer path only,
-   * no raw GL). Zenith = top-centre of the 64×32 equirect, horizon =
-   * vertical middle. Returns BYTES (Uint8Array view) — the gate needs a
-   * hue band + a luma RATIO, not absolute HDR.
-   * Precondition: the capture target is UnsignedByteType (readable). */
-  readZenith(): { buf: Uint8Array; w: number; h: number };
-  /** ?debug=skymap blit source (live texture, no copy). */
+  /** §4b FASE 2: read zenith + horizon luma from the capture (renderer
+   * path only, no raw GL). Zenith = top-centre of the 64×32 equirect,
+   * horizon = vertical middle. Returns DISPLAY values: the capture bytes
+   * through EXACTLY the three ACES filmic (exposure 1.0, /0.6) +
+   * linear→sRGB the dome pixels take on screen — so the gate compares
+   * what the user sees, not linear working data. raw = pre-tonemap bytes
+   * (audit trail, kept for __zenithLinear).
+   * Precondition: the capture target is UnsignedByteType (readable).
+   * DEBUG-ONLY cadence (call site: every 30th frame with ?debug=1) — a
+   * readRenderTargetPixels sync every frame costs ~3 ms for everyone. */
+  readZenith(): {
+    disp: { zen: [number, number, number]; hor: [number, number, number] };
+    raw: { zen: [number, number, number]; hor: [number, number, number] };
+  };
+  /** ?skymap=1 blit source (live texture, no copy). */
   texture(): THREE.Texture;
   dispose(): void;
 }
@@ -222,13 +230,69 @@ export function createSkyCapture(
   const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   let lastElev = Infinity;
   let enabled = true;
-  // G24 readback: persistent buffer (no per-frame alloc), read through the
-  // renderer — never raw gl. Rows: y=30/31 zenith, y=16 horizon (equirect:
-  // v=1 top). Col x=32 faces away from the sun seam.
+  // §4b FASE 2 readback: persistent buffer (no per-frame alloc), read
+  // through the renderer — never raw gl. Rows: y=30 zenith, y=16 horizon
+  // (equirect: v=1 top), col x=32 (away from the sun seam).
+  // The capture is LINEAR × SKY_SCALE without tonemapping (working data
+  // for the fog). The gate compares what the USER sees (ACES + sRGB), so
+  // the conversion below replicates EXACTLY three's ACESFilmicToneMapping
+  // (tonemapping_pars_fragment: ACESInputMat/AP1 + RRTAndODTFit +
+  // ACESOutputMat, exposure 1.0, /0.6) + linear→sRGB. Verified against the
+  // three 0.170 source in node_modules — if three changes the fit, this
+  // MUST change with it (grep RRTAndODTFit on upgrade).
   const zenBuf = new Uint8Array(64 * 32 * 4);
-  function readZenith(): { buf: Uint8Array; w: number; h: number } {
+  const ACES_IN = [
+    [0.59719, 0.35458, 0.04823],
+    [0.076, 0.90834, 0.01566],
+    [0.0284, 0.13383, 0.83777],
+  ];
+  const ACES_OUT = [
+    [1.60475, -0.53108, -0.07367],
+    [-0.10208, 1.10813, -0.00605],
+    [-0.00327, -0.07276, 1.07602],
+  ];
+  const rrtAndODTFit = (v: number): number => {
+    const a = v * (v + 0.0245786) - 0.000090537;
+    const b = v * (0.983729 * v + 0.432951) + 0.238081;
+    return a / b;
+  };
+  const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
+  const aces = (c: [number, number, number]): [number, number, number] => {
+    // exposure 1.0, /0.6 (three brighter-viewing-environment subjective scale)
+    const e = [(c[0] / 0.6), (c[1] / 0.6), (c[2] / 0.6)];
+    const ap1 = [
+      ACES_IN[0][0] * (e[0] as number) + ACES_IN[0][1] * (e[1] as number) + ACES_IN[0][2] * (e[2] as number),
+      ACES_IN[1][0] * (e[0] as number) + ACES_IN[1][1] * (e[1] as number) + ACES_IN[1][2] * (e[2] as number),
+      ACES_IN[2][0] * (e[0] as number) + ACES_IN[2][1] * (e[1] as number) + ACES_IN[2][2] * (e[2] as number),
+    ];
+    const rrt = [rrtAndODTFit(ap1[0] as number), rrtAndODTFit(ap1[1] as number), rrtAndODTFit(ap1[2] as number)];
+    return [
+      clamp01(ACES_OUT[0][0] * (rrt[0] as number) + ACES_OUT[0][1] * (rrt[1] as number) + ACES_OUT[0][2] * (rrt[2] as number)),
+      clamp01(ACES_OUT[1][0] * (rrt[0] as number) + ACES_OUT[1][1] * (rrt[1] as number) + ACES_OUT[1][2] * (rrt[2] as number)),
+      clamp01(ACES_OUT[2][0] * (rrt[0] as number) + ACES_OUT[2][1] * (rrt[1] as number) + ACES_OUT[2][2] * (rrt[2] as number)),
+    ];
+  };
+  const linToSrgb = (c: number): number =>
+    c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+  function readZenith(): {
+    disp: { zen: [number, number, number]; hor: [number, number, number] };
+    raw: { zen: [number, number, number]; hor: [number, number, number] };
+  } {
     renderer.readRenderTargetPixels(rt, 0, 0, 64, 32, zenBuf);
-    return { buf: zenBuf, w: 64, h: 32 };
+    const raw = (x: number, y: number): [number, number, number] => {
+      const o = (y * 64 + x) * 4;
+      return [(zenBuf[o] as number) / 255, (zenBuf[o + 1] as number) / 255, (zenBuf[o + 2] as number) / 255];
+    };
+    const conv = (c: [number, number, number]): [number, number, number] => {
+      const [r, g, b] = aces(c);
+      return [linToSrgb(r), linToSrgb(g), linToSrgb(b)];
+    };
+    const zenRaw = raw(32, 30);
+    const horRaw = raw(32, 16);
+    return {
+      disp: { zen: conv(zenRaw), hor: conv(horRaw) },
+      raw: { zen: zenRaw, hor: horRaw },
+    };
   }
   function doRefresh(): void {
     if (!enabled) return;

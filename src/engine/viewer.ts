@@ -942,10 +942,13 @@ float wgrain(vec2 lp){
     const { mountPathOverlay } = await import("../narrative/debug-path.ts");
     mountPathOverlay({ route, world, elev, meta, progress, rig });
   }
-  // §4b FASE 1: ?debug=skymap — blit the 64×32 capture target ×6 in the
+  // §4b FASE 2 (?skymap=1): blit the 64×32 capture target ×6 in the
   // lower-left corner, own ortho scene (never the main scene), after the
   // main render + labels. Static objects (built once): the ONLY per-frame
   // cost is one extra render call (calls 5 → 6), and only with the flag.
+  // FASE 2 fix: autoClear=false + clearDepth around the blit (the default
+  // autoClear wiped the main frame → black screen, calls 0); mesh at
+  // z=-0.5 with near=-1/far=1 so it never sits on the near plane.
   let skymapBlit: {
     scene: THREE.Scene;
     cam: THREE.OrthographicCamera;
@@ -956,10 +959,10 @@ float wgrain(vec2 lp){
     const w = 64 * 6;
     const h = 32 * 6;
     const bscene = new THREE.Scene();
-    const bcam = new THREE.OrthographicCamera(0, window.innerWidth, 0, window.innerHeight, 0, 1);
+    const bcam = new THREE.OrthographicCamera(0, window.innerWidth, 0, window.innerHeight, -1, 1);
     const bmat = new THREE.MeshBasicMaterial({ map: skyCap.texture(), toneMapped: false });
     const bmesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), bmat);
-    bmesh.position.set(w / 2, h / 2, 0);
+    bmesh.position.set(w / 2, h / 2, -0.5);
     bmesh.frustumCulled = false;
     bscene.add(bmesh);
     skymapBlit = { scene: bscene, cam: bcam, mesh: bmesh };
@@ -1088,32 +1091,12 @@ float wgrain(vec2 lp){
     // G22: getError() right after the capture render names the pass. Always
     // drains (getError clears the flag); the HUD poll reads the ledger, it
     // never polls GL itself.
-    // G24: the loop ALWAYS drains the capture error (clean or not), and the
-    // zenith read ALWAYS runs when the capture is enabled — the ratio must
-    // be written every frame, not only after a real recapture (the old code
-    // gated the write on refreshIfNeeded() === true, so __skyHzRatio stayed
-    // 0 whenever the sun barely moved between frames).
-    const recapped = skyCap?.refreshIfNeeded(st.sunElev) ?? false;
+    // §4b FASE 2: the zenith readPixels moved OUT of the hot loop (see the
+    // 30-frame probe block below). refreshIfNeeded stays here (it only
+    // renders on sun moves > 0.5°); the per-frame readback is gone, so
+    // production pays ~0 ms for the probe (was ~3 ms: 20.7 vs 17.6).
+    skyCap?.refreshIfNeeded(st.sunElev);
     if (boot.debug) glPassErr.capture = glProbe.getError();
-    if (skyCap && boot.skycap) {
-      try {
-        const { buf, w, h } = skyCap.readZenith();
-        const px = (x: number, y: number): [number, number, number] => {
-          const o = (y * w + x) * 4;
-          return [(buf[o] as number) / 255, (buf[o + 1] as number) / 255, (buf[o + 2] as number) / 255];
-        };
-        const zen = px(Math.floor(w / 2), h - 2);
-        const hor = px(Math.floor(w / 2), Math.floor(h / 2));
-        const toHex = (c: [number, number, number]): string =>
-          `#${[c[0], c[1], c[2]].map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join("")}`;
-        metrics.zenithHex = toHex(zen);
-        const luma = (c: [number, number, number]): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-        (window as unknown as { __skyHzRatio?: number }).__skyHzRatio = luma(hor) / Math.max(1e-6, luma(zen));
-      } catch {
-        /* probe failed — computed estimate below stays */
-      }
-    }
-    void recapped;
     metrics.time = hhmm(hour);
     // G14: mirror the FULL state (copy — the live object mutates next frame).
     // The audit reads z/slopePct/climbM from __metrics without touching DOM.
@@ -1195,14 +1178,18 @@ float wgrain(vec2 lp){
     }
     // T1: labels AFTER render, every frame, no throttle (js etiq ~0.1 ms).
     updateLabels(labelRts, camera, window.innerWidth, window.innerHeight, 30000);
-    // §4b FASE 1: ?debug=skymap blit — capture target ×6, lower-left, own
-    // ortho scene, AFTER main render + labels. setRenderTarget(null) is the
-    // canvas by definition (renderer path only, never raw GL).
+    // §4b FASE 2 (?skymap=1): capture target ×6, lower-left, own ortho
+    // scene, AFTER main render + labels. autoClear=false + clearDepth: the
+    // blit composites over the frame, never wipes it (FASE 1 wiped it →
+    // black screen). Renderer path only, never raw GL.
     if (boot.skymap && skyCap && boot.skycap) {
       ensureSkymapBlit();
       if (skymapBlit) {
-        if (boot.debug) renderer.clearDepth();
+        const prevAutoClear = renderer.autoClear;
+        renderer.autoClear = false;
+        renderer.clearDepth();
         renderer.render(skymapBlit.scene, skymapBlit.cam);
+        renderer.autoClear = prevAutoClear;
       }
     }
     const t3 = performance.now();
@@ -1220,6 +1207,25 @@ float wgrain(vec2 lp){
     // G15 (?trackpx=1 -> window.__trackpx): offscreen ID pass — the solid
     // Line2 alone into 256x144, non-null pixels counted. Threshold: >= 40 px.
     if ((lumaOn || skyfracOn || trackpxOn) && !boot.trackDist && frames % 30 === 5) {
+      // §4b FASE 2: zenith probe joins the 30-frame cadence (DEBUG ONLY —
+      // readRenderTargetPixels syncs the GPU: ~3 ms/frame for everyone if
+      // it runs in the hot loop. Without ?debug=1 this block never runs,
+      // so production pays zero readPixels here).
+      if (boot.debug && skyCap && boot.skycap) {
+        try {
+          const { disp, raw } = skyCap.readZenith();
+          const toHex = (c: [number, number, number]): string =>
+            `#${[c[0], c[1], c[2]].map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0")).join("")}`;
+          // DISPLAY values (ACES + sRGB, what the user sees) drive the HUD
+          // and the ratio. raw stays on window.__zenithLinear (audit trail).
+          metrics.zenithHex = toHex(disp.zen);
+          const luma = (c: [number, number, number]): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+          (window as unknown as { __skyHzRatio?: number }).__skyHzRatio = luma(disp.hor) / Math.max(1e-6, luma(disp.zen));
+          (window as unknown as { __zenithLinear?: string }).__zenithLinear = toHex(raw.zen);
+        } catch {
+          /* probe failed — computed estimate below stays */
+        }
+      }
       const g = LUMA_GRID;
       const w = Math.max(1, Math.floor(renderer.domElement.width / 2));
       const h = Math.max(1, Math.floor(renderer.domElement.height / 2));

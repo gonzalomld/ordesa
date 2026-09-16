@@ -826,36 +826,95 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     offOk && onOk ? `uGlow 0 at s=0/0.14 (non-milestones), 1 at A3/A7/A8 (window ${GLOW_S_WINDOW})` : "uGlow leaks outside milestone windows");
 }
 
-// --- G24 sky (§4b FASE 1: true equirect capture). Node checks the CONTRACT:
-// own capture ShaderMaterial with equirect uv→dir math (NOT a dome clone —
-// the 1 m clone box rendered black), uniforms shared BY REFERENCE with the
-// dome (live, zero copies), quad camera NOT the main camera, readback
-// target, SKY_SCALE inline, constants. The NUMBERS (zenith band +
-// horizon/zenith ratio) are measured in-browser at ?debug=1&s=0.18&t=12:00:
-// zenithHex in [G24_ZEN_MIN, G24_ZEN_MAX] per channel (±12/255),
-// __skyHzRatio in [1.2, 2.2] (G24b), skymap centre pixel ≠ #000000 (G25).
+// --- G24 sky (§4b FASE 2: display-space probe). Node checks the CONTRACT:
+// equirect capture (no dome clone, shared uniforms, own ortho cam),
+// readZenith returning DISPLAY (ACES+sRGB, what the user sees) + raw audit
+// trail, published on the 30-frame probe cadence DEBUG-ONLY (no per-frame
+// readPixels in production), ?skymap=1 independent flag, blit compositing
+// (autoClear=false + clearDepth, z=-0.5). The NUMBERS (zenith band +
+// horizon/zenith ratio) are measured in-browser at ?debug=1&t=12:00:
+// zenithHex in [G24_ZEN_MIN, G24_ZEN_MAX] per channel (±12/255) — DISPLAY
+// values, no separate conversion at the gate —, __skyHzRatio in [1.2, 2.2]
+// (G24b), __zenithLinear kept as audit trail.
 {
   const capSrc = readFileSync("src/engine/sky-capture.ts", "utf8");
   const viewerSrcG24 = readFileSync("src/engine/viewer.ts", "utf8");
+  const debugSrc = readFileSync("src/engine/debug.ts", "utf8");
   const hasProbe = capSrc.includes("readZenith") && viewerSrcG24.includes("__skyHzRatio");
   const readbackOk = capSrc.includes("UnsignedByteType") && !capSrc.includes("HalfFloatType");
-  // FASE 1: equirect by construction, never a dome clone.
+  // FASE 1 (intacta): equirect by construction, never a dome clone.
   const noClone = !capSrc.includes("domeClone") && !capSrc.includes("skyDome.geometry");
   const equirect = capSrc.includes("( vUv.x - 0.5 ) * 6.2831853") && capSrc.includes("( vUv.y - 0.5 ) * 3.1415927");
   const sharedU = capSrc.includes('sunPosition: domeU["sunPosition"]') && capSrc.includes('turbidity: domeU["turbidity"]');
   const ownCam = capSrc.includes("OrthographicCamera") && !capSrc.includes("renderer.render(skyScene, camera)");
+  // FASE 2: display-space conversion lives in the capture (RRTAndODTFit +
+  // sRGB), audit trail published, hot-loop readback gone.
+  const dispSpace = capSrc.includes("rrtAndODTFit") && capSrc.includes("ACESInputMat") && capSrc.includes("linToSrgb");
+  const auditTrail = viewerSrcG24.includes("__zenithLinear");
+  const hotLoopGone = !viewerSrcG24.includes("if (skyCap && boot.skycap)");
+  const cadence30 = viewerSrcG24.includes("frames % 30 === 5") && viewerSrcG24.includes("boot.debug && skyCap && boot.skycap");
+  // FASE 2: ?skymap=1 independent (combinable with ?debug=1), blit composites.
+  const skyFlag = debugSrc.includes('q.get("skymap") === "1"') && !debugSrc.includes('q.get("debug") === "skymap"');
+  const blitOk = viewerSrcG24.includes("renderer.autoClear = false") && viewerSrcG24.includes("h / 2, -0.5");
   const { G24_ZEN_MIN, G24_ZEN_MAX, G24_HZ_RATIO, SKY_TURBIDITY, SKY_RAYLEIGH, SKY_MIE, SKY_G, SKY_SCALE, HEMI_GRAY_MIX, CLOUD_COVERAGE } =
     await import("../src/narrative/choreography.ts");
   const constsOk =
     SKY_TURBIDITY === 2.2 && SKY_RAYLEIGH === 1.6 && SKY_MIE === 0.004 && SKY_G === 0.8 &&
     SKY_SCALE === 0.32 && HEMI_GRAY_MIX === 0.4 && CLOUD_COVERAGE === 0.3 &&
     G24_HZ_RATIO === 2.2 && G24_ZEN_MIN === "#2a68b8" && G24_ZEN_MAX === "#3e86d2";
-  const skymapFlag = readFileSync("src/engine/debug.ts", "utf8").includes("skymap");
-  const ok = hasProbe && readbackOk && noClone && equirect && sharedU && ownCam && constsOk && skymapFlag;
+  const ok = hasProbe && readbackOk && noClone && equirect && sharedU && ownCam && constsOk
+    && dispSpace && auditTrail && hotLoopGone && cadence30 && skyFlag && blitOk;
   gate("G24-sky", ok,
     ok
-      ? `equirect capture (uv→dir, shared uniforms, own ortho cam) + readZenith + __skyHzRatio; band [${G24_ZEN_MIN},${G24_ZEN_MAX}], hz/z <= ${G24_HZ_RATIO} — measure at ?t=12:00`
-      : `contract broken (probe=${hasProbe} readback=${readbackOk} noClone=${noClone} equirect=${equirect} sharedU=${sharedU} ownCam=${ownCam} consts=${constsOk} skymap=${skymapFlag})`);
+      ? `equirect capture + display-space probe (ACES+sRGB, raw audit) @30f debug-only + ?skymap=1 blit; band [${G24_ZEN_MIN},${G24_ZEN_MAX}], hz/z <= ${G24_HZ_RATIO} — measure at ?t=12:00`
+      : `contract broken (probe=${hasProbe} readback=${readbackOk} noClone=${noClone} equirect=${equirect} sharedU=${sharedU} ownCam=${ownCam} consts=${constsOk} disp=${dispSpace} audit=${auditTrail} hotGone=${hotLoopGone} cad30=${cadence30} skyFlag=${skyFlag} blit=${blitOk})`);
+}
+
+// --- G26 skymap blit (§4b FASE 2): with ?debug=1&skymap=1 the frame shows
+// terrain + HUD + the 384×192 map bottom-left; calls = 6; no black frames.
+// Node checks the composite (autoClear=false + clearDepth, z=-0.5,
+// after-labels order); the PICTURE is measured in-browser.
+{
+  const viewerSrcG26 = readFileSync("src/engine/viewer.ts", "utf8");
+  const afterLabels = viewerSrcG26.indexOf("updateLabels(labelRts") < viewerSrcG26.indexOf("skymapBlit.scene, skymapBlit.cam");
+  const ok = viewerSrcG26.includes("renderer.autoClear = false")
+    && viewerSrcG26.includes("renderer.clearDepth()")
+    && viewerSrcG26.includes("h / 2, -0.5")
+    && afterLabels;
+  gate("G26-blit", ok,
+    ok
+      ? "?skymap=1 blit composites (autoClear=false, clearDepth, z=-0.5, after labels) — measure calls=6 + terrain+HUD+map in-browser"
+      : "blit would wipe the frame (autoClear) or miss depth/plane/order");
+}
+
+// --- G27 probeless production (§4b FASE 2): without ?debug=1 the loop runs
+// ZERO readPixels (no readZenith, no luma/skyfrac/trackpx). Node checks the
+// gates: every readback sits inside the debug+30f block; refreshIfNeeded
+// (render-only, no readback) is the only capture call in the hot loop.
+{
+  const viewerSrcG27 = readFileSync("src/engine/viewer.ts", "utf8");
+  const hotStart = viewerSrcG27.indexOf("skyCap?.refreshIfNeeded(st.sunElev);");
+  const probeBlock = viewerSrcG27.indexOf("if ((lumaOn || skyfracOn || trackpxOn)");
+  const reads = ["readZenith", "readPixels", "readRenderTargetPixels"].map((k) => {
+    let i = -1;
+    let outside = false;
+    while ((i = viewerSrcG27.indexOf(k, i + 1)) >= 0) {
+      // comments + sky-capture re-export lines don't count; only CALLS in viewer
+      if (viewerSrcG27.slice(Math.max(0, i - 80), i).includes("//")) continue;
+      if (k === "readRenderTargetPixels" && viewerSrcG27.slice(i - 30, i).includes("renderer.")) {
+        // the call must live inside the 30-frame probe block
+        if (i < probeBlock) outside = true;
+        continue;
+      }
+      if (i < probeBlock || (k === "readZenith" && i < hotStart)) outside = true;
+    }
+    return !outside;
+  });
+  const ok = reads.every(Boolean);
+  gate("G27-noread", ok,
+    ok
+      ? "no readPixels/readZenith in the hot loop without ?debug=1 — production pays zero probe sync"
+      : "a readback escapes the debug+30f block (production pays the probe)");
 }
 
 // --- G9-bis shape (follow replan): plan-dist percentiles replace the
