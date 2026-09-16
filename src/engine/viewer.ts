@@ -200,17 +200,19 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   const uSunElevShared = { value: 50 };
   skyU["uSkyScale"] = uSkyScaleShared;
   skyU["uSunElev"] = uSunElevShared;
-  // §4b FASE 3c: elevation-weighted saturation (view Y) × SOLAR-weighted
-  // saturation (sun elevation): satEff = mix(1, SKY_SAT, sunF·viewF).
-  // Below 5° sun the zenith is never saturated (avoids chemical
-  // brown/violet); at noon nothing changes. uSkyScale/uSunElev ride on
-  // material.uniforms (three declares `uniform float X;` for each entry
-  // at compile — no string declaration needed); the × constant is gone.
+  // §4b FASE 3c-fix: three does NOT declare material.uniforms entries in
+  // GLSL — it only uploads them. Every uniform added here MUST be declared
+  // in the injected string (AGENTS.md rule). Prepended BEFORE any other
+  // code (three's prefix with #version/precision comes from the program
+  // assembler, not from fragmentShader — onBeforeCompile text starts with
+  // plain #defines, so a header prepend is safe).
   {
     const skym = sky.material as THREE.ShaderMaterial & { onBeforeCompile: (s: { fragmentShader: string }) => void };
     const prevSky = skym.onBeforeCompile.bind(skym);
     (sky.material as THREE.Material).onBeforeCompile = (s: { fragmentShader: string }) => {
       prevSky(s);
+      s.fragmentShader =
+        "uniform float uSkyScale;\nuniform float uSunElev;\n" + s.fragmentShader;
       s.fragmentShader = s.fragmentShader.replace(
         "gl_FragColor = vec4( retColor, 1.0 );",
         `float skyDirY = normalize( vWorldPosition - cameraPosition ).y;
@@ -322,19 +324,49 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   // es error de gráficos, no de red. El cuelgue al 11 % era red lenta +
   // vigilante por tiempo, no la pieza (corregido en la pasada del rastro).
   function checkGLPrograms(): string | null {
+    // §4b FASE 3c-fix: P0-3 looks at what it must look at. renderer.info
+    // .programs[].diagnostics only flags what three CHECKED — a dome with
+    // undeclared identifiers linked false and nobody asked. So: once the
+    // loop has rendered (framesLive ≥ 2), walk the REAL GL programs
+    // (getProgramParameter LINK_STATUS, the driver's verdict) + three's
+    // diagnostics, publish window.__programs = [{name, ok, log}] with
+    // ?debug=1, and fail loudly.
+    // READ-ONLY GL (getProgramParameter/getShaderInfoLog are reads —
+    // AGENTS.md allows them); no state is written.
     try {
+      if (framesLive < 2) return null;
+      const gl = renderer.getContext() as WebGL2RenderingContext;
       const progs = renderer.info.programs as {
         diagnostics?: { runnable?: boolean };
         name?: string;
-        infoLog?: string;
+        program?: WebGLProgram | { id?: number };
       }[];
-      const dead = progs.filter((p) => p.diagnostics && p.diagnostics.runnable === false);
-      if (dead.length > 0) {
-        for (const p of dead) {
-          console.error(`[ordesa] dead GL program ${p.name ?? "shader"}:\n${p.infoLog ?? "(no log)"}`);
+      const report: { name: string; ok: boolean; log: string }[] = [];
+      let bad: string | null = null;
+      for (const p of progs) {
+        const prog = (p as { program?: unknown }).program;
+        let ok = p.diagnostics?.runnable !== false;
+        let log = "";
+        if (prog instanceof WebGLProgram) {
+          const linked = gl.getProgramParameter(prog, gl.LINK_STATUS) as boolean;
+          ok = ok && linked;
+          if (!linked) {
+            const shaders = gl.getAttachedShaders(prog) ?? [];
+            const logs = shaders.map((s) => gl.getShaderInfoLog(s) ?? "");
+            log = logs.filter((l) => l !== "").join("\n") || gl.getProgramInfoLog(prog) || "(no log)";
+          }
         }
-        return `Error de gráficos. Recarga; si persiste, prueba otro navegador.`;
+        const nm = p.name ?? "shader";
+        report.push({ name: nm, ok, log: log.slice(0, 2000) });
+        if (!ok) {
+          console.error(`[ordesa] dead GL program ${nm}:\n${log || p.diagnostics ? "(diagnostics)" : "(no log)"}\n${log}`);
+          bad = `Error de gráficos (${nm}). Recarga; si persiste, prueba otro navegador.`;
+        }
       }
+      if (boot.debug) {
+        (window as unknown as { __programs?: { name: string; ok: boolean; log: string }[] }).__programs = report;
+      }
+      return bad;
     } catch {
       /* renderer.info unavailable — no verdict */
     }
@@ -1144,6 +1176,9 @@ float wgrain(vec2 lp){
   const tickFrame = frameClock(metrics);
 
   let frames = 0;
+  // §4b FASE 3c-fix: frames rendered by the loop (checkGLPrograms needs
+  // "after the first frame" — declared before it, bumped at loop end).
+  let framesLive = 0;
   let prevMs = -1;
   renderer.setAnimationLoop(() => {
     tickFrame(); // S3: real rAF-delta frame clock
@@ -1617,6 +1652,7 @@ float wgrain(vec2 lp){
       void frames;
     }
     frames++;
+    framesLive++;
     // P0/G20: late check (frame 60) — the terrain program compiles after
     // first render on the ?s= path, so frame 8 would false-positive on the
     // neutral 1x1 probe still in flight.

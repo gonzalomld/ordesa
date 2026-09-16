@@ -1217,6 +1217,26 @@ function elevFull36(): Float32Array {
       : `zenithHex writers=${writes} (need 1), init-dash=${initDash}`);
 }
 
+// --- G40 linked programs (§4b FASE 3c-fix): every uniform added via
+// onBeforeCompile is DECLARED in GLSL (three uploads but never declares).
+// Node checks statically: the dome patch prepends `uniform float
+// uSkyScale/uSunElev;` AND checkGLPrograms walks LINK_STATUS (driver
+// verdict, not just three diagnostics) + publishes window.__programs.
+// The VERDICT (__programs all ok, no "undeclared") is measured in prod.
+{
+  const viewerSrcG40 = readFileSync("src/engine/viewer.ts", "utf8");
+  const agents = readFileSync("AGENTS.md", "utf8");
+  const decl = viewerSrcG40.includes("uniform float uSkyScale;\\nuniform float uSunElev;\\n");
+  const linkWalk = viewerSrcG40.includes("LINK_STATUS") && viewerSrcG40.includes("__programs")
+    && viewerSrcG40.includes("getShaderInfoLog") && viewerSrcG40.includes("framesLive");
+  const rule = agents.includes("se DECLARA en el GLSL") && agents.includes("window.__programs sin ningún ok=false");
+  const ok = decl && linkWalk && rule;
+  gate("G40-linked", ok,
+    ok
+      ? "dome declares uSkyScale/uSunElev in GLSL; P0-3 walks LINK_STATUS + publishes __programs; AGENTS.md rule in place — measure all ok in prod"
+      : `linked-programs contract broken (decl=${decl} linkWalk=${linkWalk} rule=${rule})`);
+}
+
 // --- G27 probeless production (§4b FASE 2): without ?debug=1 the loop runs
 // ZERO readPixels (no readZenith, no luma/skyfrac/trackpx). Node checks the
 // gates: every readback sits inside the debug+30f block; refreshIfNeeded
