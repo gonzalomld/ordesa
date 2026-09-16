@@ -106,6 +106,13 @@ export const SKY_SCALE_LOW = 0.60; // §4b FASE 3c: twilight dome factor — bel
 export const SKY_SAT = 2.0; // §4b FASE 3b: elevation-weighted saturation — full above 27° elevation, horizon intact (dawns/dusks); same block in dome + capture
 export const SKY_EXPOSURE = 0.55; // DEAD (§4 correction): dimming via exposure dragged the terrain with the sky; exposure is 1.0 again, the dome carries the dimming. Kept so git history explains itself.
 export const HEMI_GRAY_MIX = 0.6; // §4b FASE 5 paso a: 0.4 -> 0.6 (la sombra pierde tinte, no brillo)
+// --- F1 niebla de valle (amanecer/atardecer): la niebla baja es de hora
+// baja, no de todo el día. uDawnF = 1 − smoothstep(2°, 20°, elevación
+// solar): a las 12:00 vale 0 (mediodía intacto por construcción).
+export const FOG_DAWN_HF_MULT = 1.8; // cuánto multiplica el término de valle (×2.8 en total al alba)
+export const FOG_DAWN_DF_ADD = 0.4; // cuánto suma al fundido de distancia (horizonte fundido al cielo)
+export const G45_DUSK_MAX = 0.12; // G45: a las 07:30/20:30 el fondo del valle funde con el cielo
+export const G45_NOON_MIN = 0.2; // G45: a las 12:00 el valle sigue leyéndose (distancia ≥ 0.2)
 export const CLOUD_COVERAGE = 0.3; // alpha-weighted target at 12:00 (the metric is already corrected)
 export const CLOUD_MASK = 0.20; // §4b FASE 4c: 0.18 -> 0.20 (aimed far family fills horizons; mask trims inter-puff veil — prod honest mask decides)
 export const CLOUD_PUFF_SCALE = 1.10; // §4b FASE 4c: 0.75 -> 1.10 (dense [0.75,0.95] alpha + aimed far family: predictor 32.6/18.5 @SKYFRAC=0.35 — s=0.80 slot overlap caps it; prod honest per-s mask decides)

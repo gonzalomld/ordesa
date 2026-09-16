@@ -270,6 +270,14 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       scene.background = null;
     }
     renderer.toneMappingExposure = L.exposure;
+    // F1 niebla de valle: uDawnF = 1 − smoothstep(2°,20°,elev) — al
+    // alba/ocaso la niebla baja multiplica y el horizonte funde; a las
+    // 12:00 vale 0 y el mediodía queda intacto por construcción.
+    {
+      const t = Math.min(1, Math.max(0, (sp.elevationDeg - 2) / 18));
+      const f = t * t * (3 - 2 * t);
+      (fogUniforms.uDawnF as { value: number }).value = 1 - f;
+    }
     const warm = Math.max(0, 1 - Math.abs(sp.elevationDeg - 12) / 25);
     fogUniforms.uFogTop.value = L.fogTopM;
     fogUniforms.uFogDensity.value = 0.25 + L.fogDensity * 0.75;
@@ -1516,6 +1524,11 @@ float wgrain(vec2 lp){
           const lumOf = (c: number): number => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
           const terrLumas: number[] = [];
           const terrChromas: number[] = [];
+          // F1 niebla (G45): el fondo del valle = píxeles de terreno del
+          // TERCIO SUPERIOR de la imagen (banda del horizonte). Se guarda
+          // su RGB display medio (__valleyTerr) para compararlo con el
+          // horizonte de la captura (__hzSunHex/__hzAntiHex).
+          const valleyRGB: [number, number, number][] = [];
           let litOver = 0;
           const gridW = 256;
           const gridH = 144;
@@ -1541,6 +1554,9 @@ float wgrain(vec2 lp){
               const mnc = Math.min(lr, lg, lb);
               terrLumas.push(luma);
               terrChromas.push(mxc > 1e-6 ? (mxc - mnc) / mxc : 0);
+              // F1: el píxel está en el tercio superior (fy < h/3 → lejos,
+              // banda del horizonte) y es terreno: candidato a fondo de valle.
+              if (fy < h / 3) valleyRGB.push([rr, gg, bb]);
               if (luma >= 0.9) litOver++;
             }
           }
@@ -1560,15 +1576,45 @@ float wgrain(vec2 lp){
               metrics.chromaShadow = (window as unknown as { __chromaShadow?: number }).__chromaShadow ?? -1;
             }
             (window as unknown as { __litOver?: number }).__litOver = litOver;
+            // F1 niebla (G45): media display del fondo del valle + distancia
+            // RGB al horizonte de la captura (lado del sol). dist ≤ 0.12 al
+            // alba/ocaso (funde con el cielo), ≥ 0.2 a mediodía (legible).
+            if (valleyRGB.length > 0) {
+              let vR = 0;
+              let vG = 0;
+              let vB = 0;
+              for (const c of valleyRGB) {
+                vR += c[0] as number;
+                vG += c[1] as number;
+                vB += c[2] as number;
+              }
+              vR /= valleyRGB.length;
+              vG /= valleyRGB.length;
+              vB /= valleyRGB.length;
+              const hx = (v: number): string => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, "0");
+              (window as unknown as { __valleyTerr?: string }).__valleyTerr = `#${hx(vR)}${hx(vG)}${hx(vB)}`;
+              const hzHex = (window as unknown as { __hzSunHex?: string }).__hzSunHex ?? "#000000";
+              const hr = parseInt(hzHex.slice(1, 3), 16) / 255;
+              const hg = parseInt(hzHex.slice(3, 5), 16) / 255;
+              const hb = parseInt(hzHex.slice(5, 7), 16) / 255;
+              (window as unknown as { __valleyFogDist?: number }).__valleyFogDist = Math.hypot(vR - hr, vG - hg, vB - hb) / Math.sqrt(3);
+            } else {
+              (window as unknown as { __valleyTerr?: string }).__valleyTerr = "—";
+              (window as unknown as { __valleyFogDist?: number }).__valleyFogDist = -1;
+            }
           } else {
             (window as unknown as { __lumaShadow?: number }).__lumaShadow = -1;
             (window as unknown as { __chromaShadow?: number }).__chromaShadow = -1;
             (window as unknown as { __litOver?: number }).__litOver = -1;
+            (window as unknown as { __valleyTerr?: string }).__valleyTerr = "—";
+            (window as unknown as { __valleyFogDist?: number }).__valleyFogDist = -1;
           }
         } else {
           (window as unknown as { __lumaShadow?: number }).__lumaShadow = -1;
           (window as unknown as { __chromaShadow?: number }).__chromaShadow = -1;
           (window as unknown as { __litOver?: number }).__litOver = -1;
+          (window as unknown as { __valleyTerr?: string }).__valleyTerr = "—";
+          (window as unknown as { __valleyFogDist?: number }).__valleyFogDist = -1;
         }
       } // cierre if (lumaOn)
       // §4b FASE 2b (G26 medible) + G22: sin cambios — el blit y getError

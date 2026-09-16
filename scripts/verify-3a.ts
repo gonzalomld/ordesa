@@ -1271,6 +1271,27 @@ function elevFull36(): Float32Array {
       : `zenithHex writers=${writes} (need 1), init-dash=${initDash}`);
 }
 
+// --- G45 valley fog (F1 niebla): at 07:30/20:30 in s=0.05 the far valley
+// floor melts into the horizon sky (RGB dist ≤ 0.12); at 12:00 it stays
+// readable (≥ 0.2). Node checks the MACHINERY (uDawnF uniform + dawn terms
+// in height-fog + viewer write + valley probe publishing dist); prod gives
+// the NUMBERS.
+{
+  const fogSrc45 = readFileSync("src/engine/height-fog.ts", "utf8");
+  const viewerSrc45 = readFileSync("src/engine/viewer.ts", "utf8");
+  const choreo45 = readFileSync("src/narrative/choreography.ts", "utf8");
+  const uniform = fogSrc45.includes("uDawnF") && viewerSrc45.includes("fogUniforms.uDawnF");
+  const terms = fogSrc45.includes("FOG_DAWN_HF_MULT") && fogSrc45.includes("FOG_DAWN_DF_ADD");
+  const probe = viewerSrc45.includes("__valleyFogDist") && viewerSrc45.includes("__valleyTerr");
+  const consts = choreo45.includes("G45_DUSK_MAX") && choreo45.includes("G45_NOON_MIN");
+  const noonIntact = viewerSrc45.includes("(sp.elevationDeg - 2) / 18");
+  const ok = uniform && terms && probe && consts && noonIntact;
+  gate("G45-fog", ok,
+    ok
+      ? "uDawnF (1−smoothstep(2°,20°)) × valley + horizon terms; __valleyFogDist published — measure ≤0.12 @07:30/20:30, ≥0.2 @12:00"
+      : `fog machinery broken (uniform=${uniform} terms=${terms} probe=${probe} consts=${consts} noon=${noonIntact})`);
+}
+
 // --- G40 linked programs (§4b FASE 3c-fix): every uniform added via
 // onBeforeCompile is DECLARED in GLSL (three uploads but never declares).
 // Node checks statically: the dome patch prepends `uniform float

@@ -9,7 +9,7 @@
 // the outgoing fragment. Intensity NEVER scales with sin(solar altitude):
 // at 07:24 with the sun at 2.1 deg the valley still needs full sky light.
 import type * as THREE from "three";
-import { HEMI_GRAY_MIX } from "../narrative/choreography.ts";
+import { FOG_DAWN_DF_ADD, FOG_DAWN_HF_MULT, HEMI_GRAY_MIX } from "../narrative/choreography.ts";
 
 export interface FogParams {
   fogTopM: number; // ceiling: full fog below, fading above
@@ -31,6 +31,9 @@ export const fogUniforms = {
   uTime: { value: 0 },
   uHemiSky: { value: [0.42, 0.55, 0.78] as [number, number, number] },
   uHemiDay: { value: 1 },
+  /** F1: factor de niebla de hora baja — 1 al alba/ocaso, 0 a mediodía.
+   * Multiplica el término de valle y suma al de distancia. */
+  uDawnF: { value: 0 },
 };
 
 export function patchTerrainMaterial(mat: THREE.Material): void {
@@ -47,6 +50,7 @@ export function patchTerrainMaterial(mat: THREE.Material): void {
     s.uniforms.uTime = fogUniforms.uTime;
     s.uniforms.uHemiSky = fogUniforms.uHemiSky;
     s.uniforms.uHemiDay = fogUniforms.uHemiDay;
+    s.uniforms.uDawnF = fogUniforms.uDawnF;
     s.vertexShader = s.vertexShader
       .replace("#include <common>", "#include <common>\nvarying vec3 vWPos;")
       .replace("#include <fog_vertex>", "#include <fog_vertex>\nvWPos = (modelMatrix * vec4(transformed,1.0)).xyz;");
@@ -58,7 +62,7 @@ varying vec3 vWPos;
 uniform float uFogTop; uniform float uFogDensity; uniform vec3 uSkyColor;
 uniform sampler2D uSkyMap; uniform float uHasSkyMap;
 uniform float uCloudShade; uniform float uTime;
-uniform vec3 uHemiSky; uniform float uHemiDay;
+uniform vec3 uHemiSky; uniform float uHemiDay; uniform float uDawnF;
 float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
   return mix(mix(h21(i),h21(i+vec2(1,0)),u.x), mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),u.x), u.y); }`,
@@ -69,14 +73,17 @@ float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
 {
   float hfrac = clamp(1.0 - (vWPos.y - (uFogTop - 500.0)) / 500.0, 0.0, 1.0);
   float camd = length(vWPos - cameraPosition);
-  float hf = hfrac * hfrac * uFogDensity;
+  // F1 niebla de valle: el término bajo se multiplica al alba/ocaso
+  // (uDawnF = 1 − smoothstep(2°,20°,elev)) y el de distancia suma para
+  // fundir el horizonte con el cielo. A mediodía uDawnF = 0: intacto.
+  float hf = hfrac * hfrac * uFogDensity * (1.0 + uDawnF * ${FOG_DAWN_HF_MULT.toFixed(2)});
   // U1/V2: D8 condition — ≥80% attenuation at 10.8 km (the model edge
   // behind Monte Perdido) with Monte Perdido itself still readable.
   // Squared-exponential: slow start, steep finish.
   // k=3.4: 4 km → ~0.18, 8 km → ~0.66, 10 km → ~0.83, 10.8 km → ~0.90.
   float x = camd / 9000.0;
   float df = 1.0 - exp(-x * x * x * x * 3.4);
-  float f = clamp(hf * 0.85 + df * (0.45 + 0.55 * uFogDensity), 0.0, 1.0);
+  float f = clamp(hf * 0.85 + df * (0.45 + 0.55 * uFogDensity + uDawnF * ${FOG_DAWN_DF_ADD.toFixed(2)}), 0.0, 1.0);
   float shade = 1.0 - uCloudShade * (0.5 + 0.5 * vnoise(vWPos.xz * 0.00035 + uTime * 0.004)) * 0.35;
   gl_FragColor.rgb *= shade;
   // R1b: sky-ambient valley fill. A shadowed valley under clear sky is
