@@ -171,6 +171,17 @@ export const CLOUD_FAR_MAX_BOARDS = 5;
 /** N2b: capacidad total = N2 (24×8) + bruma 40 + cirros 6 + anillo (12×5).
  * Puerta: instancias totales ≤ 260 (medido: ~246 con semilla fija). */
 export const CLOUD_MAX_INSTANCES = 192 + 40 + 6 + 60;
+// --- N2c SOMBRAS DE NUBE sobre el terreno (solo material del terreno +
+// un bloque JS por frame). 24 gaussianas = los 24 grupos de cúmulos N2
+// (anillo, bruma y cirros NO proyectan). Antes de la niebla: la distancia
+// se funde con el cielo, no con la sombra.
+export const CLOUD_SHADOW_GROUPS = 24;
+export const CLOUD_SHADOW_K = 0.6; // uCloudK = 0,6 · amount · dayF · sunF (si baja G11: 0,6 → 0,5, nunca la exposición)
+export const CLOUD_SHADOW_W = 0.45; // peso = 0,45 · amount · mult · dayF · sunF
+export const CLOUD_SHADOW_SUN_LO_DEG = 8; // sunF = smoothstep(8°, 25°, elev): sol bajo = sombra lavada, no se pinta
+export const CLOUD_SHADOW_SUN_HI_DEG = 25;
+export const CLOUD_SHADOW_DRIFT_X_MS = 3; // uDrift += dt · (3/6000, 5/6000): coherente con la deriva de nubes
+export const CLOUD_SHADOW_DRIFT_Y_MS = 5;
 export const CLOUD_GROUP_COUNT = 24; // nº de grupos (4-8 billboards cada uno)
 export const CLOUD_GROUP_R_MIN_M = 600; // radio de grupo: 600 + rnd^1,6 · 2400 (600-3000 m)
 export const CLOUD_GROUP_R_SPAN_M = 2400;

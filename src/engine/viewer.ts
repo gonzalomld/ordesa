@@ -12,6 +12,13 @@ import {
   CLOUD_ACT_MULT,
   CLOUD_FADE_START_DEG,
   CLOUD_MULT_SMOOTH_K,
+  CLOUD_SHADOW_DRIFT_X_MS,
+  CLOUD_SHADOW_DRIFT_Y_MS,
+  CLOUD_SHADOW_GROUPS,
+  CLOUD_SHADOW_K,
+  CLOUD_SHADOW_SUN_HI_DEG,
+  CLOUD_SHADOW_SUN_LO_DEG,
+  CLOUD_SHADOW_W,
   CLOUD_ZENITH_FADE,
   CORRIDOR_HALF_M,
   EPILOGUE_S,
@@ -43,7 +50,7 @@ import { cloudAmount, mistAmount } from "./sun.ts";
 import { frameClock, mountDebug, parseBootQuery } from "./debug.ts";
 import { buildGate, nextFrame } from "./gate.ts";
 import { createSkyCapture, type SkyCapture } from "./sky-capture.ts";
-import { fogUniforms, patchTerrainMaterial } from "./height-fog.ts";
+import { fogUniforms, makeCloudShadowTexture, patchTerrainMaterial } from "./height-fog.ts";
 import {
   buildLabels,
   rayBlocked,
@@ -63,6 +70,7 @@ import {
   loadElevations,
   loadMeta,
   meshHeightAtStep,
+  sampleGrid,
   worldFromMeta,
 } from "./terrain.ts";
 
@@ -700,6 +708,15 @@ float wgrain(vec2 lp){
 
   rebuildTerrain();
   gate.setProgress(0.62, 1);
+  // N2c: textura de ruido de sombras (canvas 512², semilla fija) — se crea
+  // una vez; el material la toma vía fogUniforms (objeto vivo compartido).
+  if (!fogUniforms.uCloud.value) {
+    try {
+      fogUniforms.uCloud.value = makeCloudShadowTexture(THREE);
+    } catch {
+      /* sin ruido: las gaussianas siguen sombreando */
+    }
+  }
   let route: RouteData;
   try {
     route = await loadRouteData();
@@ -1288,6 +1305,10 @@ float wgrain(vec2 lp){
   })();
   const skyfracOn = new URLSearchParams(location.search).has("skyfrac");
   const trackpxOn = new URLSearchParams(location.search).has("trackpx");
+  // N2c: ?cloudshadow=0 desactiva las sombras (G55); ?debug=cloudshadow las
+  // pinta en gris (uCloudDebug). Solo instrumentos tras bandera de URL.
+  const cloudShadowOff = boot.cloudshadowOff;
+  (fogUniforms.uCloudDebug as { value: number }).value = boot.cloudshadow ? 1 : 0;
   // N2b: filtro de familia del medidor (?family=N / off). -2 (off) = el rastro
   // se mide sin nubes (G52: ?family=off); el probe pinta cero instancias.
   const famFilter = boot.family === -2 ? -3 : boot.family;
@@ -1427,6 +1448,60 @@ float wgrain(vec2 lp){
     const amtMist = mistAmount(hour, cloudDayF) * cloudUser;
     const amtCirrus = 1 * cloudUser;
     const anyCloud = amtCumulus * cloudMultSm + amtMist + amtCirrus + amtFar * cloudMultSm;
+    // N2c: SOMBRAS DE NUBE — junto a applyLighting (colores), un bloque JS
+    // por frame. Solo toca fogUniforms (material del terreno): cielo, nubes,
+    // cámara, rastro y etiquetas intactos.
+    // sunF = smoothstep(8°, 25°, elev): sol bajo = sombra alargada y lavada.
+    const sunElevNow = st.sunElev;
+    const sunFT = Math.min(1, Math.max(0, (sunElevNow - CLOUD_SHADOW_SUN_LO_DEG) / (CLOUD_SHADOW_SUN_HI_DEG - CLOUD_SHADOW_SUN_LO_DEG)));
+    const sunF = sunFT * sunFT * (3 - 2 * sunFT);
+    (fogUniforms.uCloudK as { value: number }).value =
+      cloudShadowOff ? 0 : CLOUD_SHADOW_K * amtCumulus * cloudDayF * sunF;
+    // uDrift += dt · (3/6000, 5/6000) — coherente con la deriva de nubes.
+    {
+      const du = fogUniforms.uDrift.value as THREE.Vector2;
+      du.x += (dt * CLOUD_SHADOW_DRIFT_X_MS) / 6000;
+      du.y += (dt * CLOUD_SHADOW_DRIFT_Y_MS) / 6000;
+    }
+    // 24 gaussianas = los 24 grupos de cúmulos (anillo/bruma/cirros NO).
+    // Centro con deriva aplicada + desplazamiento solar:
+    // off = (cy − ySuelo) · (sunDir.xz / max(sunDir.y, 0.15)).
+    {
+      const groups = clouds.group.visible ? clouds.shadowGroups() : [];
+      const arr = fogUniforms.uClouds.value as THREE.Vector4[];
+      const sy = Math.max(sunDirV.y, 0.15);
+      const ox = sunDirV.x / sy;
+      const oz = sunDirV.z / sy;
+      // sunDirV está en mundo (x, y, z=mundo); EPSG: x=easting, y=northing.
+      // mundo→EPSG: ex = wx + centerX, ey = centerY − wz.
+      for (let i = 0; i < CLOUD_SHADOW_GROUPS; i++) {
+        const dst = arr[i] as THREE.Vector4;
+        const g = groups[i] as { x: number; y: number; z: number; r: number; w: number } | undefined;
+        if (!g || g.w <= 0 || cloudShadowOff) {
+          dst.set(0, 0, 1, 0);
+          continue;
+        }
+        const ground = sampleGrid(elev, meta, g.x, g.y);
+        const hgt = Math.max(0, g.z - ground);
+        // EPSG→mundo-xz del shader: vWPos.xz es mundo (x, −(ey−centerY))…
+        // el shader muestrea uClouds en vWPos.xz (mundo): convierte el
+        // centro EPSG a mundo: wx = ex − centerX, wz = −(ey − centerY).
+        const wx = g.x - world.centerX;
+        const wz = -(g.y - world.centerY);
+        const shx = wx - hgt * ox;
+        const shz = wz - hgt * oz;
+        const wgt = cloudShadowOff
+          ? 0
+          : CLOUD_SHADOW_W * amtCumulus * cloudMultSm * cloudDayF * sunF * Math.min(1, (g.w as number) / Math.max(1e-6, 0.5));
+        dst.set(shx, shz, (g.r as number) * 0.62, Math.min(1, Math.max(0, wgt)));
+      }
+      // G54/G56: publica las gaussianas vivas + centros de nube para la
+      // comprobación numérica (offset sol + deriva en pantalla).
+      if (boot.debug) {
+        (window as unknown as { __cloudShadows?: { x: number; y: number; r: number; w: number }[] }).__cloudShadows =
+          arr.map((v) => ({ x: v.x, y: v.y, r: v.z, w: v.w }));
+      }
+    }
     if (boot.steep || anyCloud <= 0.001) {
       clouds.group.visible = false;
       metrics.cloudCoverage = 0;
@@ -1682,6 +1757,35 @@ float wgrain(vec2 lp){
               metrics.chromaShadow = (window as unknown as { __chromaShadow?: number }).__chromaShadow ?? -1;
             }
             (window as unknown as { __litOver?: number }).__litOver = litOver;
+            // N2c G53 (presencia): con ?debug=cloudshadow el terreno se pinta
+            // en gris = factor de sombra (misma rejilla/rejilla y buf YA
+            // leídos — sin segundo readPixels). Fracción de píxeles de
+            // TERRENO con luma lineal < 0,8: [0,10,0,35] @12:00, ≤mitad
+            // @08:30, 0 @20:30. Sin el flag: -1 (pendiente).
+            // N2c G55 (niebla intacta): luma lineal media del fondo del valle
+            // (valleyRGB = tercio superior, banda del horizonte) con y sin
+            // sombras (?cloudshadow=0). G55 compara dos cargas; aquí se
+            // publica el valor CON sombras.
+            {
+              const W53 = window as unknown as { __cloudShadowFrac?: number; __cloudShadowFarLuma?: number };
+              if (boot.cloudshadow) {
+                let dark = 0;
+                for (const l of terrLumas) if ((l as number) < 0.8) dark++;
+                W53.__cloudShadowFrac = terrLumas.length > 0 ? dark / terrLumas.length : 0;
+                if (valleyRGB.length > 0) {
+                  let s = 0;
+                  for (const c of valleyRGB) {
+                    s += 0.2126 * lumOf(c[0] as number) + 0.7152 * lumOf(c[1] as number) + 0.0722 * lumOf(c[2] as number);
+                  }
+                  W53.__cloudShadowFarLuma = s / valleyRGB.length;
+                } else {
+                  W53.__cloudShadowFarLuma = -1;
+                }
+              } else {
+                W53.__cloudShadowFrac = -1;
+                W53.__cloudShadowFarLuma = -1;
+              }
+            }
             // F1 niebla (G45): media display del fondo del valle + distancia
             // RGB al horizonte de la captura (lado del sol). dist ≤ 0.12 al
             // alba/ocaso (funde con el cielo), ≥ 0.2 a mediodía (legible).

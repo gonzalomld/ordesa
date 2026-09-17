@@ -88,6 +88,10 @@ export interface BootQuery {
   atlas: boolean;
   /** N2b: ?family=N (0-3) u off — filtro del medidor de nubes por familia. */
   family: number;
+  /** N2c: ?debug=cloudshadow — terreno en gris = factor de sombra (verlo). */
+  cloudshadow: boolean;
+  /** N2c: ?cloudshadow=0 — sombras desactivadas (G55: niebla intacta). */
+  cloudshadowOff: boolean;
 }
 
 function parseSParam(raw: string | null): number | null {
@@ -135,6 +139,8 @@ export function parseBootQuery(): BootQuery {
     skycap: q.get("skycap") !== "0",
     atlas: q.get("debug") === "atlas",
     family,
+    cloudshadow: q.get("debug") === "cloudshadow",
+    cloudshadowOff: q.get("cloudshadow") === "0",
     lod: lodN !== null && Number.isFinite(lodN) && [1, 2, 3].includes(lodN) ? lodN : null,
   };
 }

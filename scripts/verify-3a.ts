@@ -1226,21 +1226,75 @@ function elevFull36(): Float32Array {
       : "no __cloudLuma/__cloudChroma probe in viewer.ts");
 }
 
-// --- G46 no-feedback (N1/N2b: ningún alfa depende de una sonda).
-// Node checks statically: sin uCap/setCap en ningún sitio; el probe copia
-// valores + uFamFilter propio (nunca escribe el estado del draw). La
-// ESTABILIDAD (40 lecturas, alfa invariante) se mide en prod.
+// --- G53 shadow presence (N2c). ?debug=cloudshadow: terreno en gris =
+// factor de sombra; __cloudShadowFrac = fracción de píxeles de terreno con
+// luma < 0,8 ([0,10,0,35] @12:00 s=0,18/0,80; ≤mitad @08:30; 0 @20:30).
+// Node checks the CONTRACT (flag + GLSL antes de la niebla + probe sobre
+// el frame presentado); prod da los NÚMEROS.
 {
-  const viewerSrc46 = readFileSync("src/engine/viewer.ts", "utf8");
-  const cloudSrc46 = readFileSync("src/engine/clouds.ts", "utf8");
-  const noCap = !viewerSrc46.includes("setCap") && !cloudSrc46.includes("uCap")
-    && !viewerSrc46.includes("uCap");
-  const probeOwn = viewerSrc46.includes("uFamFilter");
-  const ok = noCap && probeOwn;
-  gate("G46-nofeedback", ok,
+  const fogSrc53 = readFileSync("src/engine/height-fog.ts", "utf8");
+  const viewerSrc53 = readFileSync("src/engine/viewer.ts", "utf8");
+  const debugSrc53 = readFileSync("src/engine/debug.ts", "utf8");
+  const glsl = fogSrc53.includes("uniform vec4 uClouds[24]")
+    && fogSrc53.indexOf("cloudShadowF") < fogSrc53.indexOf("mix(gl_FragColor.rgb, haze, f)")
+    && fogSrc53.includes("uCloudDebug");
+  const js = viewerSrc53.includes("uCloudK") && viewerSrc53.includes("__cloudShadowFrac")
+    && viewerSrc53.includes("shadowGroups()") && viewerSrc53.includes("__cloudShadowFarLuma");
+  const flag = debugSrc53.includes("cloudshadow");
+  const ok = glsl && js && flag;
+  gate("G53-shadow", ok,
     ok
-      ? "no uCap/setCap anywhere; probe copies values + own uFamFilter — measure 40-read alpha stability in prod"
-      : `feedback risk (noCap=${noCap} probeOwn=${probeOwn})`);
+      ? "?debug=cloudshadow → __cloudShadowFrac (gris<0.8 sobre terreno) — measure [0.10,0.35] @12:00 s=0.18/0.80, ≤mitad @08:30, 0 @20:30"
+      : `shadow contract broken (glsl=${glsl} js=${js} flag=${flag})`);
+}
+
+// --- G54 shadow coherence (N2c). Cada gaussiana viva (w>0,1) cuelga de su
+// nube: offset solar off = (cy−suelo)·(sunDir.xz/max(sunDir.y,0.15)).
+// Node checks (__cloudShadows publicado + fórmula del offset en el viewer);
+// la COMPROBACIÓN numérica (proyectado por debajo y al NO del grupo, sol
+// al SE @12:00) + captura ?debug=cloudshadow se hacen en prod.
+{
+  const viewerSrc54 = readFileSync("src/engine/viewer.ts", "utf8");
+  const off = viewerSrc54.includes("__cloudShadows") && viewerSrc54.includes("max(sunDirV.y, 0.15)")
+    && viewerSrc54.includes("sunDirV.x / sy");
+  const ok = off;
+  gate("G54-coherence", ok,
+    ok
+      ? "__cloudShadows (gaussianas vivas) + offset solar — measure projected below+NW of group @12:00 s=0.18 (JS offset + capture)"
+      : "no __cloudShadows/offset in viewer.ts");
+}
+
+// --- G55 fog intact (N2c). ?cloudshadow=0 desactiva (uCloudK=0, pesos 0).
+// Node checks (flag + kill-switch); la IGUALDAD (±0,01 en el cuartil
+// lejano, __cloudShadowFarLuma) se mide en prod con/sin sombras.
+{
+  const viewerSrc55 = readFileSync("src/engine/viewer.ts", "utf8");
+  const debugSrc55 = readFileSync("src/engine/debug.ts", "utf8");
+  const kill = viewerSrc55.includes("cloudShadowOff") && viewerSrc55.includes("__cloudShadowFarLuma");
+  const flag = debugSrc55.includes('q.get("cloudshadow") === "0"');
+  const agents55 = readFileSync("AGENTS.md", "utf8");
+  const rule = agents55.includes("la distancia se funde con el cielo, no con la sombra");
+  const ok = kill && flag && rule;
+  gate("G55-fogintact", ok,
+    ok
+      ? "?cloudshadow=0 (uCloudK=0, pesos 0) + __cloudShadowFarLuma + AGENTS rule — measure far-quartile luma ±0.01 with/without"
+      : `fog-intact contract broken (kill=${kill} flag=${flag} rule=${rule})`);
+}
+
+// --- G56 shadow drift (N2c). La gaussiana sigue la deriva de su grupo
+// (centro con deriva aplicada + uDrift coherente con 3-8 m/s).
+// Node checks (shadowGroups desde driftX vivo + uDrift con las constantes);
+// el DESPLAZAMIENTO en pantalla (±10 % en 10 s @12:00) se mide en prod.
+{
+  const cloudSrc56 = readFileSync("src/engine/clouds.ts", "utf8");
+  const viewerSrc56 = readFileSync("src/engine/viewer.ts", "utf8");
+  const live = cloudSrc56.includes("shadowGroups") && cloudSrc56.includes("driftX[i]");
+  const drift = viewerSrc56.includes("CLOUD_SHADOW_DRIFT_X_MS") && viewerSrc56.includes("CLOUD_SHADOW_DRIFT_Y_MS");
+  const ok = live && drift;
+  gate("G56-drift", ok,
+    ok
+      ? "shadowGroups() from live driftX + uDrift (3/6000, 5/6000)/frame — measure on-screen ±10 % over 10 s @12:00"
+      : `drift contract broken (live=${live} drift=${drift})`);
 }
 
 // --- G43 terrain overlap (§4b FASE 4c): cloud-on-terrain ≤ 5% of terrain

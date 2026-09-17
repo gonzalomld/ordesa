@@ -129,6 +129,11 @@ export interface Clouds {
   setAmount(a: number): void;
   /** N2: multiplicador por acto (único botón de dirección de arte). */
   setMult(m: number): void;
+  /** N2c: grupos de cúmulos N2 para las sombras del terreno — centro EPSG
+   * (x, y=plan, z=alt) con la deriva YA aplicada + radio R + peso vivo
+   * (alfa efectivo medio del grupo: base × amount × mult). El viewer
+   * desplaza por el sol y escribe uClouds[24]. */
+  shadowGroups(): { x: number; y: number; z: number; r: number; w: number }[];
   /** A9 (seguro): 0 = a nivel de ojo (densidad plena) .. 1 = nadir (fade). */
   setZenithFade(f: number): void;
   /** N1: dayF diario — smoothstep(−4°, 4°, elevación solar), escrito por
@@ -781,6 +786,48 @@ export function buildClouds(
     },
     setMult(m) {
       uniforms.uMult.value = Math.min(2, Math.max(0, m));
+    },
+    shadowGroups() {
+      // N2c: los 24 grupos de cúmulos (familia 0) — el reordenado N2 mezcla
+      // slots, así que se reconstruye por group-id desde los arrays vivos
+      // (deriva YA aplicada: driftX). Peso = alfa medio × amount × mult.
+      const amtC = uniforms.uAmtCumulus.value as number;
+      const mult = uniforms.uMult.value as number;
+      const acc = new Map<number, { sx: number; sy: number; sz: number; sa: number; n: number; r: number }>();
+      for (let i = 0; i < NB; i++) {
+        if ((data[i * 4 + 2] as number) > 0.5) continue; // solo familia 0
+        const b = boards[i] as CloudBoard | undefined;
+        if (!b) continue;
+        const g = b.group;
+        let e = acc.get(g);
+        if (!e) {
+          e = { sx: 0, sy: 0, sz: 0, sa: 0, n: 0, r: 0 };
+          acc.set(g, e);
+        }
+        e.sx += driftX[i] as number;
+        const c = centers[i] as THREE.Vector3;
+        e.sy += cy - c.z;
+        e.sz += c.y;
+        e.sa += data[i * 4 + 3] as number;
+        e.r = Math.max(e.r, boardR[i] as number);
+        e.n++;
+      }
+      const out: { x: number; y: number; z: number; r: number; w: number }[] = [];
+      for (let g = 0; g < CLOUD_GROUP_COUNT; g++) {
+        const e = acc.get(g);
+        if (!e || e.n === 0) {
+          out.push({ x: 0, y: 0, z: -100000, r: 1, w: 0 });
+          continue;
+        }
+        out.push({
+          x: (e.sx as number) / e.n,
+          y: (e.sy as number) / e.n,
+          z: (e.sz as number) / e.n,
+          r: e.r,
+          w: ((e.sa as number) / e.n) * amtC * mult,
+        });
+      }
+      return out;
     },
     setZenithFade(f: number) {
       uniforms.uZenithFade.value = Math.min(1, Math.max(0, f));
