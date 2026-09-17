@@ -838,18 +838,23 @@ float wgrain(vec2 lp){
     }).catch(() => undefined);
   }
 
-  // clouds (N2: 24 grupos Everest-style; camYmax INCLUYE el epílogo).
+  // clouds (N2-fix: barrido s ∈ [0, 0,97] SIN epílogo — la cámara del
+  // epílogo (4,5 km) subía camYmax y ponía los cúmulos a 5 km. La banda
+  // vive a ~2900; el epílogo se resuelve con fade por altura (uCamY)).
   // Poses travel EPSG + altitude.
   const cloudCams: { x: number; y: number; z: number; s: number }[] = [];
   {
     const w2eX = (wx: number): number => wx + world.centerX;
     const w2eY = (wz: number): number => world.centerY - wz;
-    for (let s = 0; s <= 1.0; s += 0.005) {
-      const sc = Math.min(1.0, s);
+    for (let s = 0; s <= 0.97; s += 0.005) {
+      const sc = Math.min(0.97, s);
       const p = rig.poseAt(sc);
       cloudCams.push({ x: w2eX(p.pos[0]), y: w2eY(p.pos[2]), z: p.pos[1], s: sc });
     }
   }
+  // N2-fix: camYEpi (altura de la cámara del epílogo) a la vista — el fade
+  // por altura la usa; el informe la muestra junto a camYmax de sendero.
+  const camYEpi = rig.poseAt(1).pos[1];
   const clouds = buildClouds(
     meta,
     elev,
@@ -857,21 +862,26 @@ float wgrain(vec2 lp){
     { n: route.n, x: route.x, y: route.y },
     cloudCams,
   );
-  // N2b: banda publicada — base, techo, camYmax (epílogo incluido), nº por
-  // familia + rechazos y motivo (G36). cloudLayout es la única fuente.
+  // N2-fix: banda publicada — camYmax de SENDERO (s ∈ [0,0,97]) y, aparte,
+  // camYEpi (epílogo) para tenerlo a la vista. cloudLayout es la única
+  // fuente del detalle por familia (__cloudBandFam).
   (window as unknown as { __cloudBand?: unknown }).__cloudBand = (() => {
-    // El layout N2 corre dentro de buildClouds; aquí solo el marco para el
-    // informe (base/techo/camYmax con la misma fórmula). El detalle por
-    // familia lo publica clouds.update vía __cloudBandFam (ver abajo).
     let m = -Infinity;
     for (const c of cloudCams) if (c.z > m) m = c.z;
     return {
       base: Math.max(m + 300, 2900),
       top: Math.max(m + 300, 2900) + 600,
       camYmax: m,
+      camYEpi,
       poses: cloudCams.length,
     };
   })();
+  // N2-fix: la bruma de nubes comparte la captura del cielo con la niebla
+  // del terreno (MISMO objeto vivo: un write llega a ambos, cero copias).
+  // Menos marrón, más gris-azul al amanecer (G49 croma ≤ 0,15).
+  (clouds as unknown as { setSkyMap?: (t: THREE.Texture | null) => void }).setSkyMap?.(
+    fogUniforms.uSkyMap.value as THREE.Texture | null,
+  );
   scene.add(clouds.group);
   gate.setProgress(0.8, 5);
   await nextFrame();
@@ -1244,7 +1254,7 @@ float wgrain(vec2 lp){
       attribute vec4 aMisc; // x: phase, y: period (bruma)
       varying vec2 vUv; varying float vAlpha; varying float vFamily;
       uniform float uAmtCumulus; uniform float uAmtMist; uniform float uAmtCirrus; uniform float uAmtFar;
-      uniform float uMult; uniform float uZenithFade; uniform float uTime; uniform float uFamFilter;
+      uniform float uMult; uniform float uZenithFade; uniform float uTime; uniform float uFamFilter; uniform float uCamY;
       void main(){
         float tile = aData.x;
         float family = aData.z;
@@ -1272,6 +1282,13 @@ float wgrain(vec2 lp){
         vAlpha = aData.w * fam * (1.0 - uZenithFade) * keepFam;
         // billboard en vista: reconstruye como el draw (rot fija)
         vec4 c = modelMatrix * instanceMatrix * vec4(0.0,0.0,0.0,1.0);
+        // N2-fix: mismo fade del epílogo que el draw (mundo-y = altitud).
+        float relH = uCamY - c.y;
+        float epiFade = family < 0.5 ? 1.0 - smoothstep(300.0, 900.0, relH)
+          : family < 1.5 ? 1.0 - smoothstep(300.0, 900.0, relH)
+          : family < 2.5 ? 1.0
+          : 1.0 - smoothstep(600.0, 1400.0, relH);
+        vAlpha *= epiFade;
         vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
         vec3 up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
         vec2 rp = mat2(cos(rot),-sin(rot),sin(rot),cos(rot)) * p * keepFam;
@@ -1497,9 +1514,26 @@ float wgrain(vec2 lp){
       }
       // G54/G56: publica las gaussianas vivas + centros de nube para la
       // comprobación numérica (offset sol + deriva en pantalla).
+      // N2-fix: __cloudShadow agregado (uCloudK, sunF, dayF, amount, pesos
+      // y centros) — localiza por qué el factor sería 1 (peso/uCloudK 0,
+      // offset fuera del DEM, o el debug antes de multiplicar).
       if (boot.debug) {
         (window as unknown as { __cloudShadows?: { x: number; y: number; r: number; w: number }[] }).__cloudShadows =
           arr.map((v) => ({ x: v.x, y: v.y, r: v.z, w: v.w }));
+        (window as unknown as { __cloudShadow?: unknown }).__cloudShadow = {
+          uCloudK: (fogUniforms.uCloudK as { value: number }).value,
+          sunF,
+          dayF: cloudDayF,
+          amount: amtCumulus,
+          mult: cloudMultSm,
+          drift: {
+            x: (fogUniforms.uDrift.value as THREE.Vector2).x,
+            y: (fogUniforms.uDrift.value as THREE.Vector2).y,
+          },
+          pesos: arr.map((v) => v.w),
+          centros: arr.map((v) => ({ x: v.x, z: v.y, r: v.z })),
+          hasNoise: !!fogUniforms.uCloud.value,
+        };
       }
     }
     if (boot.steep || anyCloud <= 0.001) {
@@ -1509,6 +1543,8 @@ float wgrain(vec2 lp){
       clouds.group.visible = true;
       clouds.setAmounts({ cumulus: amtCumulus, mist: amtMist, cirrus: amtCirrus, far: amtFar });
       clouds.setMult(cloudMultSm);
+      // N2-fix: altura de cámara al draw Y al probe (mismo fade del epílogo).
+      clouds.setCamY(camera.position.y);
       // N1/N2: color neutro (blanco × dayF); el cálido llega por la niebla.
       clouds.setDayF(cloudDayF);
       // A9 (solo seguro): fade de la capa al mirar hacia abajo.
@@ -1857,23 +1893,27 @@ float wgrain(vec2 lp){
             (cloudPxMat.uniforms["uAmtMist"] as { value: unknown }).value = pu.uAmtMist;
             (cloudPxMat.uniforms["uAmtCirrus"] as { value: unknown }).value = pu.uAmtCirrus;
             (cloudPxMat.uniforms["uAmtFar"] as { value: unknown }).value = pu.uAmtFar;
-            // N2b: uMult/uZenithFade/uTime/uFamFilter del probe: objetos
+            // N2b: uMult/uZenithFade/uTime/uFamFilter/uCamY del probe: objetos
             // propios (el probe NO comparte el material de nubes; copia los
             // valores cada pase — la sonda informa, no gobierna).
             (cloudPxMat.uniforms["uMult"] as { value: number }).value = 1;
             (cloudPxMat.uniforms["uZenithFade"] as { value: number }).value = 0;
             (cloudPxMat.uniforms["uTime"] as { value: number }).value = 0;
             (cloudPxMat.uniforms["uFamFilter"] as { value: number }).value = -1;
+            (cloudPxMat.uniforms["uCamY"] as { value: number }).value = 0;
             cloudPxWired = true;
           }
           // N2b: el probe copia los valores vivos (mismo frame, cero deriva)
           // + uTime (pulso de bruma) + filtro de familia (?family=N/off).
+          // N2-fix: + uCamY (mismo fade del epílogo que el draw).
           {
             const pu = clouds.probeUniforms();
             (cloudPxMat.uniforms["uMult"] as { value: number }).value =
               (pu.uAmtCumulus as unknown as { __mult?: number }).__mult ?? 1;
             (cloudPxMat.uniforms["uTime"] as { value: number }).value = clock.elapsedTime;
             (cloudPxMat.uniforms["uFamFilter"] as { value: number }).value = famFilter;
+            (cloudPxMat.uniforms["uCamY"] as { value: number }).value =
+              (pu.uAmtCumulus as unknown as { __camY?: number }).__camY ?? camera.position.y;
           }
           // cloudPxScene HOLDS clouds.mesh across frames (added once) —
           // restore the parent after the probe render (scene graph hygiene:
@@ -1905,6 +1945,8 @@ float wgrain(vec2 lp){
           let cloudOnTerr = 0;
           // N2b G49: bruma sobre terreno (puerta: [0,08,0,25] @07:30).
           let mistOnTerr = 0;
+          // N2-fix: croma medio de los píxeles de bruma (≤0,15 gris-azul).
+          const mistChromas: number[] = [];
           // N2b G50: franja inferior del cielo (15 % más cercano al horizonte
           // ≈ filas 0..7 del RT 96×54, el RT tiene y=0 abajo) vs resto.
           let lowSkyN = 0;
@@ -1959,7 +2001,20 @@ float wgrain(vec2 lp){
                 if (isCloud) {
                   cloudOnTerr++;
                   // N2b: con filtro fam=1 el RT solo trae bruma → bruma/terreno.
-                  if (famOnly === 1) mistOnTerr++;
+                  // N2-fix: croma de bruma (G49: ≤0,15 gris-azul, no marrón)
+                  // sobre el frame PRESENTADO (buf ya leído, sin re-render).
+                  if (famOnly === 1) {
+                    mistOnTerr++;
+                    const fx = Math.min(w - 1, Math.floor(((xx + 0.5) / 96) * w));
+                    const fy = Math.min(h - 1, Math.floor(((yy + 0.5) / 54) * h));
+                    const o = (fy * w + fx) * 4;
+                    const mr = (buf[o] as number) / 255;
+                    const mg = (buf[o + 1] as number) / 255;
+                    const mb = (buf[o + 2] as number) / 255;
+                    const mxc = Math.max(mr, mg, mb);
+                    const mnc = Math.min(mr, mg, mb);
+                    mistChromas.push(mxc > 1e-6 ? (mxc - mnc) / mxc : 0);
+                  }
                   denseAlphas.push(pxAlpha);
                   if (pxAlpha > maxAlphaSeen) maxAlphaSeen = pxAlpha;
                 }
@@ -1997,6 +2052,9 @@ float wgrain(vec2 lp){
           // N2b G49/G50/G51: lecturas por familia sobre el MISMO pase.
           (window as unknown as { __cloudMistTerr?: number }).__cloudMistTerr =
             famOnly === 1 && terrN > 0 ? mistOnTerr / terrN : terrN > 0 ? cloudOnTerr / terrN : 0;
+          // N2-fix: croma medio de bruma (gris-azul ≤0,15, no marrón).
+          (window as unknown as { __cloudMistChroma?: number }).__cloudMistChroma =
+            mistChromas.length > 0 ? mistChromas.reduce((t, v) => t + v, 0) / mistChromas.length : -1;
           (window as unknown as { __cloudLowSky?: number }).__cloudLowSky = lowSkyN > 0 ? lowSkyCloud / lowSkyN : 0;
           (window as unknown as { __cloudHighSky?: number }).__cloudHighSky = highSkyN > 0 ? highSkyCloud / highSkyN : 0;
           (window as unknown as { __cloudMaxAlpha?: number }).__cloudMaxAlpha = maxAlphaSeen;

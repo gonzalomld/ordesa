@@ -38,3 +38,4 @@
 - Una fase, un despliegue. Cuando el brief da un orden con una comprobación entre fases, el orden es parte del brief. Juntar fases para ahorrar un despliegue no ahorra nada: cuesta la localización del fallo.
 - Ningún parámetro de dibujo se retroalimenta de una sonda que lo mide; las sondas informan, no gobiernan.
 - Las sombras de nube se aplican antes de la niebla: la distancia se funde con el cielo, no con la sombra.
+- Todo asset que cambia con el código lleva hash de contenido o viaja dentro del bundle; nada sin hash se pide por red.

@@ -140,6 +140,12 @@ export interface Clouds {
    * el viewer desde lightingAt (misma fuente que la niebla). Solo
    * multiplica el brillo neutro P; nunca tiñe. */
   setDayF(f: number): void;
+  /** N2-fix: altura de cámara para el fade del epílogo (mismo valor al
+   * draw y al probe — la sonda informa, no gobierna). */
+  setCamY(y: number): void;
+  /** N2-fix: captura del cielo para el 50 % de bruma de distancia (mismo
+   * objeto vivo que fogUniforms.uSkyMap — cero copias). */
+  setSkyMap(t: THREE.Texture | null): void;
   update(time: number, camera: THREE.Camera, vw: number, vh: number): void;
   getCoverage(): number;
   /** N2: ms del último reordenado (puerta: ≤ 0,4 ms en N2b). */
@@ -563,11 +569,19 @@ export function buildClouds(
     uZenithFade: { value: 0 },
     /** N2b: tiempo (s) para balanceo/pulso de bruma en el vertex. */
     uTime: { value: 0 },
+    /** N2-fix: altura de cámara (mundo-y) para el fade del epílogo por
+     * familia (cúmulos/bruma 300→900, anillo 600→1400, cirros sin fade). */
+    uCamY: { value: 0 },
     uHeightMap: { value: htex },
     uHMin: { value: new THREE.Vector2(meta.bbox.minx, meta.bbox.miny) },
     uHSize: { value: new THREE.Vector2(meta.bbox.maxx - meta.bbox.minx, meta.bbox.maxy - meta.bbox.miny) },
     uHMaxY: { value: meta.bbox.maxy },
     uHCenter: { value: new THREE.Vector2(cx, cy) },
+    /** N2-fix: bruma de distancia (captura del cielo, MISMO objeto vivo que
+     * la niebla del terreno: fogUniforms.uSkyMap) — la bruma recibe su
+     * tinte al 50 %, la mitad que el terreno (menos marrón, más gris-azul).
+     * Cirros: uSkyMap ignorado (vNoFog=1, sin niebla). */
+    uSkyMap: { value: null as THREE.Texture | null },
   };
   // UV por variante (4 cúmulos; el shader no conoce la bruma N2b).
   const tileU = new THREE.Vector4(0, 0.75, 0.5, 1.0);
@@ -596,7 +610,7 @@ export function buildClouds(
       attribute vec4 aMisc; // x: phase, y: period, z: tintR, w: tintG (tintB = 1 siempre salvo bruma→0.97)
       varying vec2 vUv; varying float vAlpha; varying vec3 vWPos; varying vec3 vTint; varying float vNoFog;
       uniform float uAmtCumulus; uniform float uAmtMist; uniform float uAmtCirrus; uniform float uAmtFar;
-      uniform float uMult; uniform float uTime;
+      uniform float uMult; uniform float uTime; uniform float uCamY;
       void main(){
         float tile = aData.x;
         float family = aData.z;
@@ -631,7 +645,15 @@ export function buildClouds(
           : family < 1.5 ? uAmtMist * pulse
           : family < 2.5 ? uAmtCirrus
           : uAmtFar * uMult;
-        vAlpha = aData.w * fam;
+        // N2-fix: fade del epílogo por altura relativa (cámara muy por
+        // encima de la banda): cúmulos/bruma 1−ss(300,900,camY−c.y),
+        // anillo 1−ss(600,1400,camY−c.y), cirros sin fade (7-9 km).
+        float relH = uCamY - c.y;
+        float epiFade = family < 0.5 ? 1.0 - smoothstep(300.0, 900.0, relH)
+          : family < 1.5 ? 1.0 - smoothstep(300.0, 900.0, relH)
+          : family < 2.5 ? 1.0
+          : 1.0 - smoothstep(600.0, 1400.0, relH);
+        vAlpha = aData.w * fam * epiFade;
         vTint = vec3(aMisc.z, aMisc.w, family > 0.5 && family < 1.5 ? 0.97 : 1.0);
         vNoFog = family > 1.5 && family < 2.5 ? 1.0 : 0.0;
         gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
@@ -642,6 +664,7 @@ export function buildClouds(
       uniform vec2 uHMin; uniform vec2 uHSize; uniform float uHMaxY; uniform vec2 uHCenter;
       uniform float uZenithFade;
       uniform float uDayF;
+      uniform sampler2D uSkyMap;
       void main(){
         // soft particles: fade where the fragment meets the terrain.
         // N2b: los cirros (vNoFog=1) no se recortan contra el heightfield.
@@ -657,8 +680,16 @@ export function buildClouds(
         // N1/N2 color neutro: tinte × P, P = 0.16+0.84·dayF. La panza ya
         // viene sombreada en la TEXTURA (source-atop azul-gris); el cálido
         // llega por la niebla (fog:true), nunca por puff. De noche: P=0.16.
+        // N2-fix: la BRUMA (vTint ≠ blanco) NO recibe el tinte de niebla al
+        // 100 %: mix con la bruma de distancia (captura del cielo) al 50 %
+        // (la mitad que el terreno) — menos marrón, más gris-azul.
         float P = 0.16 + 0.84 * uDayF;
         vec3 col = tex.rgb * vTint * P;
+        float isMist = (1.0 - step(0.99, vTint.x)) * (1.0 - vNoFog);
+        vec3 vd = normalize(vWPos - cameraPosition);
+        vec2 skuv = vec2(atan(vd.z, vd.x) / 6.2831853 + 0.5, clamp(vd.y * 0.5 + 0.5, 0.0, 1.0));
+        vec3 haze = texture2D(uSkyMap, skuv).rgb;
+        col = mix(col, haze * (0.5 + 0.5 * P), isMist * 0.5);
         gl_FragColor = vec4(col * a, a);
       }`,
   });
@@ -694,6 +725,9 @@ export function buildClouds(
   const boardR = new Float32Array(MAXB);
   // orden de pintado (índices a boards, lejos→cerca; se reescribe cada 10 f)
   const order = new Int32Array(MAXB);
+  /** N2-fix: group-id por SLOT (el sort reordena este array junto con todo
+   * lo demás — shadowGroups lo lee del slot vivo, nunca de boards[i]). */
+  const slotGroup = new Int32Array(MAXB).fill(-1);
   const writeInstance = (slot: number, b: CloudBoard): void => {
     dummy.position.set(b.x - cx, b.z, -(b.y - cy));
     dummy.updateMatrix();
@@ -719,6 +753,7 @@ export function buildClouds(
   for (let i = 0; i < NB; i++) {
     const b = boards[i] as CloudBoard;
     driftV[i] = b.driftV;
+    slotGroup[i] = b.group;
     writeInstance(i, b);
     order[i] = i;
   }
@@ -764,8 +799,10 @@ export function buildClouds(
     probeUniforms() {
       // N2b: uMult viaja colgado del objeto uAmtCumulus (__mult) para que el
       // probe copie draw+mult sin una quinta referencia que olvidar.
-      const amtC = uniforms.uAmtCumulus as { value: number; __mult?: number };
+      // N2-fix: uCamY viaja igual (__camY) — mismo fade en draw y probe.
+      const amtC = uniforms.uAmtCumulus as { value: number; __mult?: number; __camY?: number };
       amtC.__mult = uniforms.uMult.value as number;
+      amtC.__camY = uniforms.uCamY.value as number;
       return {
         uMap: uniforms.uMap as { value: THREE.Texture | null },
         uAmtCumulus: uniforms.uAmtCumulus as { value: number },
@@ -791,14 +828,17 @@ export function buildClouds(
       // N2c: los 24 grupos de cúmulos (familia 0) — el reordenado N2 mezcla
       // slots, así que se reconstruye por group-id desde los arrays vivos
       // (deriva YA aplicada: driftX). Peso = alfa medio × amount × mult.
+      // N2-fix: tras el reordenado, centers[]/driftX[]/data[] ya NO están
+      // alineados con boards[] — el group-id se lee de aData (slot), no del
+      // índice inicial. data[i*4+1] es rot, data[i*4+2] familia: el grupo
+      // viaja en un Int32Array paralelo (slotGroup) que el sort reordena.
       const amtC = uniforms.uAmtCumulus.value as number;
       const mult = uniforms.uMult.value as number;
       const acc = new Map<number, { sx: number; sy: number; sz: number; sa: number; n: number; r: number }>();
       for (let i = 0; i < NB; i++) {
         if ((data[i * 4 + 2] as number) > 0.5) continue; // solo familia 0
-        const b = boards[i] as CloudBoard | undefined;
-        if (!b) continue;
-        const g = b.group;
+        const g = slotGroup[i] as number;
+        if (g < 0 || g >= CLOUD_GROUP_COUNT) continue;
         let e = acc.get(g);
         if (!e) {
           e = { sx: 0, sy: 0, sz: 0, sa: 0, n: 0, r: 0 };
@@ -837,6 +877,12 @@ export function buildClouds(
      * multiplica el brillo neutro P; nunca tiñe. */
     setDayF(f: number) {
       uniforms.uDayF.value = Math.min(1, Math.max(0, f));
+    },
+    setCamY(y: number) {
+      uniforms.uCamY.value = y;
+    },
+    setSkyMap(t) {
+      uniforms.uSkyMap.value = t;
     },
     update(time, camera, vw, vh) {
       if (!group.visible) return; // T1.1: cut group ⇒ skip CPU work too
@@ -904,17 +950,20 @@ export function buildClouds(
         (geo.getAttribute("aData") as THREE.InstancedBufferAttribute).needsUpdate = true;
         (geo.getAttribute("aSize") as THREE.InstancedBufferAttribute).needsUpdate = true;
         (geo.getAttribute("aMisc") as THREE.InstancedBufferAttribute).needsUpdate = true;
-        // centers[] + deriva siguen el mismo orden (el medidor usa NB fijos)
+        // centers[] + deriva + grupo siguen el mismo orden (el medidor y
+        // shadowGroups usan NB fijos sobre slots vivos)
         const cCopy = centers.slice(0, NB);
         const xCopy = new Float32Array(driftX.slice(0, NB));
         const vCopy = new Float32Array(driftV.slice(0, NB));
         const rCopy = new Float32Array(boardR.slice(0, NB));
+        const gCopy = new Int32Array(slotGroup.slice(0, NB));
         for (let slot = 0; slot < NB; slot++) {
           const src = idx[slot] as number;
           centers[slot] = cCopy[src] as THREE.Vector3;
           driftX[slot] = xCopy[src] as number;
           driftV[slot] = vCopy[src] as number;
           boardR[slot] = rCopy[src] as number;
+          slotGroup[slot] = gCopy[src] as number;
         }
         lastSortMs = performance.now() - t0;
         (window as unknown as { __cloudSortMs?: number }).__cloudSortMs = lastSortMs;

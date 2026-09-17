@@ -199,9 +199,13 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     // the main render (main pass only). The poll never reads renderer.info
     // (it would see the last probe/blit pass of the frame — "calls 1").
     const gpu = (v: number): string => (v < 0 ? "n/a" : `${v.toFixed(1)} ms`);
+    // N2-fix: la cobertura del HUD es __cloudCoverPx (píxeles) cuando el
+    // probe la publicó, "—" si no; la analítica ya no se muestra.
+    const coverPx = (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx;
+    const coverTxt = coverPx === undefined || coverPx < 0 ? "—" : `${(coverPx * 100).toFixed(0)}%`;
     const s =
       `frame ${metrics.msFrame.toFixed(1)} ms (${metrics.fps.toFixed(0)} fps) · js terr ${metrics.jsTerrain.toFixed(1)} · js etiq ${metrics.jsLabels.toFixed(1)}\n` +
-      `gpu terr ${gpu(metrics.msTerrain)} · nub ${gpu(metrics.msClouds)} · cobertura ${(metrics.cloudCoverage * 100).toFixed(0)}%\n` +
+      `gpu terr ${gpu(metrics.msTerrain)} · nub ${gpu(metrics.msClouds)} · cobertura ${coverTxt}\n` +
       `calls ${metrics.drawCalls} · tris ${(metrics.triangles / 1e6).toFixed(2)}M · pases ${metrics.passes} · maxTex ${metrics.maxTextureSize} · dpr ${metrics.dpr} · lod ${metrics.lod} · ${metrics.texLevel}\n` +
       `${metrics.time} · cam ${metrics.cam} · cenit ${metrics.zenithHex} · niebla10km ${metrics.fog10km.toFixed(2)}\n` +
       // A10: yaw printed mod 360 (readable); unwrapped in parens for debug.

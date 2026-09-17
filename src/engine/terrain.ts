@@ -46,12 +46,14 @@ export function epsgToWorld(
   return [x - world.centerX, z, -(y - world.centerY)];
 }
 
+// N2-fix: meta.json viaja DENTRO del bundle (import JSON en build) — sin
+// fetch, sin caché posible (G57). loadMeta() conserva la firma pero ya no
+// pide por red: devuelve el JSON empaquetado (mismo objeto /assets/meta.json
+// que publica data/build). Ver AGENTS.md: hash de contenido o bundle.
+import bundledMeta from "../../public/assets/meta.json";
+
 export async function loadMeta(): Promise<Meta> {
-  (window as unknown as { __META?: Meta }).__META =
-    (window as unknown as { __META?: Meta }).__META;
-  const res = await fetch("/assets/meta.json");
-  if (!res.ok) throw new Error(`meta.json: HTTP ${res.status}`);
-  const m = (await res.json()) as Meta;
+  const m = bundledMeta as Meta;
   (window as unknown as { __META?: Meta }).__META = m;
   return m;
 }

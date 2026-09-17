@@ -967,19 +967,23 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
       : `continuity broken (noGate=${noGate} amount=${amount} dayF=${dayF})`);
 }
 
-// --- G36 band (N2b): cúmulos con los gates N2 (base = máx(camYmax + 300,
-// 2900), ≥1500 m plan de TODA pose, ≥900 m del rastro, ≥500 m sobre el
-// terreno) + bruma/cirros/anillo con sus propios gates. Node RECOMPUTA con
-// el production cloudLayout y audita por familia.
+// --- G36 band (N2-fix): barrido s ∈ [0, 0,97] SIN epílogo; base =
+// máx(camYmax + 300, 2900) ∈ [2900, 3100]; cúmulos con los gates N2
+// (≥1500 m plan de TODA pose del barrido, ≥900 m del rastro, ≥500 m sobre
+// el terreno) + bruma/cirros/anillo con sus propios gates. Node RECOMPUTA
+// con el production cloudLayout y audita por familia.
 {
   const cloudSrc36 = readFileSync("src/engine/clouds.ts", "utf8");
+  const viewerSrc36 = readFileSync("src/engine/viewer.ts", "utf8");
   const hasBand = cloudSrc36.includes("CLOUD_BASE_LIFT_M") && cloudSrc36.includes("CLOUD_CLEAR_CAM_M")
     && cloudSrc36.includes("CLOUD_CLEAR_ROUTE_M") && cloudSrc36.includes("CLOUD_GROUP_COUNT");
+  // N2-fix: el viewer barrea s ∈ [0, 0,97] (sin epílogo) + camYEpi aparte.
+  const noEpi = viewerSrc36.includes("s <= 0.97") && viewerSrc36.includes("camYEpi");
   // recompute: pose sweep (verify ropeAt + safety + floor) in EPSG frame,
-  // N2: s ∈ [0,1] INCLUIDO el epílogo (paso 0,005, como el viewer).
+  // N2-fix: s ∈ [0, 0,97] SIN epílogo (como el viewer).
   const { cloudLayout: cl36 } = await import("../src/engine/clouds.ts");
   const poses36: { x: number; y: number; z: number }[] = [];
-  for (let s = 0; s <= 1.0; s += 0.005) {
+  for (let s = 0; s <= 0.97; s += 0.005) {
     const sc = Math.min(1, Math.max(0, s));
     const d = pchipSD(sc);
     const prof = followAt(follow, sc);
@@ -1104,9 +1108,18 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     b.z >= CLOUD_FAR_LO_M - 1 && b.z <= CLOUD_FAR_HI_M + 1);
   const famCountOk = band36.families.cumulus === CLOUD_GROUP_COUNT && band36.families.mist === 40
     && band36.families.cirrus === 6 && band36.families.far === 12 && boards36.length <= 260;
-  const ok = hasBand && baseOk && cumInBand && minCamPlan >= 1500 && minRoute >= 900
+  // N2-fix: la base vive a ~2900 (nunca a 5 km) + fade del epílogo por
+  // familia en draw y probe (mismo smoothstep, misma uCamY).
+  const cloudSrcEpi = readFileSync("src/engine/clouds.ts", "utf8");
+  const viewerSrcEpi = readFileSync("src/engine/viewer.ts", "utf8");
+  const epiDraw = cloudSrcEpi.includes("smoothstep(300.0, 900.0, relH)")
+    && cloudSrcEpi.includes("smoothstep(600.0, 1400.0, relH)") && cloudSrcEpi.includes("setCamY");
+  const epiProbe = viewerSrcEpi.includes("uniform float uCamY") && viewerSrcEpi.includes("epiFade")
+    && viewerSrcEpi.includes("setCamY(camera.position.y)");
+  const ok = hasBand && noEpi && baseOk && band36.base >= 2900 && band36.base <= 3100
+    && cumInBand && minCamPlan >= 1500 && minRoute >= 900
     && minGround >= 500 && band36.accepted === CLOUD_GROUP_COUNT
-    && mistOk && cirrOk && farOk && famCountOk;
+    && mistOk && cirrOk && farOk && famCountOk && epiDraw && epiProbe;
   gate("G36-band", ok,
     ok
       ? `base ${band36.base.toFixed(0)} top ${band36.top.toFixed(0)} camYmax ${band36.camYmax.toFixed(0)} (poses ${poses36.length}), cúmulos ${band36.accepted}/${CLOUD_GROUP_COUNT} minCam ${(minCamPlan).toFixed(0)} (≥1500) minRoute ${(minRoute).toFixed(0)} (≥900) minGround ${(minGround).toFixed(0)} (≥500) rej=${band36.rejected.cam}/${band36.rejected.route}/${band36.rejected.ground}/${band36.rejected.attempts}, bruma ${mistB.length}/40, cirros ${cirrB.length}/6, anillo ${farB.length} boards/${band36.families.far} grupos, total ${boards36.length}≤260`
@@ -1146,27 +1159,29 @@ function elevFull36(): Float32Array {
   const ok = flatPass && skyMask && loud && parentBack && g414243 && g44 && famFilter && layoutOk;
   gate("G24c-cover", ok,
     ok
-      ? "flat probe (live uniforms, loud errors, parent restore) + sky-mask → __cloudCoverPx + G41/G43/G44 + ?family=N → __cloudCoverPxFam — measure [0.20,0.40] @12:00, ≥0.12 @8:30/20:30"
+      ? "flat probe (live uniforms, loud errors, parent restore) + sky-mask → __cloudCoverPx (+epiFade uCamY draw=probe) + G41/G43/G44 + ?family=N → __cloudCoverPxFam — measure [0.20,0.40] @12:00, ≥0.12 @8:30/20:30, epi ≤0.35"
       : `cover contract broken (flat=${flatPass} mask=${skyMask} loud=${loud} parent=${parentBack} g414243=${g414243} g44=${g44} fam=${famFilter} layout=${layoutOk})`);
 }
 
-// --- G49 mist (N2b: bruma de valle). ?family=1 sobre TERRENO:
+// --- G49 mist (N2b + N2-fix: bruma de valle). ?family=1 sobre TERRENO:
 // [0,08,0,25] @07:30 s=0,05; 0 @12:00; [0,04,0,15] @20:00 s=0,90.
-// Node checks the CONTRACT (filtro por familia + mistAmount con rampa de
-// mañana y retorno de tarde + lectura sobre terreno); prod da los NÚMEROS.
+// N2-fix: croma de bruma ≤ 0,15 (gris-azul, 50 % haze de la captura).
+// Node checks the CONTRACT; prod da los NÚMEROS.
 {
   const viewerSrc49 = readFileSync("src/engine/viewer.ts", "utf8");
   const sunSrc49 = readFileSync("src/engine/sun.ts", "utf8");
   const cloudSrc49 = readFileSync("src/engine/clouds.ts", "utf8");
-  const filt = viewerSrc49.includes("uFamFilter") && viewerSrc49.includes("__cloudMistTerr");
+  const filt = viewerSrc49.includes("uFamFilter") && viewerSrc49.includes("__cloudMistTerr")
+    && viewerSrc49.includes("__cloudMistChroma");
   const amt = sunSrc49.includes("mistAmount") && sunSrc49.includes("8.0) / 2.5")
     && sunSrc49.includes("18.5, 20.5") && viewerSrc49.includes("mistAmount(");
   const lay = cloudSrc49.includes("CLOUD_MIST_GROUND_MAX_M") && cloudSrc49.includes("CLOUD_MIST_CLEAR_PLAN_M");
-  const ok = filt && amt && lay;
+  const haze50 = cloudSrc49.includes("isMist * 0.5") && cloudSrc49.includes("setSkyMap");
+  const ok = filt && amt && lay && haze50;
   gate("G49-mist", ok,
     ok
-      ? "?family=1 → __cloudMistTerr (bruma/terreno) + mistAmount (plena→08:00, 0→10:30, 60 %→noche) — measure [0.08,0.25] @07:30 s=0.05, 0 @12:00, [0.04,0.15] @20:00 s=0.90"
-      : `mist contract broken (filter=${filt} amount=${amt} layout=${lay})`);
+      ? "?family=1 → __cloudMistTerr + __cloudMistChroma (50 % haze captura) — measure [0.08,0.25] @07:30 s=0.05 chroma≤0.15, 0 @12:00, [0.04,0.15] @20:00 s=0.90"
+      : `mist contract broken (filter=${filt} amount=${amt} layout=${lay} haze50=${haze50})`);
 }
 
 // --- G50 far ring (N2b: anillo lejano). Familia 3 en la franja inferior
@@ -1246,6 +1261,32 @@ function elevFull36(): Float32Array {
     ok
       ? "?debug=cloudshadow → __cloudShadowFrac (gris<0.8 sobre terreno) — measure [0.10,0.35] @12:00 s=0.18/0.80, ≤mitad @08:30, 0 @20:30"
       : `shadow contract broken (glsl=${glsl} js=${js} flag=${flag})`);
+}
+
+// --- G57 asset cache (N2-fix). meta.json viaja en el bundle (import JSON
+// en build) — en la pestaña de red NO aparece fetch a assets/meta.json.
+// Node checks: terrain.ts importa el JSON (sin fetch), AGENTS.md lleva la
+// regla, y el meta empaquetado apunta al atlas con hash vigente.
+{
+  const terrSrc57 = readFileSync("src/engine/terrain.ts", "utf8");
+  const agents57 = readFileSync("AGENTS.md", "utf8");
+  const bundled = terrSrc57.includes("public/assets/meta.json") && !terrSrc57.includes('fetch("/assets/meta.json")');
+  const rule = agents57.includes("nada sin hash se pide por red");
+  let hashOk = false;
+  try {
+    const bundledMeta = JSON.parse(readFileSync("public/assets/meta.json", "utf8")) as {
+      assets: Record<string, string>;
+    };
+    const atlas = bundledMeta.assets["clouds-atlas"] ?? "";
+    hashOk = atlas !== "" && existsSync(`public/${atlas}`);
+  } catch {
+    hashOk = false;
+  }
+  const ok = bundled && rule && hashOk;
+  gate("G57-cache", ok,
+    ok
+      ? "meta.json bundled (no fetch, no cache) + AGENTS rule + atlas hash resolves — check network tab shows no meta.json in prod"
+      : `cache contract broken (bundled=${bundled} rule=${rule} hash=${hashOk})`);
 }
 
 // --- G54 shadow coherence (N2c). Cada gaussiana viva (w>0,1) cuelga de su
