@@ -246,6 +246,9 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   // sun.cloudAmount(hora) y mult de CLOUD_ACT_MULT[acto] suavizado.
   let cloudDayF = 1;
   let cloudMultSm = 1;
+  // N2c-fix: valores de sombra SUBIDOS a uniformes (misma escritura, no
+  // recálculo) — el HUD los lee cada frame (letra a-f del diagnóstico).
+  const shadowHud = { k: 0, sunF: 0, dayF: 0, amt: 0, mult: 1, user: 1, wMax: 0, alive: 0, noise: false };
 
   function applyLighting(h: number): void {
     const L = lightingAt(h);
@@ -575,6 +578,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         terrainMat.map = neutral;
       }
       patchTerrainMaterial(terrainMat);
+      terrainMat.customProgramCacheKey = () => "ordesa-base+corridor+n2c";
       const prev = terrainMat.onBeforeCompile.bind(terrainMat);
       terrainMat.onBeforeCompile = (s: {
         uniforms: Record<string, unknown>;
@@ -690,7 +694,7 @@ float wgrain(vec2 lp){
           };
         }
       };
-      terrainMat.customProgramCacheKey = () => "ordesa-base+corridor";
+      terrainMat.customProgramCacheKey = () => "ordesa-base+corridor+n2c";
     }
     terrain = new THREE.Mesh(geo, terrainMat);
     terrain.receiveShadow = true;
@@ -1451,6 +1455,14 @@ float wgrain(vec2 lp){
       metrics.cam = boot.cam ?? (boot.orbit ? "orbit" : "rig");
     }
     driveTelemetry(cells, lastTele, st, hhmm(hour), st.sunElev);
+    // N2c-fix: línea de sombra del HUD — desde shadowHud (lo SUBIDO a
+    // uniformes este mismo frame), con ?debug=1 o ?debug=cloudshadow.
+    if (boot.debug || boot.cloudshadow) {
+      const h = shadowHud;
+      metrics.shadowHud = `sombra K=${h.k.toFixed(2)} sunF=${h.sunF.toFixed(2)} dayF=${h.dayF.toFixed(2)} amt=${h.amt.toFixed(2)} mult=${h.mult.toFixed(2)} user=${h.user.toFixed(2)} wMax=${h.wMax.toFixed(2)} vivas=${h.alive}/24 noise=${h.noise ? "sí" : "no"}`;
+    } else {
+      metrics.shadowHud = "";
+    }
     // N2b: alfa efectivo por familia = base × cantidad(familia) [× mult 0/3].
     // cumulus/far: amount(h)×mult · mist: mistAmount(hora, dayF) · cirrus: 1.
     // Todo continuo en hora (G35); ningún alfa depende de una sonda (G46).
@@ -1474,6 +1486,12 @@ float wgrain(vec2 lp){
     const sunF = sunFT * sunFT * (3 - 2 * sunFT);
     (fogUniforms.uCloudK as { value: number }).value =
       cloudShadowOff ? 0 : CLOUD_SHADOW_K * amtCumulus * cloudDayF * sunF;
+    shadowHud.k = (fogUniforms.uCloudK as { value: number }).value;
+    shadowHud.sunF = sunF;
+    shadowHud.dayF = cloudDayF;
+    shadowHud.amt = amtCumulus;
+    shadowHud.mult = cloudMultSm;
+    shadowHud.user = cloudUser;
     // uDrift += dt · (3/6000, 5/6000) — coherente con la deriva de nubes.
     {
       const du = fogUniforms.uDrift.value as THREE.Vector2;
@@ -1511,6 +1529,18 @@ float wgrain(vec2 lp){
           ? 0
           : CLOUD_SHADOW_W * amtCumulus * cloudMultSm * cloudDayF * sunF * Math.min(1, (g.w as number) / Math.max(1e-6, 0.5));
         dst.set(shx, shz, (g.r as number) * 0.62, Math.min(1, Math.max(0, wgt)));
+      }
+      // N2c-fix: HUD desde lo SUBIDO (máximo peso + gaussianas vivas).
+      {
+        let wMax = 0;
+        let alive = 0;
+        for (const v of arr) {
+          if ((v.w as number) > wMax) wMax = v.w as number;
+          if ((v.w as number) > 0) alive++;
+        }
+        shadowHud.wMax = wMax;
+        shadowHud.alive = alive;
+        shadowHud.noise = !!fogUniforms.uCloud.value;
       }
       // G54/G56: publica las gaussianas vivas + centros de nube para la
       // comprobación numérica (offset sol + deriva en pantalla).

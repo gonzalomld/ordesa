@@ -52,6 +52,9 @@ export interface Metrics {
   lumaShadow: number;
   /** §4b FASE 5: croma media (max-min)/max en ese cuartil (0 = gris). */
   chromaShadow: number;
+  /** N2c-fix: línea de sombra (K/sunF/dayF/amt/mult/user/wMax/vivas/noise)
+   * escrita cada frame por el bucle desde lo SUBIDO a uniformes. */
+  shadowHud: string;
   warn: string;
 }
 
@@ -186,6 +189,7 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     luma: -1,
     lumaShadow: -1,
     chromaShadow: -1,
+    shadowHud: "",
     warn: "",
   };
   (window as unknown as { __metrics: Metrics }).__metrics = metrics;
@@ -214,6 +218,8 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
       (metrics.luma >= 0 ? ` · luma ${metrics.luma.toFixed(3)}` : "") +
       // §4b FASE 5: "sombra L … C …" (HUD) = __lumaShadow/__chromaShadow.
       (metrics.lumaShadow >= 0 ? ` · sombra L ${metrics.lumaShadow.toFixed(3)} C ${metrics.chromaShadow.toFixed(2)}` : "") +
+      // N2c-fix: línea de sombra (desde lo SUBIDO a uniformes, cada frame).
+      (metrics.shadowHud ? `\n${metrics.shadowHud}` : "") +
       (metrics.warn ? `\nAVISO ${metrics.warn}` : "") +
       (metrics.steep ? `\nsteep MAP · hasRock ${metrics.hasRock} · peso roca ${Math.round(metrics.rockWeightShown * 100)} %` : "");
     if (s !== last) {
