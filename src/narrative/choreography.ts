@@ -73,18 +73,29 @@ export const G9_PLAN_COVERAGE = 0.95; // coverage of the plan-distance gate
 export const G9BIS_RATIO_MIN = 0.5; // DEAD (follow replan): spherical dist ratio; superseded by G9-plan
 export const G9BIS_COVERAGE = 0.95; // DEAD (follow replan): see G9_PLAN_COVERAGE
 export const G9BIS_HARD_FLOOR = 0.25; // DEAD (follow replan): see G9_PLAN_FRAC
-// G4 rate (follow replan): measured on the EFFECTIVE yaw bearing(camPos -> aim),
-// no table, no exempt window. The rope yaw can whip in act-I zigzags if the
-// look/back windows shrink — this gate is what catches it.
+// G4 rate (C1 baked rail): measured on the BAKED yaw, no table, no exempt
+// window. The rail limiter caps below this so Lenis+K keep margin.
 export const G4_MAX_DEG = 2.5; // deg per 0.001 step, FAIL (E1 amendment: kept, not INFO)
-// Rope-end whip windows, all exempt and all declared here (nowhere else):
-// [0.19, 0.24] act-I hairpins (rope folds inside the zigzags; measured 2.69
-// at s=0.221 with LOOK I = 650),
-// [0.885, 0.94] turnaround + bend exit (aim crosses the loop, anchor still
-// outbound, then the rope re-seats on the return leg).
-// Rope-end windows, not model windows: the rope is a chord, its ends sweep.
-export const G4_EXEMPT: [number, number][] = [[0.19, 0.24], [0.885, 0.94]];
+// G4_EXEMPT is DELETED (C1): the baked rail holds everywhere, no window
+// hides a whip. Any import of this name is a leftover — break loud, not silent.
+// (Deliberately no export: `import { G4_EXEMPT }` fails at build time.)
 export const G18_TOL_DEG = 35; // deg: |yawCam - pathHeading - 180| <= 35 for s < 0.98
+// --- C1 BAKED RAIL: the camera is a pure function of s (no temporal state,
+// SLERP, tweens or extra rAF — reversible by construction). Bake once at
+// boot (< 30 ms); runtime samples the table. Same function in verify/doctor.
+export const CAM_RAIL_SAMPLES = 2000; // bake samples s_i = i/2000
+export const CAM_RAIL_SIGMA_M = 300; // DEAD (C1 as built): no spatial smooth — the σ=300 m kernel dragged the cam 500+ m off its rope in the turnaround; whip is orientation-only, positions stay raw-ladder. Kept so the bake signature explains itself.
+export const CAM_RAIL_SIGMA_S = 0.004; // final smoothing sigma in s (gaussian)
+export const YAW_RATE_MAX = 2.0; // deg per 0.001 s, symmetric limiter (margin under G4 2.5)
+export const PITCH_RATE_MAX = 1.2; // deg per 0.001 s, symmetric limiter
+// G66 (C1): pitch rate + quaternion step + angular acceleration, per 0.001 s.
+export const G66_PITCH_MAX_DEG = 1.5; // |Δpitch| per 0.001 s
+export const G66_QUAT_MAX_DEG = 2.8; // quaternion angular distance per 0.001 s
+export const G66_ACCEL_MAX_DEG = 1.0; // angular acceleration per 0.001^2 s
+// G23 (C1): walker NDC-y band + coverage over s in [0, 0.98).
+export const G23_Y_MIN = -0.6; // walker NDC y lower edge
+export const G23_Y_MAX = -0.3; // walker NDC y upper edge
+export const G23_COVERAGE = 0.95; // fraction of steps inside the band
 export const YAW_BRANCH_SAMPLES = 40; // DEAD (follow replan): no LOS branch vote anymore; nothing reads it
 
 export const SHADOW_EPS_DEG = 0.25; // shadow needsUpdate only if sun azimuth or elevation turned more than this since last update

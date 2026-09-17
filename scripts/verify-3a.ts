@@ -5,8 +5,8 @@
 // · G16 nod · G17 void · G18 align · G19 rim · + OrbitControls anti-bundle
 // (C10: chunk-name based, the minifier mangles identifiers).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CORRIDOR_HALF_M, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_EXEMPT, G4_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
-import { alongTrackRun, anchorPlan, bisectSunset, epilogueBlend, followAt, resolveAnchors, resolveFollowProfile, ropeHeadingDeg, trackAt, zRawAt } from "../src/narrative/anchors.ts";
+import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CAM_RAIL_SAMPLES, CORRIDOR_HALF_M, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G23_COVERAGE, G23_Y_MAX, G23_Y_MIN, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_MAX_DEG, G66_ACCEL_MAX_DEG, G66_PITCH_MAX_DEG, G66_QUAT_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
+import { alongTrackRun, bakeCamRail, bisectSunset, followAt, quatDistDeg, quatYXZ, resolveAnchors, resolveFollowProfile, ropeHeadingDeg, trackAt, zRawAt } from "../src/narrative/anchors.ts";
 import { resolveFollowSafety } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
 import { sunPosition } from "./lib/sun.ts";
@@ -133,20 +133,31 @@ epilogueBase = pchipTD(res.dAnchorsM[res.dAnchorsM.length - 2] as number);
   );
 }
 
-// --- sweep (FOLLOW: rope pose + shared safety policy, no mirror) ---
-// Rope construction mirrors camera-rig.ts exactly (anchorAt + D_MIN +
-// epilogue blend); safety is the IMPORTED resolveFollowSafety, not a copy.
+// --- sweep (C1 BAKED RAIL: bakeCamRail from anchors.ts — the SAME function
+// the browser rig calls, no mirror). Rope construction/safety live in the
+// bake; the sweep resamples the baked evaluators at gate resolution. ---
+// World arrays (browser convention): wx = ex - cx, wy = alt, wz = -(ey - cy).
+const tBake0 = performance.now();
+const rail = bakeCamRail(
+  { route: r, follow, sToD: pchipSD, sample: sampleGrid, cx, cy, fovDeg: 50, floorM: CAM_CLEARANCE_M },
+  (rope) => resolveFollowSafety(sampleGrid, cx, cy, { camPos: rope.camPos, aim: rope.aim, hCam: rope.hCam, lookM: rope.lookM, backM: rope.backM, distPlan: rope.distPlan }, r, { centerX: cx, centerY: cy, sizeX: 0, sizeZ: 0 }),
+);
+const bakeMs = performance.now() - tBake0;
 const ds: number[] = new Array(STEPS + 1);
 const hs: number[] = new Array(STEPS + 1);
 const climbs: number[] = new Array(STEPS + 1);
 const yaws: number[] = new Array(STEPS + 1);
+const pitchs: number[] = new Array(STEPS + 1);
 const planDists: number[] = new Array(STEPS + 1);
 const camAlts: number[] = new Array(STEPS + 1);
+const camWX: number[] = new Array(STEPS + 1);
+const camWZ: number[] = new Array(STEPS + 1);
 const aimXs: number[] = new Array(STEPS + 1);
 const aimYs: number[] = new Array(STEPS + 1);
 const aimZs: number[] = new Array(STEPS + 1);
-// G16 input: WANT H-correction per step (safety hCam - rope hCam), before
-// any damping. The gate watches its oscillation with a 15 m deadband.
+// G16 input: DEAD with C1 (no damped correction exists — the ladder baked
+// statically). The gate now watches the baked mode series: lift/push/tilt
+// steps must not oscillate (same 15 m-deadband spirit: count mode flips).
 const corrWant: number[] = new Array(STEPS + 1);
 let minClear = Infinity;
 let minClearS = 0;
@@ -156,78 +167,7 @@ let belowPlan = 0;
 let clampSteps = 0;
 let maxClampRun = 0;
 let curClampRun = 0;
-
-function anchorAtD(d: number, backM: number): { x: number; y: number; z: number } {
-  // Shared with the rig via anchorPlan (anchors.ts) — same function.
-  return anchorPlan(r, d, backM);
-}
-
-function ropeAt(s: number): { cam: [number, number, number]; aim: [number, number, number]; dp: number; hCam: number; lookM: number; backM: number } {
-  const sc = Math.min(1, Math.max(0, s));
-  const d = pchipSD(sc);
-  const prof = followAt(follow, sc);
-  const pAim = trackAt(r, Math.min(r.lengthM, d + prof.lookM));
-  const pA = anchorAtD(d, prof.backM);
-  const aim: [number, number, number] = [pAim.x - cx, pAim.z + FOLLOW_H_AIM, -(pAim.y - cy)];
-  const cam: [number, number, number] = [pA.x - cx, pA.z + prof.hCam, -(pA.y - cy)];
-  // §4: D_MIN DUAL to aim AND walker (same as the rig), along aim→cam
-  // (yaw-preserving, one-shot quadratic capped at 3x — never iterate or
-  // project onto another ray). dp below stays the camera→aim plan distance
-  // G9 measures.
-  const pW = trackAt(r, Math.min(r.lengthM, d));
-  const wx = pW.x - cx;
-  const wz = -(pW.y - cy);
-  {
-    let ux = cam[0] - aim[0];
-    let uz = cam[2] - aim[2];
-    let dpAim = Math.hypot(ux, uz);
-    if (dpAim < 1e-6) {
-      const q0 = trackAt(r, Math.max(0, d - 5));
-      ux = q0.x - pW.x;
-      uz = -((q0.y - pW.y));
-      dpAim = Math.hypot(ux, uz) || 1;
-    }
-    ux /= dpAim;
-    uz /= dpAim;
-    const dAim = Math.max(0, FOLLOW_D_MIN - dpAim);
-    let dWalk = 0;
-    const ex = cam[0] - wx;
-    const ez = cam[2] - wz;
-    if (Math.hypot(ex, ez) < FOLLOW_D_MIN) {
-      const b2 = ux * ex + uz * ez;
-      const c = ex * ex + ez * ez - FOLLOW_D_MIN * FOLLOW_D_MIN;
-      const disc = Math.max(0, b2 * b2 - c);
-      dWalk = Math.min(-b2 + Math.sqrt(disc), 3 * dpAim);
-    }
-    const push = Math.max(dAim, Math.max(0, dWalk));
-    if (push > 0) {
-      cam[0] += ux * push;
-      cam[2] += uz * push;
-    }
-  }
-  let dp = Math.hypot(cam[0] - aim[0], cam[2] - aim[2]);
-  if (sc >= EPILOGUE_S) {
-    const k = epilogueBlend(sc);
-    const epiPos: [number, number, number] = [follow.epiCam.x - cx, follow.epiCam.z, -(follow.epiCam.y - cy)];
-    const epiAim: [number, number, number] = [follow.epiAim.x - cx, follow.epiAim.z + FOLLOW_H_AIM, -(follow.epiAim.y - cy)];
-    cam[0] += (epiPos[0] - cam[0]) * k;
-    cam[1] += (epiPos[1] - cam[1]) * k;
-    cam[2] += (epiPos[2] - cam[2]) * k;
-    aim[0] += (epiAim[0] - aim[0]) * k;
-    aim[1] += (epiAim[1] - aim[1]) * k;
-    aim[2] += (epiAim[2] - aim[2]) * k;
-    dp = Math.hypot(cam[0] - aim[0], cam[2] - aim[2]);
-  }
-  return { cam, aim, dp, hCam: prof.hCam, lookM: prof.lookM, backM: prof.backM };
-}
-
-function yawOf(cam: [number, number, number], aim: [number, number, number]): number {
-  // FOLLOW convention (cam->aim): the rope yaw the camera actually flies.
-  // (The old table used aim->cam; that +180 died with the yaw table.)
-  const dx = aim[0] - cam[0];
-  const dz = aim[2] - cam[2];
-  return ((Math.atan2(dx, -dz) * 180) / Math.PI + 360) % 360;
-}
+void CAM_RAIL_SAMPLES;
 
 for (let i = 0; i <= STEPS; i++) {
   const s = i / STEPS;
@@ -235,43 +175,51 @@ for (let i = 0; i <= STEPS; i++) {
   ds[i] = d;
   hs[i] = hourAt(s, d);
   climbs[i] = trackAt(r, d).climb;
-  const rope = ropeAt(s);
-  // FOLLOW safety: identical call the rig makes (imported, not mirrored).
-  // RopePoseIn shape: { camPos, aim, hCam, lookM, backM, distPlan }.
-  const safe = resolveFollowSafety(sampleGrid, cx, cy, { camPos: rope.cam, aim: rope.aim, hCam: rope.hCam, lookM: rope.lookM, backM: rope.backM, distPlan: rope.dp }, r, { centerX: cx, centerY: cy, sizeX: 0, sizeZ: 0 });
-  let camY = safe.camPos[1];
-  const camX = safe.camPos[0];
-  const camZ = safe.camPos[2];
-  const floor = sampleGrid(camX + cx, cy - camZ) + CAM_CLEARANCE_M;
-  // G9 bookkeeping: was the floor clamp the active constraint? (1 cm tolerance)
-  const clamped = camY < floor - 0.01;
-  if (clamped) {
-    camY = floor;
-    clampSteps++;
-    curClampRun++;
-    maxClampRun = Math.max(maxClampRun, curClampRun);
-  } else {
-    curClampRun = 0;
-  }
-  const yawEff = yawOf([camX, camY, camZ], safe.aim);
-  yaws[i] = yawEff;
-  // G16 input: WANT correction (safety decision, pre-damping).
-  corrWant[i] = Math.max(0, (safe.hCam as number) - (rope.hCam as number));
-  const dp = Math.hypot(camX - safe.aim[0], camZ - safe.aim[2]);
+  // C1: resample the baked rail (same numbers the browser flies).
+  const yawB = rail.fYaw(s);
+  const pitchB = rail.fPitch(s);
+  const camX = rail.fCamX(s) - cx;
+  const camY = rail.fCamY(s);
+  const camZ = -(rail.fCamZ(s) - cy);
+  const aimX = rail.fAimX(s) - cx;
+  const aimY = rail.fAimY(s);
+  const aimZ = -(rail.fAimZ(s) - cy);
+  yaws[i] = yawB;
+  pitchs[i] = pitchB;
+  corrWant[i] = 0; // C1: no damped correction (mode-flip G16 below reads rail.mode)
+  const dp = Math.hypot(camX - aimX, camZ - aimZ);
   planDists[i] = dp;
   camAlts[i] = camY;
-  aimXs[i] = safe.aim[0];
-  aimYs[i] = safe.aim[1];
-  aimZs[i] = safe.aim[2];
+  camWX[i] = camX;
+  camWZ[i] = camZ;
+  aimXs[i] = aimX;
+  aimYs[i] = aimY;
+  aimZs[i] = aimZ;
   if (dp < minPlan) {
     minPlan = dp;
     minPlanS = s;
   }
   if (dp < G9_PLAN_FRAC * FOLLOW_D_MIN) belowPlan++;
+  // G9 bookkeeping: floor clamp active? (baked: camY == floor + 0.01)
+  const floor = sampleGrid(camX + cx, cy - camZ) + CAM_CLEARANCE_M;
+  const clamped = camY < floor - 0.01 + 1e-9 && Math.abs(camY - floor) < 0.011;
+  void clamped;
+  // clearance directly from the baked rail (floor clamp baked in)
   const clear = camY - sampleGrid(camX + cx, cy - camZ);
   if (clear < minClear) {
     minClear = clear;
     minClearS = s;
+  }
+  // clamp-duty on the baked rail: steps where the ladder mode != direct.
+  // Mode is read at the NEAREST bake sample (no interpolation — modes are
+  // categorical; interpolating them would smear engagements).
+  const mode = rail.mode[Math.min(rail.n, Math.max(0, Math.round(s * rail.n)))] as string;
+  if (mode !== "direct") {
+    clampSteps++;
+    curClampRun++;
+    maxClampRun = Math.max(maxClampRun, curClampRun);
+  } else {
+    curClampRun = 0;
   }
 }
 
@@ -323,16 +271,14 @@ for (let i = 0; i <= STEPS; i++) {
 gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
   `min clearance ${minClear.toFixed(2)} m at s=${minClearS.toFixed(4)} (need >=${CAM_CLEARANCE_M})`);
 
-// --- G4 yaw rate (FOLLOW, E1 amendment): G4_MAX_DEG on the EFFECTIVE yaw
-// bearing(cam -> aim), wrap-aware. Rope-end whip windows (G4_EXEMPT) exempt.
+// --- G4 yaw rate (C1 baked rail): G4_MAX_DEG on the BAKED yaw, wrap-aware,
+// over s in [0, 0.98). NO exemptions — the rail holds everywhere.
 {
-  const exempt = (s: number): boolean => G4_EXEMPT.some(([a, b]) => s >= a && s < b);
   let max = 0;
   let at = 0;
   for (let i = 0; i < STEPS; i++) {
     const s = i / STEPS;
     if (s >= EPILOGUE_S) continue; // epilogue blend re-aims at the centroid by design
-    if (exempt(s)) continue;
     let dy = Math.abs((yaws[i + 1] as number) - (yaws[i] as number));
     if (dy > 180) dy = 360 - dy;
     if (dy > max) {
@@ -341,7 +287,45 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
     }
   }
   gate("G4-yaw-rate", max <= G4_MAX_DEG,
-    `max|dYawEff|=${max.toFixed(2)} deg/step (need <=${G4_MAX_DEG}) at s=${(at / STEPS).toFixed(4)}, exempt ${JSON.stringify(G4_EXEMPT)}`);
+    `max|dYawBaked|=${max.toFixed(2)} deg/step (need <=${G4_MAX_DEG}) at s=${(at / STEPS).toFixed(4)}, no exemptions (C1 rail)`);
+}
+
+// --- G66 (C1): |Δpitch| <= 1.5/step, quaternion step <= 2.8/step,
+// angular accel <= 1.0/step^2, over s in [0, 0.98). ---
+{
+  let mp = 0;
+  let atp = 0;
+  let mq = 0;
+  let atq = 0;
+  let ma = 0;
+  let ata = 0;
+  let prevQ = 0;
+  const qs: Array<[number, number, number, number]> = [];
+  for (let i = 0; i <= STEPS; i++) qs.push(quatYXZ(yaws[i] as number, pitchs[i] as number));
+  for (let i = 0; i < STEPS; i++) {
+    if (i / STEPS >= EPILOGUE_S) continue;
+    const v = Math.abs((pitchs[i + 1] as number) - (pitchs[i] as number));
+    if (v > mp) {
+      mp = v;
+      atp = i;
+    }
+    const qd = quatDistDeg(qs[i] as [number, number, number, number], qs[i + 1] as [number, number, number, number]);
+    if (qd > mq) {
+      mq = qd;
+      atq = i;
+    }
+    if (i > 0) {
+      const acc = Math.abs(qd - prevQ);
+      if (acc > ma) {
+        ma = acc;
+        ata = i;
+      }
+    }
+    prevQ = qd;
+  }
+  const ok = mp <= G66_PITCH_MAX_DEG && mq <= G66_QUAT_MAX_DEG && ma <= G66_ACCEL_MAX_DEG;
+  gate("G66-smooth", ok,
+    `max|dPitch|=${mp.toFixed(2)} (<=${G66_PITCH_MAX_DEG}) @${(atp / STEPS).toFixed(4)}; maxQ=${mq.toFixed(2)} (<=${G66_QUAT_MAX_DEG}) @${(atq / STEPS).toFixed(4)}; maxAccel=${ma.toFixed(2)} (<=${G66_ACCEL_MAX_DEG}) @${(ata / STEPS).toFixed(4)}`);
 }
 
 // --- G5 sun window ---
@@ -602,25 +586,26 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     `|slopeWin| max ${worst.toFixed(1)}% at s=${worstS.toFixed(3)} (need <=90); km 1.20 raw-Z window: ${atAnchor.toFixed(1)}% (need [45, 65])`);
 }
 
-// --- G16 nod count (pasada rig puro): the DAMPED H-CORRECTION series must
-// not oscillate. G16 measures corrHSm (what the camera flies with), with a
-// 15 m deadband — NOT the plan-dist series (its flips at follow knots are
-// choreography inflexions nobody sees). What the user would see on failure:
-// the camera nodding fore/aft while scrolling. Static sweep has no damping
-// state, so this replays the WANT correction (resolveFollowSafety hCam -
-// rope hCam) as the corrSm input with deadband 15 m.
+// --- G16 mode duty (C1): the baked ladder mode must not oscillate.
+// direct = rope flies free; lift/push/tilt = ladder engaged. Count runs of
+// non-direct steps: <= 12 separate engagements pre-epilogue (same budget as
+// the old nod flips — more means the rail weaves in and out of the terrain).
 {
-  let flips = 0;
-  let prevSign = 0;
-  for (let i = 1; i <= STEPS; i++) {
+  let engagements = 0;
+  let inEng = false;
+  for (let i = 0; i <= STEPS; i++) {
     if (i / STEPS >= EPILOGUE_S) continue;
-    const dd = (corrWant[i] as number) - (corrWant[i - 1] as number);
-    const sign = dd > 15 ? 1 : dd < -15 ? -1 : 0;
-    if (sign !== 0 && prevSign !== 0 && sign !== prevSign) flips++;
-    if (sign !== 0) prevSign = sign;
+    const mode = rail.mode[Math.min(rail.n, Math.round((i / STEPS) * rail.n))] as string;
+    if (mode !== "direct" && !inEng) {
+      engagements++;
+      inEng = true;
+    } else if (mode === "direct") {
+      inEng = false;
+    }
   }
-  gate("G16-nod", flips <= 12,
-    `H-correction sign flips (±15 m deadband) ${flips} over pre-epilogue steps (need <=12) — more means the camera is nodding`);
+  void corrWant;
+  gate("G16-nod", engagements <= 12,
+    `ladder engagements ${engagements} over pre-epilogue steps (need <=12) — more means the rail weaves`);
 }
 
 // --- G9-plan (FOLLOW): dist_planta(camera, aim) >= 0.8 x D_MIN in 95%.
@@ -639,23 +624,22 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     `min plan ${minPlan.toFixed(0)} m at s=${minPlanS.toFixed(4)} (need >=${(G9_PLAN_FRAC * FOLLOW_D_MIN).toFixed(0)}); below: ${below}/${n} (${(frac * 100).toFixed(1)}%, need <=${((1 - G9_PLAN_COVERAGE) * 100).toFixed(0)}%)`);
 }
 
-// --- G18 align (FOLLOW): |yawCam(cam->aim) - ropeHeading| <= 35 for
-// s < 0.98. Near-tautological on the pure rope BY DESIGN (both derive from
-// the same rope); fires on the safety ladder pulling the camera off-axis
-// and on the epilogue blend starting early. Annotated, kept (E1 amendment).
+// --- G18 align (C1 baked rail): |bakedYaw - ropeHeading| <= 35 for
+// s < 0.98, NO exemptions. The rope reference is the RAW rope (anchor->aim,
+// unsmoothed): where the rail cuts a hairpin the two legitimately differ —
+// that deviation is the price of no-whip, and the gate budgets 35° for it.
+// Fires when the rail leaves the rope corridor (smoothing/limiter fault).
 {
   let max = 0;
   let at = 0;
   for (let i = 0; i <= STEPS; i++) {
     const s = i / STEPS;
     if (s >= EPILOGUE_S) continue;
-    if (s >= 0.885 && s < 0.94) continue; // turnaround + bend exit (same as G4)
     const d = ds[i] as number;
-    const prof = followAt(follow, s);
-    // G18 reference: the ROPE segment the camera flies (anchor->aim), not
-    // the path tangent at the aim (which whips +-100 deg on act-I hairpins
-    // while the rope flies straight — same segment as yawOf).
-    const heading = ropeHeadingDeg(r, d, prof.lookM, prof.backM);
+    // G18 reference: the RAW rope segment (anchor->aim), not the path
+    // tangent at the aim (which whips +-100 deg on act-I hairpins).
+    const pr = followAt(follow, s);
+    const heading = ropeHeadingDeg(r, d, pr.lookM, pr.backM);
     // wrap180(dev): ((x + 540) % 360) - 180 maps onto [-180,180).
     const rawDev = (yaws[i] as number) - heading;
     const devW = Math.abs(((rawDev + 540) % 360 + 360) % 360 - 180);
@@ -665,15 +649,11 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     }
   }
   gate("G18-align", max <= G18_TOL_DEG,
-    `max|yaw-rope|=${max.toFixed(1)} deg (need <=${G18_TOL_DEG}) at s=${(at / STEPS).toFixed(4)} — near-tautological on the pure rope; rope-end windows exempt like G4`);
+    `max|yawBaked-rope|=${max.toFixed(1)} deg (need <=${G18_TOL_DEG}) at s=${(at / STEPS).toFixed(4)}, no exemptions (C1 rail)`);
 }
 
-// --- G19 rim (FOLLOW): terrain stays 100 m below the SIGHTLINE.
-// RIM_USE = SLOPED corridor, CLIPPED: max MDT within [0, LOOK] along the
-// aim ray (never past the aim — past it the ray leaves the frame through
-// the lookAt point), +-300 m across, measured against the ray altitude.
-// A 1500 m corridor counts the far wall (2227 m at 1500 m out, 700 m past
-// the aim) that the frame never reaches.
+// --- G19 rim (C1 baked rail): terrain stays 100 m below the SIGHTLINE.
+// Same sloped+clipped corridor, fed with the baked cam/aim (world->EPSG).
 {
   const stridePx = 4;
   const stepM = meta.resX * stridePx;
@@ -688,23 +668,20 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   for (let i = 0; i <= STEPS; i++) {
     const s = i / STEPS;
     if (s >= EPILOGUE_S) continue;
-    const rope = ropeAt(s);
-    const safe = resolveFollowSafety(sampleGrid, cx, cy, { camPos: rope.cam, aim: rope.aim, hCam: rope.hCam, lookM: rope.lookM, backM: rope.backM, distPlan: rope.dp }, r, { centerX: cx, centerY: cy, sizeX: 0, sizeZ: 0 });
-    const camEpsgX = safe.camPos[0] + cx;
-    const camEpsgY = cy - safe.camPos[2];
+    const camEpsgX = (camWX[i] as number) + cx;
+    const camEpsgY = cy - (camWZ[i] as number);
     // aim ray in EPSG plan: unit forward + across; ray slope from cam->aim.
-    let fx = (safe.aim[0] + cx) - camEpsgX;
-    let fy = (cy - safe.aim[2]) - camEpsgY;
+    let fx = ((aimXs[i] as number) + cx) - camEpsgX;
+    let fy = (cy - (aimZs[i] as number)) - camEpsgY;
     const fl = Math.max(1e-6, Math.hypot(fx, fy));
     fx /= fl;
     fy /= fl;
-    const rayDy = safe.aim[1] - safe.camPos[1];
-    const rayDp = Math.max(1e-6, Math.hypot(safe.aim[0] - safe.camPos[0], safe.aim[2] - safe.camPos[2]));
-    const camAlt = safe.camPos[1];
-    void camAlt;
+    const rayDy = (aimYs[i] as number) - (camAlts[i] as number);
+    const rayDp = Math.max(1e-6, Math.hypot((aimXs[i] as number) - (camWX[i] as number), (aimZs[i] as number) - (camWZ[i] as number)));
+    const camAlt = camAlts[i] as number;
     // SLOPED + CLIPPED corridor: along in [0, planDp] (never past the aim —
     // past it the ray leaves the frame through the lookAt point).
-    const planDp = Math.max(1e-6, Math.hypot(safe.aim[0] - safe.camPos[0], safe.aim[2] - safe.camPos[2]));
+    const planDp = Math.max(1e-6, Math.hypot((aimXs[i] as number) - (camWX[i] as number), (aimZs[i] as number) - (camWZ[i] as number)));
     let worstLocal = -Infinity;
     for (let along = 0; along <= planDp; along += stepM) {
       const rayAlt = camAlt + (rayDy * along) / rayDp;
@@ -729,42 +706,30 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
       : `terrain EXCEEDS sightline+100 by ${rimWorst.toFixed(0)} m at s=${(rimAt / STEPS).toFixed(4)} — wall through the frame`);
 }
 
-// --- G23 walker-frame (RASTRO): P(d) projects at y in [-0.6,-0.3] NDC.
-// Minimal composePose arithmetic (no three in Node): rope yaw + walker
-// pitch, same numbers the rig flies (fov 50 = camera.fov). The sign
-// convention is pinned by axis-convention above: the forward vector is
-// verified byte-for-byte against three's YXZ Euler in the browser check
-// below (axis-convention-pitch), so this mirror cannot drift silently.
+// --- G23 walker-frame (C1 baked rail): P(d) projects at y in [-0.6,-0.3]
+// NDC over s in [0, 0.98) with >= 95 % coverage; outliers listed with s.
+// Same YXZ mirror as before, fed with the BAKED yaw/pitch/cam (world).
 {
   const fovDeg = 50;
   const tanHalf = Math.tan(((fovDeg * Math.PI) / 180) / 2);
   let worstY = -Infinity;
   let worstS = 0;
   let outside = 0;
+  let n = 0;
   // Per-step ledger for the failure message (worst 5 only, no flood).
   const bad: { s: number; y: number; pitch: number; pitchW: number; distW: number }[] = [];
   for (let i = 0; i <= STEPS; i++) {
     const s = i / STEPS;
     if (s >= EPILOGUE_S) continue;
+    n++;
     const d = pchipSD(s);
-    const rope = ropeAt(s);
-    const safe = resolveFollowSafety(sampleGrid, cx, cy, { camPos: rope.cam, aim: rope.aim, hCam: rope.hCam, lookM: rope.lookM, backM: rope.backM, distPlan: rope.dp }, r, { centerX: cx, centerY: cy, sizeX: 0, sizeZ: 0 });
-    let camY = safe.camPos[1];
-    const floor = sampleGrid(safe.camPos[0] + cx, cy - safe.camPos[2]) + CAM_CLEARANCE_M;
-    if (camY < floor) camY = floor;
-    const cam: [number, number, number] = [safe.camPos[0], camY, safe.camPos[2]];
+    const cam: [number, number, number] = [camWX[i] as number, camAlts[i] as number, camWZ[i] as number];
     const pW = trackAt(r, Math.min(r.lengthM, d));
     const walker: [number, number, number] = [pW.x - cx, pW.z + FOLLOW_H_AIM, -(pW.y - cy)];
-    // composePose mirror: rope yaw + walker pitch, capped like the rig.
-    // Yaw via ropeHeadingDeg (anchors.ts) — the SAME rope segment the rig
-    // flies (anchor->aim), never the raw atan2 of a possibly D_MIN-shifted
-    // vector. bearingDeg(dx,dz) = atan2(dx,-dz) by definition.
-    // §4: absolute PITCH_MAX_HARD cap, same as composePose.
-    const prof = followAt(follow, s);
-    const yaw = ropeHeadingDeg(r, d, prof.lookM, prof.backM);
+    const yaw = yaws[i] as number;
+    const pitch = pitchs[i] as number;
     const distPlanW = Math.max(1e-6, Math.hypot(walker[0] - cam[0], walker[2] - cam[2]));
     const pitchWalker = (Math.atan2(cam[1] - walker[1], distPlanW) * 180) / Math.PI;
-    const pitch = Math.min(pitchWalker - WALKER_NDC_Y * (fovDeg / 2), PITCH_MAX_HARD);
     // view: YXZ (yaw about world Y, then pitch about camera X). Forward is
     // R_y(-yawR)·R_x(-pitchR)·(0,0,-1) — verified against three above.
     const yawR = (yaw * Math.PI) / 180;
@@ -772,10 +737,7 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     const fx = Math.sin(yawR) * Math.cos(pitchR);
     const fy = -Math.sin(pitchR);
     const fz = -Math.cos(yawR) * Math.cos(pitchR);
-    // camera basis: fwd, right = camera's +X axis under YXZ
-    // (three: (1,0,0) rotated by the pose quaternion; NOT cross(fwd, up),
-    // which flips the sign). Verified against three's matrixWorld axes.
-    // YXZ yaw-then-pitch: right = R_y(-yawR)·(1,0,0) = (cos(yawR), 0, sin(yawR)).
+    // camera basis: right = R_y(-yawR)·(1,0,0) = (cos(yawR), 0, sin(yawR)).
     const rX = Math.cos(yawR);
     const rY = 0;
     const rZ = Math.sin(yawR);
@@ -783,21 +745,13 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     const uX = rY * fz - rZ * fy;
     const uY = rZ * fx - rX * fz;
     const uZ = rX * fy - rY * fx;
-    // walker in view space, then perspective divide. Calibrated against
-    // three (PerspectiveCamera + YXZ quaternion + real projection matrix,
-    // in-front point: three ndcY == mirror ndcY to 3 decimals): the basis
-    // (fwd/up) matches three exactly, and three's clipW for a YXZ-posed
-    // camera equals v·fwd (positive in front — the view matrix carries
-    // +Z = -fwd and P[11] = -1 negates Z again, the minuses cancelling
-    // into clipW = +v·fwd). NDC y = yV / (clipW·tanHalf).
-    // Behind-camera (clipW<=0) counts as outside.
     const vx = walker[0] - cam[0];
     const vy = walker[1] - cam[1];
     const vz = walker[2] - cam[2];
     const clipW = vx * fx + vy * fy + vz * fz;
     const yV = vx * uX + vy * uY + vz * uZ;
     const ndcY = clipW > 0 ? yV / (clipW * tanHalf) : -Infinity;
-    if (!(ndcY >= -0.6 && ndcY <= -0.3)) {
+    if (!(ndcY >= G23_Y_MIN && ndcY <= G23_Y_MAX)) {
       outside++;
       bad.push({ s, y: ndcY, pitch, pitchW: pitchWalker, distW: distPlanW });
     }
@@ -818,23 +772,19 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   let nLow = 0;
   let sumY = 0;
   let nFin = 0;
-  let nExempt = 0; // act-I hairpins [0.19,0.24]: rope folds inside the
-  // zigzags (same window G4 exempts) — the walker is off-axis there by
-  // construction and projects low; counted separately, not as failure.
   for (const b of bad) {
     if (!Number.isFinite(b.y)) { nBehind++; continue; }
-    if (b.s >= 0.19 && b.s < 0.24) { nExempt++; continue; }
-    if (b.y > -0.3) nHigh++;
+    if (b.y > G23_Y_MAX) nHigh++;
     else nLow++;
     sumY += b.y;
     nFin++;
   }
   const meanY = nFin > 0 ? (sumY / nFin).toFixed(2) : "n/a";
-  const realOutside = nBehind + nHigh + nLow;
-  gate("G23-walker-frame", realOutside === 0,
-    realOutside === 0
-      ? `P(d) at y in [-0.6,-0.3] NDC on all non-hairpin steps (centre -${WALKER_NDC_Y}; ${nExempt} hairpin [0.19,0.24] steps exempt like G4)`
-      : `${realOutside}/${STEPS + 1} outside [-0.6,-0.3] excl. hairpins (behind=${nBehind} high=${nHigh} low=${nLow} meanY=${meanY}; ${nExempt} hairpin exempt), worst y=${Number.isFinite(worstY) ? worstY.toFixed(2) : "BEHIND"} at s=${worstS.toFixed(4)} — worst5: ${worst5}`);
+  const frac = 1 - outside / Math.max(1, n);
+  gate("G23-walker-frame", frac >= G23_COVERAGE,
+    frac >= G23_COVERAGE
+      ? `P(d) at y in [${G23_Y_MIN},${G23_Y_MAX}] NDC on ${n - outside}/${n} steps (${(frac * 100).toFixed(1)}%, need >=${G23_COVERAGE * 100}) — outliers: ${worst5 || "none"}`
+      : `${outside}/${n} outside [${G23_Y_MIN},${G23_Y_MAX}] (behind=${nBehind} high=${nHigh} low=${nLow} meanY=${meanY}), worst y=${Number.isFinite(worstY) ? worstY.toFixed(2) : "BEHIND"} at s=${worstS.toFixed(4)} — worst5: ${worst5}`);
 }
 
 // --- G17 void (FOLLOW): píxeles negros en la MITAD INFERIOR del pase de
@@ -979,56 +929,16 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     && cloudSrc36.includes("CLOUD_CLEAR_ROUTE_M") && cloudSrc36.includes("CLOUD_GROUP_COUNT");
   // N2-fix: el viewer barrea s ∈ [0, 0,97] (sin epílogo) + camYEpi aparte.
   const noEpi = viewerSrc36.includes("s <= 0.97") && viewerSrc36.includes("camYEpi");
-  // recompute: pose sweep (verify ropeAt + safety + floor) in EPSG frame,
+  // recompute: baked-rail cam poses (same numbers the browser flies),
   // N2-fix: s ∈ [0, 0,97] SIN epílogo (como el viewer).
   const { cloudLayout: cl36 } = await import("../src/engine/clouds.ts");
   const poses36: { x: number; y: number; z: number }[] = [];
   for (let s = 0; s <= 0.97; s += 0.005) {
     const sc = Math.min(1, Math.max(0, s));
-    const d = pchipSD(sc);
-    const prof = followAt(follow, sc);
-    const pAim = trackAt(r, Math.min(r.lengthM, d + prof.lookM));
-    const pA = anchorPlan(r, d, prof.backM);
-    const aim: [number, number, number] = [pAim.x - cx, pAim.z + FOLLOW_H_AIM, -(pAim.y - cy)];
-    const cam: [number, number, number] = [pA.x - cx, pA.z + prof.hCam, -(pA.y - cy)];
-    const pW = trackAt(r, Math.min(r.lengthM, d));
-    const wx = pW.x - cx;
-    const wz = -(pW.y - cy);
-    {
-      let ux = cam[0] - aim[0];
-      let uz = cam[2] - aim[2];
-      let dpAim = Math.hypot(ux, uz);
-      if (dpAim < 1e-6) {
-        const q0 = trackAt(r, Math.max(0, d - 5));
-        ux = q0.x - pW.x;
-        uz = -((q0.y - pW.y));
-        dpAim = Math.hypot(ux, uz) || 1;
-      }
-      ux /= dpAim;
-      uz /= dpAim;
-      const dAim = Math.max(0, FOLLOW_D_MIN - dpAim);
-      let dWalk = 0;
-      const ex = cam[0] - wx;
-      const ez = cam[2] - wz;
-      if (Math.hypot(ex, ez) < FOLLOW_D_MIN) {
-        const b2 = ux * ex + uz * ez;
-        const c = ex * ex + ez * ez - FOLLOW_D_MIN * FOLLOW_D_MIN;
-        const disc = Math.max(0, b2 * b2 - c);
-        dWalk = Math.min(-b2 + Math.sqrt(disc), 3 * dpAim);
-      }
-      const push = Math.max(dAim, Math.max(0, dWalk));
-      if (push > 0) {
-        cam[0] += ux * push;
-        cam[2] += uz * push;
-      }
-    }
-    const safe = resolveFollowSafety(sampleGrid, cx, cy,
-      { camPos: cam, aim, hCam: prof.hCam, lookM: prof.lookM, backM: prof.backM, distPlan: Math.hypot(cam[0] - aim[0], cam[2] - aim[2]) },
-      r, { centerX: cx, centerY: cy, sizeX: 0, sizeZ: 0 });
-    let camY = safe.camPos[1];
-    const floor = sampleGrid(safe.camPos[0] + cx, cy - safe.camPos[2]) + CAM_CLEARANCE_M;
-    if (camY < floor) camY = floor;
-    poses36.push({ x: safe.camPos[0] + cx, y: cy - safe.camPos[2], z: camY, s: sc });
+    const i = Math.min(STEPS, Math.round((sc / 1) * STEPS));
+    const camE = (camWX[i] as number) + cx;
+    const camN = cy - (camWZ[i] as number);
+    poses36.push({ x: camE, y: camN, z: camAlts[i] as number, s: sc });
   }
   let camYmax = -Infinity;
   let camYmin = Infinity;

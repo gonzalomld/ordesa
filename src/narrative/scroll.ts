@@ -50,6 +50,15 @@ export interface CamXYZ {
 
 export type ProbeTick = (nowMs: number, sRaw: number, s: number, cam: CamXYZ | null) => void;
 
+/** C1: orientation sample for the wheeltest log (yaw/pitch baked + angular
+ * step). The viewer fills it from the rig; scroll.ts only carries it. */
+export interface OriSample {
+  yaw: number;
+  pitch: number;
+}
+
+export type OriTick = (nowMs: number, sRaw: number, s: number, cam: CamXYZ | null, ori: OriSample | null) => void;
+
 export interface WheelSample {
   t: number;
   sRaw: number;
@@ -57,6 +66,10 @@ export interface WheelSample {
   camX: number;
   camY: number;
   camZ: number;
+  /** C1 (?wheeltest=1): baked yaw/pitch at this frame + quaternion step. */
+  yaw: number;
+  pitch: number;
+  qdist: number;
 }
 
 export interface ScrollHandle {
@@ -77,8 +90,12 @@ export interface ScrollHandle {
   /** N3 plumbing for the deferred ?wheeltest=1 probe: the viewer hands a
    * live camera-position getter; the probe reads it per frame. No behaviour. */
   setCamProbe(getter: (() => CamXYZ) | null): void;
+  /** C1: live orientation getter (baked yaw/pitch the rig flies). */
+  setOriProbe(getter: (() => OriSample) | null): void;
   /** N3: slot for the deferred wheeltest recorder (scroll-probe.ts only). */
   setProbeTick(fn: ProbeTick | null): void;
+  /** C1: orientation-aware recorder slot (scroll-probe.ts only). */
+  setOriTick(fn: OriTick | null): void;
 }
 
 export function parseSParam(raw: string | null): number | null {
@@ -127,7 +144,10 @@ export function createScroll(): ScrollHandle {
   if (frozen === null && actParam !== null && dbgForAct) {
     frozen = (ACT_MID_S[actParam] ?? null) as number | null;
   }
-  // N3 instruments (?debug=1 scroll probe, ?wheeltest=1 synthetic notches).
+  // C1 (?wheeltest=1&wheelstart=S): start the notch run at scroll fraction
+  // S without freezing — scrolls there on gate open, then fires notches.
+  // ?s= still freezes (audit stills); wheelstart never freezes.
+  const wheelStart = parseSParam(q.get("wheelstart"));
   // The wheel listener only exists when a flag is present: zero trace in
   // production scrolling. The heavy wheeltest runner is a deferred chunk
   // (scroll-probe.ts) loaded on gate enter, never in the entry bundle.
@@ -223,7 +243,9 @@ export function createScroll(): ScrollHandle {
   if (probeOn) window.addEventListener("wheel", onWheel, { passive: true });
 
   let camProbe: (() => CamXYZ) | null = null;
+  let oriProbe: (() => OriSample) | null = null;
   let probeTick: ProbeTick | null = null;
+  let oriTick: OriTick | null = null;
   let wheelArmed = false;
   let wheelCancel: (() => void) | null = null;
   // N3b: live act bounds from progress (setActBounds at boot). Before they
@@ -304,6 +326,16 @@ export function createScroll(): ScrollHandle {
     );
   };
 
+  // C1: wheelstart target in px (fraction of max scroll). Resolved lazily
+  // (layout may shift between boot and gate open); null = no jump.
+  function wheelStartPx(): number | null {
+    if (wheelStart === null) return null;
+    const doc = document.documentElement;
+    const max = doc.scrollHeight - window.innerHeight;
+    if (!(max > 0)) return null;
+    return Math.min(1, Math.max(0, wheelStart)) * max;
+  }
+
   // frozen (?s=, or ?act= with ?debug=1): no scroll reading at all.
   const h: ScrollHandle = {
     sRaw: frozen ?? 0,
@@ -320,6 +352,7 @@ export function createScroll(): ScrollHandle {
         }
         if (debugProbe) publishScroll(timeMs);
         probeTick?.(timeMs, h.sRaw, h.s, camProbe?.() ?? null);
+        oriTick?.(timeMs, h.sRaw, h.s, camProbe?.() ?? null, oriProbe?.() ?? null);
         return;
       }
       const sp = spanS(window.scrollY);
@@ -336,6 +369,7 @@ export function createScroll(): ScrollHandle {
       }
       if (debugProbe) publishScroll(timeMs);
       probeTick?.(timeMs, h.sRaw, h.s, camProbe?.() ?? null);
+      oriTick?.(timeMs, h.sRaw, h.s, camProbe?.() ?? null, oriProbe?.() ?? null);
     },
     freezeAt(v: number | null): void {
       frozen = v;
@@ -354,6 +388,18 @@ export function createScroll(): ScrollHandle {
     start(): void {
       document.body.style.overflow = "";
       lenis?.start();
+      // C1: ?wheeltest=1&wheelstart=S seeks to S first (immediate, then the
+      // notch run starts from there — never frozen, the run scrolls freely).
+      if (wheeltest && wheelStart !== null && frozen === null && lenis) {
+        const px = wheelStartPx();
+        if (px !== null) {
+          try {
+            lenis.scrollTo(px, { immediate: true });
+          } catch {
+            /* seek failed — run starts wherever the user is */
+          }
+        }
+      }
       // start() IS the gate-open signal (viewer calls it on enter).
       armWheeltest();
       // N3b: ?act= (no ?debug=1) jumps to the section top with Lenis now
@@ -379,7 +425,9 @@ export function createScroll(): ScrollHandle {
       wheelCancel?.();
       wheelCancel = null;
       probeTick = null;
+      oriTick = null;
       camProbe = null;
+      oriProbe = null;
       lenis?.destroy();
       lenis = null;
     },
@@ -400,8 +448,14 @@ export function createScroll(): ScrollHandle {
     setCamProbe(getter: (() => CamXYZ) | null): void {
       camProbe = getter;
     },
+    setOriProbe(getter: (() => OriSample) | null): void {
+      oriProbe = getter;
+    },
     setProbeTick(fn: ProbeTick | null): void {
       probeTick = fn;
+    },
+    setOriTick(fn: OriTick | null): void {
+      oriTick = fn;
     },
   };
 

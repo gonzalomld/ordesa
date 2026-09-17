@@ -756,6 +756,9 @@ float wgrain(vec2 lp){
     metrics.warn = progress.getState().divergenceWarn as string;
   }
   const rig = createRig({ camera, route, world, elev, meta, progress });
+  // C1: orientation plumbing — baked yaw/pitch the rig flies (diag mirror,
+  // read-only; the deferred ?wheeltest=1 probe logs it per frame).
+  scroll.setOriProbe(() => ({ yaw: rig.getDiag().yaw, pitch: rig.getDiag().pitch }));
   {
     // initial framing is simply rig.at(s=0) — no hardcoded default camera.
     // Walker-framed pose: position + quaternion (never lookAt, which would
