@@ -208,9 +208,21 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     const coverPx = (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx;
     const coverTxt = coverPx === undefined || coverPx < 0 ? "—" : `${(coverPx * 100).toFixed(0)}%`;
     // N3: scroll probe (?debug=1) — written every frame by scroll.ts, read here.
-    const sc = (window as unknown as { __scroll?: { screens: number; pxPerKm: number; settleMs: number } }).__scroll;
+    const sc = (window as unknown as {
+      __scroll?: {
+        screens: number;
+        pxPerKm: number;
+        settleMs: number;
+        act?: string;
+        f?: number;
+        total?: number;
+      };
+    }).__scroll;
     const scrollTxt = sc
-      ? `scroll ${sc.screens.toFixed(1)} pant · ${sc.pxPerKm.toFixed(2)} pant/km · asiento ${Math.round(sc.settleMs)} ms`
+      ? `scroll ${sc.screens.toFixed(1)} pant · ${sc.pxPerKm.toFixed(2)} pant/km · asiento ${Math.round(sc.settleMs)} ms` +
+        (sc.act !== undefined && sc.f !== undefined
+          ? `\nacto ${sc.act} · f ${(sc.f as number).toFixed(2)} · s ${metrics.s.toFixed(4)}`
+          : "")
       : "";
     const s =
       `frame ${metrics.msFrame.toFixed(1)} ms (${metrics.fps.toFixed(0)} fps) · js terr ${metrics.jsTerrain.toFixed(1)} · js etiq ${metrics.jsLabels.toFixed(1)}\n` +

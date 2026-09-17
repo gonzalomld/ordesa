@@ -2,7 +2,7 @@
 // No module recomputes travelled distance. Everything reads getState().
 // Anchor tables come from anchors.ts (pure); PCHIP from curve.ts.
 import { bisectSunset, resolveAnchors, resolveFollowProfile, trackAt, zRawAt, alongTrackRun, type ResolvedAnchors, type RouteLike } from "./anchors.ts";
-import { EPILOGUE_S, SLOPE_WINDOW_M } from "./choreography.ts";
+import { ACT_BOUND_D_M, ACT_ORDER, EPILOGUE_S, SLOPE_WINDOW_M, type ActKey } from "./choreography.ts";
 import { buildPchip, type PchipFn } from "./curve.ts";
 import { actForDistance, sunPosition } from "../engine/sun.ts";
 import type { Meta } from "../engine/terrain.ts";
@@ -28,6 +28,10 @@ export interface ProgressHandle {
   getState(): ProgressState;
   update(): void;
   resolved(): ResolvedAnchors;
+  /** N3b: s at each ACT_S_BOUND_D_M boundary (inverted from the live s->d
+   * PCHIP by bisection) + route end at EPILOGUE_S exactly + 1.0.
+   * scroll.ts reads this via setActBounds() at boot. */
+  actBounds(): number[];
 }
 
 export function parseHourParam(raw: string | null): number | null {
@@ -57,6 +61,29 @@ export function initProgress(
   res.follow = resolveFollowProfile(route);
   const pchipSD: PchipFn = buildPchip(res.sAnchors, res.dAnchorsM, "s->d");
   const pchipTD: PchipFn = buildPchip(res.timeD, res.timeH, "time");
+  // N3b: act limits in s — the inverse of the s->d map at the act-boundary
+  // distances (bisection over the LIVE PCHIP, monotone by construction:
+  // 100 iterations pin it to ~1e-30, far below any audit tolerance).
+  // Last two spans are "V" and "epilogue": the route end sits at EPILOGUE_S
+  // EXACTLY (G65 needs the full loop drawn over the 5-screen EPI section,
+  // not over s in [0.98, 1.00] of a longer span).
+  function actBounds(): number[] {
+    const out: number[] = [];
+    for (const dTarget of ACT_BOUND_D_M) {
+      const dC = Math.min(dTarget, route.lengthM);
+      let lo = 0;
+      let hi = EPILOGUE_S;
+      for (let i = 0; i < 100; i++) {
+        const mid = (lo + hi) / 2;
+        if (pchipSD(mid) < dC) lo = mid;
+        else hi = mid;
+      }
+      out.push((lo + hi) / 2);
+    }
+    out.push(EPILOGUE_S, 1.0);
+    return out;
+  }
+  void ACT_ORDER;
   const sunsetHourDec = bisectSunset((h) => sunPosition(h).elevationDeg);
   // Epilogue: pchipTD is flat 16:40 over s in [0.98, 1.00] because d is
   // constant there, so blending to the NOAA sunset joins with no jump.
@@ -131,5 +158,9 @@ export function initProgress(
     getState: () => st,
     update,
     resolved: () => res,
+    actBounds,
   };
 }
+
+/** N3b: act keys in scroll order ("0".."V" + epilogue), single spelling. */
+export const ACT_KEYS: ActKey[] = [...ACT_ORDER];

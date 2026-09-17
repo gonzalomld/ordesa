@@ -745,6 +745,9 @@ float wgrain(vec2 lp){
     // E5.2: branch choice runs inside initProgress, once, with the live
     // heightfield — the rig consumes the identical decided series.
     progress = initProgress(route, scroll, { elev, meta, cx: world.centerX, cy: world.centerY });
+    // N3b: hand the live act bounds (s at act boundaries) to the span
+    // mapper — the s->d map never changes under it (single source intact).
+    scroll.setActBounds(progress.actBounds());
   } catch (e) {
     gate.fail(`no se pudo resolver el recorrido: ${e instanceof Error ? e.message : e}`);
     throw e;

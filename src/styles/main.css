@@ -4,10 +4,16 @@
   --color-paper: #f4f1ea;
   --font-text: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  /* Phase 3A: scroll-track height. scroll.ts writes the value at boot from
-     TRACK_VH (choreography.ts); tweakable live from devtools. N3: 4500vh
-     (45 pantallas) so a 100 px wheel notch is ~0.24 % of the journey. */
-  --track-vh: 4500vh;
+  /* N3b: per-act scroll sections. scroll.ts writes --act-*-vh at boot
+     from ACT_SCREENS (choreography.ts, SCREENS — 1 screen = 100vh);
+     CSS only consumes. Sum = 4500vh = 45 screens. */
+  --act-0-vh: 300vh;
+  --act-i-vh: 900vh;
+  --act-ii-vh: 300vh;
+  --act-iii-vh: 1200vh;
+  --act-iv-vh: 500vh;
+  --act-v-vh: 800vh;
+  --act-epi-vh: 500vh;
 }
 
 * {
@@ -37,14 +43,47 @@ body {
   display: block;
 }
 
-/* Phase 3A: the scroll that drives the journey lives behind the fixed canvas */
+/* N3b: the scroll that drives the journey lives behind the fixed canvas —
+   one <section> per act (Everest reference); progress by spans, not linear */
 #scroll-track {
   position: absolute;
   top: 0;
   left: 0;
   width: 1px;
-  height: var(--track-vh);
   pointer-events: none;
+}
+
+#scroll-track section {
+  width: 1px;
+  pointer-events: none;
+}
+
+#scroll-track section[data-act="0"] {
+  height: var(--act-0-vh);
+}
+
+#scroll-track section[data-act="I"] {
+  height: var(--act-i-vh);
+}
+
+#scroll-track section[data-act="II"] {
+  height: var(--act-ii-vh);
+}
+
+#scroll-track section[data-act="III"] {
+  height: var(--act-iii-vh);
+}
+
+#scroll-track section[data-act="IV"] {
+  height: var(--act-iv-vh);
+}
+
+#scroll-track section[data-act="V"] {
+  height: var(--act-v-vh);
+}
+
+#scroll-track section[data-act="EPI"] {
+  height: var(--act-epi-vh);
 }
 
 /* Phase 3A: ?debug=path instrument overlay */

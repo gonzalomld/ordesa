@@ -5,7 +5,33 @@
 
 export const K_SCROLL = 6; // framerate-independent smoothing rate (1/s)
 export const K_SCROLL_REDUCED = 20; // prefers-reduced-motion: native scroll, faster catch-up
-export const TRACK_VH = 4500; // N3: 900 -> 4500 (45 pantallas): 18,1 km son ~2,5 pantallas/km; una muesca de 100 px ~= 0,24 % del viaje ~= 43 m de sendero
+// N3b: per-act scroll structure (Everest reference: one <section> per stage,
+// progress by spans, not linear). TRACK_VH is gone — the sum mandates.
+// 3+9+3+12+5+8+5 = 45 screens; a 100 px notch stays ~0.24 % of the journey.
+export const ACT_ORDER = ["0", "I", "II", "III", "IV", "V", "EPI"] as const;
+export type ActKey = (typeof ACT_ORDER)[number];
+export const ACT_SCREENS: Record<ActKey, number> = {
+  "0": 3,
+  I: 9,
+  II: 3,
+  III: 12,
+  IV: 5,
+  V: 8,
+  EPI: 5,
+}; // N3b: scroll screens per act section; sum = 45 (G62 reads this)
+export const TRACK_VH_TOTAL = 45; // N3b: sum(ACT_SCREENS) — the sum mandates, not a knob
+export const ACT_SECTION_ID_PREFIX = "acto"; // N3b: section ids are `acto-0`, `acto-I`, … (future anchors)
+/** N3b: act-boundary distances (m) mirrored from ACTS starts in
+ * scripts/geo-constants.ts. progress.ts inverts the s->d map at these —
+ * no new table, binary search over the live PCHIP. */
+export const ACT_BOUND_D_M: [number, number, number, number, number, number] = [0, 300, 2440, 3000, 9000, 10500];
+export const LENIS_ACT_JUMP_DURATION = 1.8; // N3b: ?act= scrollTo duration (s, Everest parity)
+/** N3b: ?act= scrollTo easing (quartic out — the N3 easing, now named).
+ * Duration WITHOUT easing would fall back to the lerp branch inside Lenis
+ * (animate.ts takes the time path only when both are set), so both travel. */
+export function lenisActJumpEasing(t: number): number {
+  return 1 - Math.pow(1 - t, 4);
+}
 export const LENIS_LERP = 0.14; // N3: frame-based damping like Everest (replaces duration/easing — the two Lenis modes are mutually exclusive, duration+easing deleted)
 export const LENIS_WHEEL_MULT = 1.0; // N3: mouse wheel multiplier (was implicit 1.0)
 export const LENIS_TOUCH_MULT = 1.6; // touch scroll multiplier
