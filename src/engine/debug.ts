@@ -84,6 +84,10 @@ export interface BootQuery {
   skycap: boolean;
   /** ?lod=N: pin the terrain LOD and disable the frame-budget rule. */
   lod: number | null;
+  /** N2: ?debug=atlas — blitea el atlas de nubes ×0,5 abajo a la izquierda. */
+  atlas: boolean;
+  /** N2b: ?family=N (0-3) u off — filtro del medidor de nubes por familia. */
+  family: number;
 }
 
 function parseSParam(raw: string | null): number | null {
@@ -103,6 +107,17 @@ export function parseBootQuery(): BootQuery {
   const mode = q.get("debug");
   const rawLod = q.get("lod");
   const lodN = rawLod === null || rawLod.trim() === "" ? null : Number(rawLod.trim());
+  // N2b: ?family=N (0-3) filtra el medidor por familia; ?family=off lo apaga
+  // (medida del rastro sin nubes para G52). -1 = sin filtro.
+  const rawFam = q.get("family");
+  let family = -1;
+  if (rawFam !== null) {
+    if (rawFam === "off") family = -2;
+    else {
+      const v = Number(rawFam);
+      family = v >= 0 && v <= 3 && Number.isInteger(v) ? v : -1;
+    }
+  }
   return {
     debug: mode === "1" || mode === "steep",
     steep: mode === "steep",
@@ -118,6 +133,8 @@ export function parseBootQuery(): BootQuery {
     ghost: q.has("ghost"),
     skymap: q.get("skymap") === "1",
     skycap: q.get("skycap") !== "0",
+    atlas: q.get("debug") === "atlas",
+    family,
     lod: lodN !== null && Number.isFinite(lodN) && [1, 2, 3].includes(lodN) ? lodN : null,
   };
 }

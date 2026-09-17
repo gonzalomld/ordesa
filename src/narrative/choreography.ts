@@ -113,19 +113,90 @@ export const FOG_DAWN_HF_MULT = 1.8; // cuánto multiplica el término de valle 
 export const FOG_DAWN_DF_ADD = 0.4; // cuánto suma al fundido de distancia (horizonte fundido al cielo)
 export const G45_DUSK_MAX = 0.12; // G45: a las 07:30/20:30 el fondo del valle funde con el cielo
 export const G45_NOON_MIN = 0.2; // G45: a las 12:00 el valle sigue leyéndose (distancia ≥ 0.2)
-export const CLOUD_COVERAGE = 0.3; // alpha-weighted target at 12:00 (the metric is already corrected)
-export const CLOUD_MASK = 0.20; // §4b FASE 4c: 0.18 -> 0.20 (aimed far family fills horizons; mask trims inter-puff veil — prod honest mask decides)
-export const CLOUD_PUFF_SCALE = 1.10; // §4b FASE 4c: 0.75 -> 1.10 (dense [0.75,0.95] alpha + aimed far family: predictor 32.6/18.5 @SKYFRAC=0.35 — s=0.80 slot overlap caps it; prod honest per-s mask decides)
-/** §4b FASE 4c: main band — base = camYmax + 250, top = base + 400 (as 4b
- * required). The slab experiment [camYmin+300, camYmax+650] parked the
- * camera INSIDE the band (camYmax 2570): fly-through + meter blind to
- * near puffs. Main band strictly above every framing. */
+// --- NUBES N2b (bruma de valle, cirros, anillo lejano). Misma InstancedMesh
+// (calls no crece). Familias: 0 cúmulo (N2), 1 bruma, 2 cirro, 3 anillo.
+export const CLOUD_FAM_CUMULUS = 0;
+export const CLOUD_FAM_MIST = 1;
+export const CLOUD_FAM_CIRRUS = 2;
+export const CLOUD_FAM_FAR = 3;
+// Bruma de valle: 40 instancias donde el terreno < 1900 m, y = suelo+60..220,
+// ancho 1200-3000 m × 0,18, opacidad base 0,15-0,30, deriva 0,4-1,2 m/s,
+// balanceo ±20 m (periodo 40-70 s), pulso 0,75+0,25·sin(t·0,02+ph).
+export const CLOUD_MIST_COUNT = 40;
+export const CLOUD_MIST_GROUND_MAX_M = 1900;
+export const CLOUD_MIST_LIFT_LO_M = 60;
+export const CLOUD_MIST_LIFT_HI_M = 220;
+export const CLOUD_MIST_W_MIN_M = 1200;
+export const CLOUD_MIST_W_MAX_M = 3000;
+export const CLOUD_MIST_H_FRAC = 0.18;
+export const CLOUD_MIST_ALPHA_LO = 0.15;
+export const CLOUD_MIST_ALPHA_HI = 0.30;
+export const CLOUD_MIST_DRIFT_LO_MS = 0.4;
+export const CLOUD_MIST_DRIFT_HI_MS = 1.2;
+export const CLOUD_MIST_BOB_M = 20;
+export const CLOUD_MIST_BOB_LO_S = 40;
+export const CLOUD_MIST_BOB_HI_S = 70;
+export const CLOUD_MIST_CLEAR_PLAN_M = 600; // rechazo: <600 m en planta de una pose…
+export const CLOUD_MIST_CLEAR_BELOW_M = 200; // …y a la vez <200 m por debajo de ella
+// Cirros: 6 instancias a 7000-9000 m, ancho 6-12 km × 0,10, opacidad
+// base 0,07-0,13, deriva 6-10 m/s, SIN tinte de niebla.
+export const CLOUD_CIRRUS_COUNT = 6;
+export const CLOUD_CIRRUS_LO_M = 7000;
+export const CLOUD_CIRRUS_HI_M = 9000;
+export const CLOUD_CIRRUS_W_MIN_M = 6000;
+export const CLOUD_CIRRUS_W_MAX_M = 12000;
+export const CLOUD_CIRRUS_H_FRAC = 0.10;
+export const CLOUD_CIRRUS_ALPHA_LO = 0.07;
+export const CLOUD_CIRRUS_ALPHA_HI = 0.13;
+export const CLOUD_CIRRUS_DRIFT_LO_MS = 6;
+export const CLOUD_CIRRUS_DRIFT_HI_MS = 10;
+// Anillo lejano: 12 grupos de 3-5 cúmulos en anillo cuadrado a 2-4 km fuera
+// del bbox (uno cada 30° ±18° de ruido), altitud 3000-3800 m, ancho 3-7 km,
+// alto = ancho·(0,26+rnd·0,30), opacidad base 0,24-0,40, deriva 1-3 m/s.
+export const CLOUD_FAR_COUNT = 12;
+export const CLOUD_FAR_OUT_LO_M = 2000;
+export const CLOUD_FAR_OUT_HI_M = 4000;
+export const CLOUD_FAR_LO_M = 3000;
+export const CLOUD_FAR_HI_M = 3800;
+export const CLOUD_FAR_W_MIN_M = 3000;
+export const CLOUD_FAR_W_MAX_M = 7000;
+export const CLOUD_FAR_H_LO = 0.26;
+export const CLOUD_FAR_H_SPAN = 0.30;
+export const CLOUD_FAR_ALPHA_LO = 0.24;
+export const CLOUD_FAR_ALPHA_HI = 0.40;
+export const CLOUD_FAR_DRIFT_LO_MS = 1;
+export const CLOUD_FAR_DRIFT_HI_MS = 3;
+export const CLOUD_FAR_MIN_BOARDS = 3;
+export const CLOUD_FAR_MAX_BOARDS = 5;
+/** N2b: capacidad total = N2 (24×8) + bruma 40 + cirros 6 + anillo (12×5).
+ * Puerta: instancias totales ≤ 260 (medido: ~246 con semilla fija). */
+export const CLOUD_MAX_INSTANCES = 192 + 40 + 6 + 60;
+export const CLOUD_GROUP_COUNT = 24; // nº de grupos (4-8 billboards cada uno)
+export const CLOUD_GROUP_R_MIN_M = 600; // radio de grupo: 600 + rnd^1,6 · 2400 (600-3000 m)
+export const CLOUD_GROUP_R_SPAN_M = 2400;
+export const CLOUD_BASE_LIFT_M = 300; // base = máx(camYmax + 300, 2900)
+export const CLOUD_BASE_FLOOR_M = 2900;
+export const CLOUD_BAND_DEPTH_M = 600; // techo = base + 600 (N2 sustituye al slab 4c)
+export const CLOUD_CLEAR_CAM_M = 1500; // centro a ≥1500 m en planta de TODA pose de cámara
+export const CLOUD_CLEAR_ROUTE_M = 900; // centro a ≥900 m en planta del rastro
+export const CLOUD_CLEAR_GROUND_M = 500; // centro a ≥500 m sobre el terreno bajo él
+export const CLOUD_MARGIN_M = 500; // centros dentro del DEM con 500 m de margen
+export const CLOUD_DRIFT_MIN_MS = 3; // deriva en X por grupo: 3-8 m/s, misma v todo el grupo
+export const CLOUD_DRIFT_MAX_MS = 8;
+export const CLOUD_SORT_EVERY = 10; // reordenado lejos→cerca cada 10 frames
+/** N2: único botón de dirección de arte — multiplicador por acto (0-V +
+ * epílogo), todos a 1,0 de partida. Se interpola con suavizado entre actos. */
+export const CLOUD_ACT_MULT: [number, number, number, number, number, number, number] = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+export const CLOUD_MULT_SMOOTH_K = 1.5; // 1/s: interpolación del mult entre actos
+export const CLOUD_COVERAGE = 0.3; // DEAD (N2: la puerta es __cloudCoverPx en prod); kept so git history explains itself
+export const CLOUD_MASK = 0.20; // DEAD (N2: el atlas nuevo lleva alfa propio, sin máscara); kept so git history explains itself
+export const CLOUD_PUFF_SCALE = 1.10; // DEAD (N2: tamaño por grupo, no escala global); kept so git history explains itself
+/** N2: DEAD §4b constants (families main/far + slab experiment + corridor
+ * gates). Kept so git history explains itself — cloudLayout ignores them. */
 export const CLOUD_BAND_LIFT_M = 250;
-/** §4b FASE 4c: main band depth. */
-export const CLOUD_BAND_DEPTH_M = 400;
-/** §4b FASE 4c: distant family — ≥ 3 km plan from EVERY sampled camera
- * pose, low band [2000, 2400] fixed: horizon-only puffs for the low acts
- * (s < 0.10) that the high main band cannot serve. */
+/** N2 DEAD: main band depth (§4b FASE 4c, sustituida por 600). */
+export const CLOUD_BAND_DEPTH_M_4C = 400;
+/** N2 DEAD: distant family band + clearances (§4b FASE 4c/4b). */
 export const CLOUD_FAR_BAND_LO_M = 2000;
 /** §4b FASE 4c: distant family band top. */
 export const CLOUD_FAR_BAND_HI_M = 2400;
@@ -134,11 +205,9 @@ export const CLOUD_FAR_MIN_M = 3000;
 /** §4b FASE 4c: DEAD slab constants (4b experiment parked the camera inside
  * the band). Kept so git history explains itself — layout ignores them. */
 export const CLOUD_BAND_LO_M = 300;
-/** §4b FASE 4b: corridor puffs keep ≥ 900 m (3D) to sampled poses near in
- * s (|Δs| ≤ 0.2 — the cameras that could see them large). */
+/** N2 DEAD: corridor/far margins (§4b FASE 4b). */
 export const CLOUD_CORRIDOR_MIN_M = 900;
-/** §4b FASE 4b: …and ≥ 400 m to the rest (far-in-s: no white-out risk,
- * lens stays clear at folds where the route passes near old cameras). */
+/** N2 DEAD: …and ≥ 400 m to the rest. */
 export const CLOUD_FAR_MARGIN_M = 400;
 export const G24_ZEN_MIN = "#2a68b8"; // saturated blue, not grey
 export const G24_ZEN_MAX = "#3e86d2"; // saturated blue, not grey

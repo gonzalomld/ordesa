@@ -9,7 +9,9 @@ import {
   CAM_FAR,
   CAM_NEAR,
   CAM_PRESETS_S,
+  CLOUD_ACT_MULT,
   CLOUD_FADE_START_DEG,
+  CLOUD_MULT_SMOOTH_K,
   CLOUD_ZENITH_FADE,
   CORRIDOR_HALF_M,
   EPILOGUE_S,
@@ -37,6 +39,7 @@ import {
 import { initProgress, type ProgressHandle } from "../narrative/progress.ts";
 import { createScroll, type ScrollHandle } from "../narrative/scroll.ts";
 import { buildClouds } from "./clouds.ts";
+import { cloudAmount, mistAmount } from "./sun.ts";
 import { frameClock, mountDebug, parseBootQuery } from "./debug.ts";
 import { buildGate, nextFrame } from "./gate.ts";
 import { createSkyCapture, type SkyCapture } from "./sky-capture.ts";
@@ -231,8 +234,10 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
 
   let routeDim = 1;
   const sunDirV = new THREE.Vector3(0, 1, 0);
-  let cloudDensity = 0.5;
+  // N2: cloudUser = multiplicador del usuario (?clouds=); amount viene de
+  // sun.cloudAmount(hora) y mult de CLOUD_ACT_MULT[acto] suavizado.
   let cloudDayF = 1;
+  let cloudMultSm = 1;
 
   function applyLighting(h: number): void {
     const L = lightingAt(h);
@@ -311,7 +316,6 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       (fogUniforms.uHemiDay as { value: number }).value = dayF;
     }
     routeDim = 1 - L.nightMix * 0.3;
-    cloudDensity = L.cloudDensity;
     cloudDayF = L.cloudDayF;
     if (boot.debug) {
       // §4b FASE 3: metrics.zenithHex has ONE writer — the 30-frame capture
@@ -817,15 +821,14 @@ float wgrain(vec2 lp){
     }).catch(() => undefined);
   }
 
-  // clouds (S1: terrain-relative placement needs the decoded heightmap).
-  // §4b FASE 4c: MAIN band strictly above every lens (base = camYmax + 250)
-  // + DISTANT horizon family for low acts. Poses travel EPSG + altitude.
-  const cloudCams: { x: number; y: number; z: number }[] = [];
+  // clouds (N2: 24 grupos Everest-style; camYmax INCLUYE el epílogo).
+  // Poses travel EPSG + altitude.
+  const cloudCams: { x: number; y: number; z: number; s: number }[] = [];
   {
     const w2eX = (wx: number): number => wx + world.centerX;
     const w2eY = (wz: number): number => world.centerY - wz;
-    for (let s = 0; s <= 0.97; s += 0.005) {
-      const sc = Math.min(0.97, s);
+    for (let s = 0; s <= 1.0; s += 0.005) {
+      const sc = Math.min(1.0, s);
       const p = rig.poseAt(sc);
       cloudCams.push({ x: w2eX(p.pos[0]), y: w2eY(p.pos[2]), z: p.pos[1], s: sc });
     }
@@ -837,15 +840,19 @@ float wgrain(vec2 lp){
     { n: route.n, x: route.x, y: route.y },
     cloudCams,
   );
-  // §4b FASE 4c: BOTH families published — main [camYmax+250, +400],
-  // distant {band [2000,2400], clearance ≥ 3 km plan to every pose}.
-  (window as unknown as { __cloudBand?: { main: { base: number; top: number }; far: { lo: number; hi: number; minM: number }; camYmax: number } }).__cloudBand = (() => {
+  // N2b: banda publicada — base, techo, camYmax (epílogo incluido), nº por
+  // familia + rechazos y motivo (G36). cloudLayout es la única fuente.
+  (window as unknown as { __cloudBand?: unknown }).__cloudBand = (() => {
+    // El layout N2 corre dentro de buildClouds; aquí solo el marco para el
+    // informe (base/techo/camYmax con la misma fórmula). El detalle por
+    // familia lo publica clouds.update vía __cloudBandFam (ver abajo).
     let m = -Infinity;
     for (const c of cloudCams) if (c.z > m) m = c.z;
     return {
-      main: { base: m + 250, top: m + 250 + 400 },
-      far: { lo: 2000, hi: 2400, minM: 3000 },
+      base: Math.max(m + 300, 2900),
+      top: Math.max(m + 300, 2900) + 600,
       camYmax: m,
+      poses: cloudCams.length,
     };
   })();
   scene.add(clouds.group);
@@ -1086,6 +1093,66 @@ float wgrain(vec2 lp){
   window.addEventListener("resize", () => {
     layoutSkymapBlit();
   });
+  // N2 (?debug=atlas): blitea el atlas de nubes ×0,5 abajo a la izquierda
+  // para verlo (instrumento diferido: la textura se carga bajo demanda y el
+  // pase solo existe con el flag — producción no lo paga).
+  let atlasBlit: {
+    scene: THREE.Scene;
+    cam: THREE.OrthographicCamera;
+    mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  } | null = null;
+  function layoutAtlasBlit(): void {
+    if (!atlasBlit) return;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const bw = 2 / w / (window.devicePixelRatio || 1);
+    void bw;
+    // ×0,5 del atlas: 512 CSS px de ancho abajo a la izquierda
+    const cw = (2 * 512) / w;
+    const ch = (2 * 512) / h;
+    atlasBlit.mesh.geometry.dispose();
+    atlasBlit.mesh.geometry = new THREE.PlaneGeometry(cw, ch);
+    atlasBlit.mesh.position.set(-1 + cw / 2, -1 + ch / 2, 0);
+  }
+  async function ensureAtlasBlit(): Promise<void> {
+    if (atlasBlit) return;
+    try {
+      const tex = await new Promise<THREE.Texture>((resolve, reject) => {
+        new THREE.TextureLoader().load(
+          `/${meta.assets?.["clouds-atlas-png"] ?? meta.assets?.["clouds-atlas"] ?? "assets/clouds-atlas.webp"}`,
+          (t) => {
+            t.colorSpace = THREE.SRGBColorSpace;
+            resolve(t);
+          },
+          undefined,
+          reject,
+        );
+      });
+      const bscene = new THREE.Scene();
+      const bcam = new THREE.OrthographicCamera(-1, 1, 1, -1, -1, 1);
+      const bmat = new THREE.MeshBasicMaterial({
+        map: tex,
+        transparent: true,
+        toneMapped: false,
+        depthTest: false,
+        depthWrite: false,
+      });
+      const bmesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), bmat);
+      bmesh.renderOrder = 999;
+      bmesh.frustumCulled = false;
+      bscene.add(bmesh);
+      atlasBlit = { scene: bscene, cam: bcam, mesh: bmesh };
+      layoutAtlasBlit();
+    } catch {
+      /* sin atlas visible — el informe lo dirá */
+    }
+  }
+  if (boot.atlas) {
+    void ensureAtlasBlit();
+    window.addEventListener("resize", () => {
+      layoutAtlasBlit();
+    });
+  }
   // G12/G17 occluder pass (respuesta G12): terrain ONLY — no dome, no
   // clouds, no track, no labels. overrideMaterial flat white, clear black:
   // black pixels ARE sky (nothing occludes). Clouds are not occluders
@@ -1134,12 +1201,13 @@ float wgrain(vec2 lp){
       W.__cloudChroma = -1;
     }
   }
-  // §4b FASE 4b: cloud pixel meter — the SAME InstancedMesh with a flat
-  // probe material (atlas alpha × vAlpha only, no colour) into its own
-  // 96×54 target. Counted inside the TERRAIN-sky mask (occBuf): only sky
-  // pixels can be cloud-covered. Same camera, same frame, no extra scene.
-  // The probe material borrows the LIVE uniform objects (uMap/uDensity/
-  // uMask) — same values the draw uses, zero copies to forget.
+  // N2: cloud pixel meter — the SAME InstancedMesh with a flat probe
+  // material (atlas ALPHA × vAlpha only, no colour) into its own 96×54
+  // target. Counted inside the TERRAIN-sky mask (occBuf): only sky pixels
+  // can be cloud-covered. Same camera, same frame, no extra scene.
+  // The probe material borrows the LIVE uniform objects (uMap/uAmount/
+  // uMult/uZenithFade) — same values the draw uses, zero copies to forget.
+  // La sonda informa, no gobierna (N1/G46).
   // §4b FASE 4b: the pixel meter renders the cloud mesh WITHOUT terrain
   // (own mini-scene holding just the mesh — terrain would paint the mask
   // white and hide the clouds). Same mesh object, probe material, same
@@ -1154,28 +1222,53 @@ float wgrain(vec2 lp){
   const cloudPxMat = new THREE.ShaderMaterial({
     uniforms: {},
     vertexShader: `
-      attribute vec4 aData;
-      varying vec2 vUv; varying float vAlpha;
+      attribute vec4 aData; // x: tile, y: rot, z: family, w: alpha base
+      attribute vec2 aSize; // w,h del billboard en m
+      attribute vec4 aMisc; // x: phase, y: period (bruma)
+      varying vec2 vUv; varying float vAlpha; varying float vFamily;
+      uniform float uAmtCumulus; uniform float uAmtMist; uniform float uAmtCirrus; uniform float uAmtFar;
+      uniform float uMult; uniform float uZenithFade; uniform float uTime; uniform float uFamFilter;
       void main(){
-        float quad = aData.x;
-        vUv = vec2(mod(quad,2.0)*0.5 + uv.x*0.5, floor(quad/2.0)*0.5 + uv.y*0.5);
-        vec2 p = position.xy * aData.z;
+        float tile = aData.x;
+        float family = aData.z;
+        vFamily = family;
+        vec2 tileMin = tile < 0.5 ? vec2(0.0, 0.75) : tile < 1.5 ? vec2(0.5, 0.75)
+          : tile < 2.5 ? vec2(0.0, 0.5) : tile < 3.5 ? vec2(0.5, 0.5)
+          : tile < 4.5 ? vec2(0.0, 0.34375) : vec2(0.5, 0.34375);
+        vec2 tileMax = tile < 0.5 ? vec2(0.5, 1.0) : tile < 1.5 ? vec2(1.0, 1.0)
+          : tile < 2.5 ? vec2(0.5, 0.75) : tile < 3.5 ? vec2(1.0, 0.75)
+          : tile < 4.5 ? vec2(0.5, 0.5) : vec2(1.0, 0.5);
+        vUv = mix(tileMin, tileMax, uv);
+        float rot = aData.y;
+        vec2 p = vec2(position.x * aSize.x, position.y * aSize.y);
+        // N2b: el filtro de familia (?family=N / off) vive en el vertex: las
+        // instancias filtradas colapsan a área cero (mismo draw, calls intacto).
+        float keepFam = uFamFilter < -0.5 ? 1.0 : (abs(family - uFamFilter) < 0.5 ? 1.0 : 0.0);
+        float pulse = 1.0;
+        if (family > 0.5 && family < 1.5) {
+          pulse = 0.75 + 0.25 * sin(uTime * 0.02 + aMisc.x);
+        }
+        float fam = family < 0.5 ? uAmtCumulus * uMult
+          : family < 1.5 ? uAmtMist * pulse
+          : family < 2.5 ? uAmtCirrus
+          : uAmtFar * uMult;
+        vAlpha = aData.w * fam * (1.0 - uZenithFade) * keepFam;
+        // billboard en vista: reconstruye como el draw (rot fija)
         vec4 c = modelMatrix * instanceMatrix * vec4(0.0,0.0,0.0,1.0);
         vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
         vec3 up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
-        vAlpha = aData.w;
-        gl_Position = projectionMatrix * viewMatrix * vec4(c.xyz + right * p.x + up * p.y, 1.0);
+        vec2 rp = mat2(cos(rot),-sin(rot),sin(rot),cos(rot)) * p * keepFam;
+        gl_Position = projectionMatrix * viewMatrix * vec4(c.xyz + right * rp.x + up * rp.y, 1.0);
       }`,
     fragmentShader: `
-      varying vec2 vUv; varying float vAlpha;
-      uniform sampler2D uMap; uniform float uDensity; uniform float uMask;
+      varying vec2 vUv; varying float vAlpha; varying float vFamily;
+      uniform sampler2D uMap; uniform float uFamFilter;
       void main(){
-        float tex = texture2D(uMap, vUv).r;
-        float m = smoothstep(uMask, uMask + 0.08, tex);
-        // N1: sin cap — la sonda informa, no gobierna (G46).
-        float a = tex * m * vAlpha * uDensity;
+        // N2: alfa de la TEXTURA (canal A) × alfa efectivo — sin máscara.
+        float texA = texture2D(uMap, vUv).a;
+        float a = texA * vAlpha;
         if (a <= 0.15) discard;
-        gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+        gl_FragColor = vec4(1.0, 1.0, 1.0, a);
       }`,
   });
   let cloudPxWired = false;
@@ -1195,6 +1288,9 @@ float wgrain(vec2 lp){
   })();
   const skyfracOn = new URLSearchParams(location.search).has("skyfrac");
   const trackpxOn = new URLSearchParams(location.search).has("trackpx");
+  // N2b: filtro de familia del medidor (?family=N / off). -2 (off) = el rastro
+  // se mide sin nubes (G52: ?family=off); el probe pinta cero instancias.
+  const famFilter = boot.family === -2 ? -3 : boot.family;
   void G11_LUMA_MIN;
 
   gate.setProgress(1, 5);
@@ -1317,17 +1413,31 @@ float wgrain(vec2 lp){
       metrics.cam = boot.cam ?? (boot.orbit ? "orbit" : "rig");
     }
     driveTelemetry(cells, lastTele, st, hhmm(hour), st.sunElev);
-    const effCloud = cloudDensity * cloudUser;
-    if (boot.steep || effCloud <= 0.001) {
+    // N2b: alfa efectivo por familia = base × cantidad(familia) [× mult 0/3].
+    // cumulus/far: amount(h)×mult · mist: mistAmount(hora, dayF) · cirrus: 1.
+    // Todo continuo en hora (G35); ningún alfa depende de una sonda (G46).
+    const amtCumulus = cloudAmount(hour) * cloudUser;
+    const amtFar = amtCumulus;
+    // mult suavizado hacia el acto actual (k = CLOUD_MULT_SMOOTH_K)
+    {
+      const wantM = (CLOUD_ACT_MULT[Math.min(CLOUD_ACT_MULT.length - 1, Math.max(0, st.actIndex))] as number) * 1;
+      const kM = CLOUD_MULT_SMOOTH_K * dt;
+      cloudMultSm += (wantM - cloudMultSm) * (1 - Math.exp(-kM));
+    }
+    const amtMist = mistAmount(hour, cloudDayF) * cloudUser;
+    const amtCirrus = 1 * cloudUser;
+    const anyCloud = amtCumulus * cloudMultSm + amtMist + amtCirrus + amtFar * cloudMultSm;
+    if (boot.steep || anyCloud <= 0.001) {
       clouds.group.visible = false;
       metrics.cloudCoverage = 0;
     } else {
       clouds.group.visible = true;
-      clouds.setDensity(effCloud);
-      // N1: color neutro (constante × dayF); el cálido llega por la niebla.
+      clouds.setAmounts({ cumulus: amtCumulus, mist: amtMist, cirrus: amtCirrus, far: amtFar });
+      clouds.setMult(cloudMultSm);
+      // N1/N2: color neutro (blanco × dayF); el cálido llega por la niebla.
       clouds.setDayF(cloudDayF);
-      // A9: fade the layer as the view ray steepens (epilogue from above).
-      // Elevation of the camera->target ray above horizontal, deg.
+      // A9 (solo seguro): fade de la capa al mirar hacia abajo.
+      // N2: aboveFade/belowFade eliminados (la base ya está sobre el epílogo).
       {
         const tgt = rig.getTarget();
         const dx = tgt[0] - camera.position.x;
@@ -1337,11 +1447,6 @@ float wgrain(vec2 lp){
         const elevDeg = (Math.atan2(-dy, horiz) * 180) / Math.PI;
         const f = Math.min(1, Math.max(0, (elevDeg - CLOUD_FADE_START_DEG) / (90 - CLOUD_FADE_START_DEG)));
         clouds.setZenithFade(f * CLOUD_ZENITH_FADE);
-        // §4b FASE 4c: above-fade is PER-PUFF in the vertex (camera.y −
-        // centre.y) — no global toggle needed. setBelowFade(1) arms it;
-        // setCamY is dead (kept for call-site stability).
-        clouds.setBelowFade(1);
-        clouds.setCamY(camera.position.y);
       }
       clouds.update(clock.elapsedTime, camera, renderer.domElement.width, renderer.domElement.height);
       metrics.cloudCoverage = clouds.getCoverage();
@@ -1401,6 +1506,8 @@ float wgrain(vec2 lp){
     // §4b FASE 2b (?skymap=1): 384×192 CSS px bottom-left, NDC scene,
     // AFTER main render + labels. autoClear=false: composites, never wipes.
     // Renderer path only, never raw GL.
+    // N2 (?debug=atlas): el atlas ×0,5 abajo a la IZQUIERDA, en su lugar
+    // (mismo pase compuesto, autoClear=false, sin writes de estado).
     if (boot.skymap && skyCap && boot.skycap) {
       ensureSkymapBlit();
       if (skymapBlit) {
@@ -1410,6 +1517,13 @@ float wgrain(vec2 lp){
         renderer.autoClear = prevAutoClear;
         metrics.passes = 2;
       }
+    }
+    if (boot.atlas && atlasBlit) {
+      const prevAutoClear = renderer.autoClear;
+      renderer.autoClear = false;
+      renderer.render(atlasBlit.scene, atlasBlit.cam);
+      renderer.autoClear = prevAutoClear;
+      metrics.passes += 1;
     }
     metrics.jsTerrain = 0; // terrain JS slice is inside rebuilds, not the loop
     metrics.msPost = 0;
@@ -1635,9 +1749,27 @@ float wgrain(vec2 lp){
           if (!cloudPxWired) {
             const pu = clouds.probeUniforms();
             (cloudPxMat.uniforms["uMap"] as { value: unknown }).value = pu.uMap;
-            (cloudPxMat.uniforms["uDensity"] as { value: unknown }).value = pu.uDensity;
-            (cloudPxMat.uniforms["uMask"] as { value: unknown }).value = pu.uMask;
+            (cloudPxMat.uniforms["uAmtCumulus"] as { value: unknown }).value = pu.uAmtCumulus;
+            (cloudPxMat.uniforms["uAmtMist"] as { value: unknown }).value = pu.uAmtMist;
+            (cloudPxMat.uniforms["uAmtCirrus"] as { value: unknown }).value = pu.uAmtCirrus;
+            (cloudPxMat.uniforms["uAmtFar"] as { value: unknown }).value = pu.uAmtFar;
+            // N2b: uMult/uZenithFade/uTime/uFamFilter del probe: objetos
+            // propios (el probe NO comparte el material de nubes; copia los
+            // valores cada pase — la sonda informa, no gobierna).
+            (cloudPxMat.uniforms["uMult"] as { value: number }).value = 1;
+            (cloudPxMat.uniforms["uZenithFade"] as { value: number }).value = 0;
+            (cloudPxMat.uniforms["uTime"] as { value: number }).value = 0;
+            (cloudPxMat.uniforms["uFamFilter"] as { value: number }).value = -1;
             cloudPxWired = true;
+          }
+          // N2b: el probe copia los valores vivos (mismo frame, cero deriva)
+          // + uTime (pulso de bruma) + filtro de familia (?family=N/off).
+          {
+            const pu = clouds.probeUniforms();
+            (cloudPxMat.uniforms["uMult"] as { value: number }).value =
+              (pu.uAmtCumulus as unknown as { __mult?: number }).__mult ?? 1;
+            (cloudPxMat.uniforms["uTime"] as { value: number }).value = clock.elapsedTime;
+            (cloudPxMat.uniforms["uFamFilter"] as { value: number }).value = famFilter;
           }
           // cloudPxScene HOLDS clouds.mesh across frames (added once) —
           // restore the parent after the probe render (scene graph hygiene:
@@ -1657,14 +1789,39 @@ float wgrain(vec2 lp){
           renderer.setRenderTarget(null);
           renderer.setClearColor(prevColor, prevAlpha);
           if (prevParent) prevParent.add(clouds.mesh);
-          // count white (cloud, a>0.15) inside the terrain-sky mask:
-          // occBuf is 256×144, cloudPxBuf is 96×54 — nearest mapping.
-          // G43 accumulates in the SAME loop: cloud px over TERRAIN.
+          // N2 G44: componentes conexas de nube (alfa > 0,15) en el RT del
+          // medidor (96×54, 4-vecindad) + G41/G43 en el mismo bucle.
+          // N2b: la bruma (fam 1) se mide sobre TERRENO; las otras tres
+          // sobre cielo. El conteo por defecto (sin ?family=) es el total:
+          // cielo para fams 0/2/3 + terreno para fam 1.
+          const famOnly = famFilter < -0.5 ? -1 : Math.round(famFilter);
           let skyN = 0;
           let cloudN = 0;
           let terrN = 0;
           let cloudOnTerr = 0;
+          // N2b G49: bruma sobre terreno (puerta: [0,08,0,25] @07:30).
+          let mistOnTerr = 0;
+          // N2b G50: franja inferior del cielo (15 % más cercano al horizonte
+          // ≈ filas 0..7 del RT 96×54, el RT tiene y=0 abajo) vs resto.
+          let lowSkyN = 0;
+          let lowSkyCloud = 0;
+          let highSkyN = 0;
+          let highSkyCloud = 0;
+          // N2b G51: alfa máxima en pantalla (familia 2, cirros).
+          let maxAlphaSeen = 0;
           const denseAlphas: number[] = [];
+          // G44: BFS sobre la máscara de nube (solo píxeles de cielo).
+          const visited = new Uint8Array(96 * 54);
+          let compCount = 0;
+          let compSmall = 0;
+          const isCloudAt = (xx: number, yy: number): boolean => {
+            const co = (yy * 96 + xx) * 4;
+            const mx = Math.min(255, Math.floor((xx / 96) * 256));
+            const my = Math.min(143, Math.floor((yy / 54) * 144));
+            const mo = (my * 256 + mx) * 4;
+            const sky = (occBuf[mo] as number) < 8 && (occBuf[mo + 1] as number) < 8 && (occBuf[mo + 2] as number) < 8;
+            return sky && (cloudPxBuf[co] as number) > 128;
+          };
           for (let yy = 0; yy < 54; yy++) {
             for (let xx = 0; xx < 96; xx++) {
               const mx = Math.min(255, Math.floor((xx / 96) * 256));
@@ -1673,21 +1830,72 @@ float wgrain(vec2 lp){
               const co = (yy * 96 + xx) * 4;
               const isSky = (occBuf[mo] as number) < 8 && (occBuf[mo + 1] as number) < 8 && (occBuf[mo + 2] as number) < 8;
               const isCloud = (cloudPxBuf[co] as number) > 128;
+              const pxAlpha = (cloudPxBuf[co + 3] as number) / 255;
               if (isSky) {
                 skyN++;
                 if (isCloud) {
                   cloudN++;
-                  denseAlphas.push((cloudPxBuf[co + 3] as number) / 255);
+                  denseAlphas.push(pxAlpha);
+                  if (pxAlpha > maxAlphaSeen) maxAlphaSeen = pxAlpha;
+                  // G50: franja inferior (filas 0..7) vs resto del cielo.
+                  if (yy < 8) {
+                    lowSkyN++;
+                    lowSkyCloud++;
+                  } else {
+                    highSkyN++;
+                    highSkyCloud++;
+                  }
+                } else if (yy < 8) {
+                  lowSkyN++;
+                } else {
+                  highSkyN++;
                 }
               } else {
                 terrN++;
-                if (isCloud) cloudOnTerr++;
+                if (isCloud) {
+                  cloudOnTerr++;
+                  // N2b: con filtro fam=1 el RT solo trae bruma → bruma/terreno.
+                  if (famOnly === 1) mistOnTerr++;
+                  denseAlphas.push(pxAlpha);
+                  if (pxAlpha > maxAlphaSeen) maxAlphaSeen = pxAlpha;
+                }
+              }
+              // G44 BFS (4-vecindad, solo cielo)
+              const gi = yy * 96 + xx;
+              if (isSky && isCloud && visited[gi] === 0) {
+                let size = 0;
+                const stack: number[] = [gi];
+                while (stack.length > 0) {
+                  const j = stack.pop() as number;
+                  if (visited[j] === 1) continue;
+                  visited[j] = 1;
+                  const jx = j % 96;
+                  const jy = Math.floor(j / 96);
+                  if (!isCloudAt(jx, jy)) continue;
+                  size++;
+                  if (jx > 0) stack.push(j - 1);
+                  if (jx + 1 < 96) stack.push(j + 1);
+                  if (jy > 0) stack.push(j - 96);
+                  if (jy + 1 < 54) stack.push(j + 96);
+                }
+                if (size > 0) {
+                  compCount++;
+                  if (size / Math.max(1, skyN > 0 ? skyN : 5184) < 0.004) compSmall++;
+                }
               }
             }
           }
+          (window as unknown as { __cloudComps?: number }).__cloudComps = compCount;
+          (window as unknown as { __cloudCompsSmall?: number }).__cloudCompsSmall = compSmall;
           const coverPx = skyN > 0 ? cloudN / skyN : 0;
           (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx = coverPx;
           (window as unknown as { __cloudCoverPxErr?: string }).__cloudCoverPxErr = "";
+          // N2b G49/G50/G51: lecturas por familia sobre el MISMO pase.
+          (window as unknown as { __cloudMistTerr?: number }).__cloudMistTerr =
+            famOnly === 1 && terrN > 0 ? mistOnTerr / terrN : terrN > 0 ? cloudOnTerr / terrN : 0;
+          (window as unknown as { __cloudLowSky?: number }).__cloudLowSky = lowSkyN > 0 ? lowSkyCloud / lowSkyN : 0;
+          (window as unknown as { __cloudHighSky?: number }).__cloudHighSky = highSkyN > 0 ? highSkyCloud / highSkyN : 0;
+          (window as unknown as { __cloudMaxAlpha?: number }).__cloudMaxAlpha = maxAlphaSeen;
           const skyPx = (window as unknown as { __skyFrac?: number }).__skyFrac ?? -1;
           const blue = skyPx >= 0 ? Math.min(1, Math.max(0, skyPx * (1 - coverPx))) : -1;
           (window as unknown as { __blueSky?: number }).__blueSky = blue;
@@ -1702,6 +1910,27 @@ float wgrain(vec2 lp){
             : -1;
           (window as unknown as { __cloudDense?: number }).__cloudDense = g41;
           (window as unknown as { __cloudOnTerr?: number }).__cloudOnTerr = terrN > 0 ? cloudOnTerr / terrN : 0;
+          // N2b: tabla por familia en el MISMO pase — el filtro ?family=N se
+          // aplica por pase; __cloudCoverPxFam acumula la última lectura de
+          // cada familia (el auditor barre family=0..3 + sin filtro).
+          {
+            const W = window as unknown as { __cloudCoverPxFam?: number[] };
+            if (!W.__cloudCoverPxFam) W.__cloudCoverPxFam = [-1, -1, -1, -1];
+            const fam = W.__cloudCoverPxFam;
+            if (famOnly >= 0 && famOnly <= 3) {
+              // fam 1 (bruma) sobre terreno; 0/2/3 sobre cielo.
+              fam[famOnly] = famOnly === 1
+                ? (terrN > 0 ? mistOnTerr / terrN : 0)
+                : coverPx;
+            } else {
+              // sin filtro: fam 0/2/3 leen cielo total, fam 1 lee terreno.
+              // (aprox: el total mezcla; el auditor usa ?family=N por familia).
+              fam[0] = coverPx;
+              fam[1] = terrN > 0 ? cloudOnTerr / terrN : 0;
+              fam[2] = coverPx;
+              fam[3] = coverPx;
+            }
+          }
         } else {
           (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx = -1;
           (window as unknown as { __blueSky?: number }).__blueSky = -1;

@@ -61,6 +61,29 @@ export function sunPosition(hourLocal: number): { azimuthDeg: number; elevationD
 
 const lerp = (a: number, b: number, f: number): number => a + (b - a) * f;
 
+/** N2: convección realista de agosto (sin gate de sol): 0,35 de base,
+ * rampa a mediodía (smoothstep 7,2→13,0), caída parcial al atardecer
+ * (−0,2 · smoothstep 18,0→21,0). Continua en hora: G35 por construcción. */
+export function cloudAmount(hourDec: number): number {
+  const up = smoothstep(7.2, 13.0, hourDec);
+  const down = smoothstep(18.0, 21.0, hourDec);
+  return Math.min(1, Math.max(0, 0.35 + 0.65 * up - 0.2 * down));
+}
+
+function smoothstep(e0: number, e1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** N2b: bruma de valle — plena hasta las 08:00, cero a las 10:30, vuelve al
+ * 60 % al anochecer. Continua en hora (G35). dayF = cloudDayF (misma
+ * fuente que la niebla y P). */
+export function mistAmount(hourDec: number, dayF: number): number {
+  const morn = Math.min(1, Math.max(0, 1 - (hourDec - 8.0) / 2.5));
+  const eve = 0.6 * smoothstep(18.5, 20.5, hourDec);
+  return Math.min(1, Math.max(0, (0.35 + 0.65 * dayF) * (morn + eve)));
+}
+
 function warmColor(elev: number): number {
   // high sun ≈ neutral warm white; low sun ≈ amber
   if (elev > 30) return 0xfff3e2;
@@ -79,12 +102,9 @@ export function lightingAt(t: string | number): Lighting {
   // the x⁴ distance curve keeps the valley readable, only the far edge melts)
   const fogDensity = e <= 0 ? 1 : Math.max(0.55, 1 - (h - 7.1) / 3.4);
   const fogTopM = lerp(1750, 1400, Math.min(1, Math.max(0, (h - 7) / 3.5)));
-  // §4b FASE 4b: convection WITH a floor — cumulus from first light, full
-  // by noon, and NEVER zero while the sun is up. The old `e <= 0 ? 0`
-  // gate made clouds pop in one frame at 07:12 (G35). Presence is
-  // continuous: the shader's dayF fades their LIGHT (blue-grey masses at
-  // night/twilight, white with sun shading by day), never their alpha.
-  const cloudDensity = Math.min(1, Math.max(0, 0.45 + 0.55 * Math.min(1, Math.max(0, (h - 9) / 3))));
+  // N2: amount(h) sustituye a cloudDensity — sigue expuesto como cloudDensity
+  // para no remover llamadas (misma semántica: presencia, nunca gate de sol).
+  const cloudDensity = cloudAmount(h);
   // §4 correction: day exposure is 1.0 (renderer default) — the SKY dims
   // in the DOME (SKY_SCALE), never via exposure: 0.55 starved the terrain
   // (luma 0.023 at noon against a 0.18 gate). Twilight keeps 1.25.

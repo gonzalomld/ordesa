@@ -908,13 +908,15 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   const blitOk = viewerSrcG24.includes("OrthographicCamera(-1, 1, 1, -1, -1, 1)")
     && viewerSrcG24.includes("renderer.autoClear = false")
     && viewerSrcG24.includes("renderOrder = 999");
-  const { G24_ZEN_MIN, G24_ZEN_MAX, G24_HZ_RATIO, SKY_TURBIDITY, SKY_RAYLEIGH, SKY_MIE, SKY_G, SKY_SCALE, SKY_SAT, HEMI_GRAY_MIX, CLOUD_COVERAGE, CLOUD_MASK, CLOUD_PUFF_SCALE } =
+  const { G24_ZEN_MIN, G24_ZEN_MAX, G24_HZ_RATIO, SKY_TURBIDITY, SKY_RAYLEIGH, SKY_MIE, SKY_G, SKY_SCALE, SKY_SAT, HEMI_GRAY_MIX } =
     await import("../src/narrative/choreography.ts");
-  const { CLOUD_COUNT } = await import("../src/engine/clouds.ts");
+  const { CLOUD_COUNT, CLOUD_ATLAS_TILES, CLOUD_TOTAL } = await import("../src/engine/clouds.ts");
+  const { CLOUD_MAX_INSTANCES } = await import("../src/narrative/choreography.ts");
   const constsOk =
     SKY_TURBIDITY === 1.7 && SKY_RAYLEIGH === 1.6 && SKY_MIE === 0.004 && SKY_G === 0.8 &&
-    SKY_SCALE === 0.22 && SKY_SAT === 2.0 && HEMI_GRAY_MIX === 0.6 && CLOUD_COVERAGE === 0.3 &&
-    CLOUD_MASK === 0.20 && CLOUD_PUFF_SCALE === 1.10 && CLOUD_COUNT === 160 &&
+    SKY_SCALE === 0.22 && SKY_SAT === 2.0 && HEMI_GRAY_MIX === 0.6 && CLOUD_COUNT === 148 &&
+    CLOUD_ATLAS_TILES.length === 6 && CLOUD_TOTAL === CLOUD_MAX_INSTANCES &&
+    CLOUD_MAX_INSTANCES === 192 + 40 + 6 + 60 &&
     G24_HZ_RATIO === 2.2 && G24_ZEN_MIN === "#2a68b8" && G24_ZEN_MAX === "#3e86d2";
   const ok = hasProbe && readbackOk && noClone && equirect && sharedU && ownCam && constsOk
     && dispSpace && auditTrail && hotLoopGone && cadence30 && skyFlag && blitOk;
@@ -924,10 +926,10 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
       : `contract broken (probe=${hasProbe} readback=${readbackOk} noClone=${noClone} equirect=${equirect} sharedU=${sharedU} ownCam=${ownCam} consts=${constsOk} disp=${dispSpace} audit=${auditTrail} hotGone=${hotLoopGone} cad30=${cadence30} skyFlag=${skyFlag} blit=${blitOk})`);
 }
 
-// --- G34 atlas squares (§4b FASE 4b): the procedural atlas must show no
-// 16×16 blocks at ×4 zoom. Node checks the ACCEPTANCE ran (script +
-// embedded thresholds + meta hash wiring); the PICTURE (audit PNG) is
-// eyeballed once per atlas regeneration.
+// --- G34 atlas (N2 Everest-style): lienzos 2D 512×256, 70-150 gradientes,
+// base plana, panza source-atop, sin agujeros ni bordes duros a ×2.
+// Node checks the ACCEPTANCE ran (script + thresholds + meta hash wiring);
+// the PICTURE (audit PNG + ?debug=atlas) is eyeballed once per regeneration.
 {
   const mkSrc = existsSync("scripts/make-cloud-atlas.ts") ? readFileSync("scripts/make-cloud-atlas.ts", "utf8") : "";
   const metaAssets = JSON.parse(readFileSync("data/build/meta.json", "utf8")) as {
@@ -936,46 +938,48 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
   const atlasAsset = metaAssets.assets["clouds-atlas"] ?? "";
   const atlasFile = `public/${atlasAsset}`;
   const atlasExists = atlasAsset !== "" && existsSync(atlasFile);
-  const ok = mkSrc.includes("blockRatio >= 2.0") && mkSrc.includes("flatFrac >= 0.02")
-    && mkSrc.includes("fbm") && mkSrc.includes("smoothstep(0, 24 / QUAD")
+  const ok = mkSrc.includes("coreHole >= 144") && mkSrc.includes("edgeStep > 0.25")
+    && mkSrc.includes("source-atop") && mkSrc.includes("ATLAS_SLOTS")
     && atlasExists;
   gate("G34-atlas", ok,
     ok
-      ? `make-cloud-atlas.ts (fBm lobes, soft edges, acceptance <2.0) → ${atlasAsset} — eyeball the audit PNG at ×4 once`
+      ? `make-cloud-atlas.ts (canvas gradients, blue-grey belly, acceptance holes/edges) → ${atlasAsset} — eyeball the audit PNG at ×2 once`
       : "no atlas script/acceptance or hashed asset missing from meta");
 }
 
-// --- G35 continuity (§4b FASE 4b): no pop at dawn — cloudDensity never
-// depends on daylight (presence), only the shader light does (dayF).
-// Node checks statically: no `e <= 0` gate on the curve + dayF plumbing
-// (sun → viewer → shader); the 6-sample table is measured in prod.
+// --- G35 continuity (N2): amount(h) continuo — sin gate de sol, solo la
+// luz (dayF) depende del sol. Node checks statically: cloudAmount con las
+// dos rampas + dayF plumbing (sun → viewer → shader); la tabla de 6
+// muestras se mide en prod (<0,04).
 {
   const sunSrc35 = readFileSync("src/engine/sun.ts", "utf8");
   const viewerSrc35 = readFileSync("src/engine/viewer.ts", "utf8");
   const cloudSrc35 = readFileSync("src/engine/clouds.ts", "utf8");
-  const noGate = !sunSrc35.includes("cloudDensity: e <=");
+  const noGate = !sunSrc35.includes("cloudDensity: e <=") && !sunSrc35.includes("cloudDensity = e <=");
+  const amount = sunSrc35.includes("cloudAmount") && sunSrc35.includes("7.2, 13.0")
+    && sunSrc35.includes("18.0, 21.0") && viewerSrc35.includes("cloudAmount");
   const dayF = sunSrc35.includes("cloudDayF") && viewerSrc35.includes("cloudDayF")
-    && cloudSrc35.includes("uDayF") && cloudSrc35.includes("top * uDayF");
-  const ok = noGate && dayF;
+    && cloudSrc35.includes("uDayF");
+  const ok = noGate && amount && dayF;
   gate("G35-continuity", ok,
     ok
-      ? "presence continuous (no e-gate) + dayF light path (sun→viewer→shader) — measure 6-sample table in prod (<0.04 steps)"
-      : `continuity broken (noGate=${noGate} dayF=${dayF})`);
+      ? "amount(h) continuous (no e-gate) + dayF light path (sun→viewer→shader) — measure 6-sample table in prod (<0.04 steps)"
+      : `continuity broken (noGate=${noGate} amount=${amount} dayF=${dayF})`);
 }
 
-// --- G36 band clearance (§4b FASE 4c): MAIN band strictly above every
-// lens (base = camYmax + 250) + DISTANT family ≥ 3 km plan in the low
-// band. Node RECOMPUTES both with the production cloudLayout (poses carry
-// s) and audits the s-aware 3D gate (≥900 near-in-s, ≥400 far) by POSITION
-// anchor s + the distant family's plan clearance.
+// --- G36 band (N2b): cúmulos con los gates N2 (base = máx(camYmax + 300,
+// 2900), ≥1500 m plan de TODA pose, ≥900 m del rastro, ≥500 m sobre el
+// terreno) + bruma/cirros/anillo con sus propios gates. Node RECOMPUTA con
+// el production cloudLayout y audita por familia.
 {
   const cloudSrc36 = readFileSync("src/engine/clouds.ts", "utf8");
-  const hasBand = cloudSrc36.includes("CLOUD_BAND_LIFT_M") && cloudSrc36.includes("CLOUD_FAR_MIN_M")
-    && cloudSrc36.includes("CLOUD_FAR_BAND_LO_M");
-  // recompute: pose sweep (verify ropeAt + safety + floor) in EPSG frame
+  const hasBand = cloudSrc36.includes("CLOUD_BASE_LIFT_M") && cloudSrc36.includes("CLOUD_CLEAR_CAM_M")
+    && cloudSrc36.includes("CLOUD_CLEAR_ROUTE_M") && cloudSrc36.includes("CLOUD_GROUP_COUNT");
+  // recompute: pose sweep (verify ropeAt + safety + floor) in EPSG frame,
+  // N2: s ∈ [0,1] INCLUIDO el epílogo (paso 0,005, como el viewer).
   const { cloudLayout: cl36 } = await import("../src/engine/clouds.ts");
   const poses36: { x: number; y: number; z: number }[] = [];
-  for (let s = 0; s <= 0.97; s += 0.005) {
+  for (let s = 0; s <= 1.0; s += 0.005) {
     const sc = Math.min(1, Math.max(0, s));
     const d = pchipSD(sc);
     const prof = followAt(follow, sc);
@@ -1029,62 +1033,84 @@ gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
     if (c.z < camYmin) camYmin = c.z;
   }
   const lay36 = cl36(meta as unknown as Parameters<typeof cl36>[0], elevFull36(), { n: r.n, x: r.x, y: r.y }, poses36);
-  // Audit by POSITION anchor s (nearest route fraction of the pushed puff)
-  // + MAIN-vs-DISTANT split: puffs at z ≥ mainBase belong to MAIN (slab
-  // rule), below it to DISTANT (plan-clearance rule).
-  const anchorS36 = (x: number, y: number): number => {
-    let bi = 0;
-    let bd = Infinity;
-    for (let i = 0; i < r.n; i += 4) {
-      const dx = x - (r.x[i] as number);
-      const dy = y - (r.y[i] as number);
-      const d = dx * dx + dy * dy;
-      if (d < bd) {
-        bd = d;
-        bi = i;
-      }
+  // N2b: audita por familia — cúmulos (gates N2 estrictos) por un lado;
+  // bruma (valle <1900 m, suelo+60..220), cirros (7000-9000) y anillo
+  // (fuera del bbox, 3000-3800) con sus propios gates.
+  const { CLOUD_GROUP_COUNT } = await import("../src/narrative/choreography.ts");
+  const {
+    CLOUD_MIST_GROUND_MAX_M,
+    CLOUD_MIST_LIFT_LO_M,
+    CLOUD_MIST_LIFT_HI_M,
+    CLOUD_CIRRUS_LO_M,
+    CLOUD_CIRRUS_HI_M,
+    CLOUD_FAR_LO_M,
+    CLOUD_FAR_HI_M,
+  } = await import("../src/narrative/choreography.ts");
+  const boards36 = lay36.boards;
+  const band36 = lay36.band;
+  const expBase = Math.max(camYmax + 300, 2900);
+  const expTop = expBase + 600;
+  const baseOk = Math.abs(band36.base - expBase) < 1 && Math.abs(band36.top - expTop) < 1
+    && Math.abs(band36.camYmax - camYmax) < 1;
+  // Solo los grupos de CÚMULOS (familia N2, groups[0:accepted]) pasan los
+  // gates estrictos; band36.groups mezcla bruma/cirros/anillo detrás.
+  // N2b: el TOTAL de instancias (medido con semilla fija) debe ser ≤ 260.
+  const cumGroups = band36.groups.slice(0, band36.accepted);
+  let minCamPlan = Infinity;
+  for (const g of cumGroups) {
+    for (const c of poses36) {
+      const dp = Math.hypot(g.cx - (c.x as number), g.cy - (c.y as number));
+      if (dp < minCamPlan) minCamPlan = dp;
     }
-    return bi / Math.max(1, r.n - 1);
+  }
+  // distancia mínima centro→rastro (muestreo ×4) + centro→terreno (cúmulos)
+  const elev36 = elevFull36();
+  const sample36 = (x: number, y: number): number => {
+    const col = (x - meta.originX) / meta.resX - 0.5;
+    const row = (meta.originY - y) / meta.resY - 0.5;
+    const c0 = Math.max(0, Math.min(meta.width - 2, Math.floor(col)));
+    const r0 = Math.max(0, Math.min(meta.height - 2, Math.floor(row)));
+    const fx = Math.min(1, Math.max(0, col - c0));
+    const fy = Math.min(1, Math.max(0, row - r0));
+    const W = meta.width;
+    const at = (cc: number, rr: number): number => elev36[rr * W + cc] as number;
+    const a = at(c0, r0);
+    const b = at(c0 + 1, r0);
+    const c = at(c0, r0 + 1);
+    const d = at(c0 + 1, r0 + 1);
+    return a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy;
   };
-  let minNear = Infinity;
-  let minFar = Infinity;
-  for (const p of lay36) {
-    const ps = anchorS36(p.x, p.y);
-    for (const c of poses36) {
-      const d = Math.hypot(p.x - (c.x as number), p.y - (c.y as number), p.z - (c.z as number));
-      if (Math.abs((c.s as number) - ps) <= 0.2) {
-        if (d < minNear) minNear = d;
-      } else if (d < minFar) {
-        minFar = d;
-      }
+  let minRoute = Infinity;
+  let minGround = Infinity;
+  for (const g of cumGroups) {
+    for (let i = 0; i < r.n; i += 4) {
+      const d = Math.hypot(g.cx - (r.x[i] as number), g.cy - (r.y[i] as number));
+      if (d < minRoute) minRoute = d;
     }
+    const gr = sample36(g.cx, g.cy);
+    if (g.cz - gr < minGround) minGround = g.cz - gr;
   }
-  const mainBase = camYmax + 250;
-  const mainTop = mainBase + 400;
-  // Families by INDEX (layout push order: main[0:120], far[120:160]) —
-  // never by z (ridge-lift max(ground+120,·) can push a far puff above
-  // mainBase; that is correct placement, not a smuggled fallback).
-  const main = lay36.slice(0, 120);
-  const far = lay36.slice(120);
-  const mainInSlab = main.every((p) => p.z >= mainBase - 1 && p.z <= mainTop + 400);
-  const farInBand = far.every((p) => {
-    const gz = p.z;
-    return gz >= 2000 - 1 && gz <= 2400 + 1200;
+  const cumInBand = cumGroups.every((g) => g.cz >= band36.base - 1 && g.cz <= band36.top + 1);
+  // N2b por familia (sobre boards, con sus gates propios):
+  const mistB = boards36.filter((b) => b.family === 1);
+  const cirrB = boards36.filter((b) => b.family === 2);
+  const farB = boards36.filter((b) => b.family === 3);
+  const mistOk = mistB.length === 40 && mistB.every((b) => {
+    const gr = sample36(b.x, b.y);
+    return gr < CLOUD_MIST_GROUND_MAX_M && b.z - gr >= CLOUD_MIST_LIFT_LO_M - 1 && b.z - gr <= CLOUD_MIST_LIFT_HI_M + 1;
   });
-  // far plan clearance: ≥ 3 km plan to EVERY pose (recomputed, not trusted).
-  let minFarPlan = Infinity;
-  for (const p of far) {
-    for (const c of poses36) {
-      const dp = Math.hypot(p.x - (c.x as number), p.y - (c.y as number));
-      if (dp < minFarPlan) minFarPlan = dp;
-    }
-  }
-  const ok = hasBand && minNear >= 900 && minFar >= 400 && mainInSlab && farInBand
-    && minFarPlan >= 3000 && lay36.length === 160;
+  const cirrOk = cirrB.length === 6 && cirrB.every((b) => b.z >= CLOUD_CIRRUS_LO_M - 1 && b.z <= CLOUD_CIRRUS_HI_M + 1);
+  const farOk = farB.length >= 36 && band36.families.far === 12 && farB.every((b) =>
+    b.z >= CLOUD_FAR_LO_M - 1 && b.z <= CLOUD_FAR_HI_M + 1);
+  const famCountOk = band36.families.cumulus === CLOUD_GROUP_COUNT && band36.families.mist === 40
+    && band36.families.cirrus === 6 && band36.families.far === 12 && boards36.length <= 260;
+  const ok = hasBand && baseOk && cumInBand && minCamPlan >= 1500 && minRoute >= 900
+    && minGround >= 500 && band36.accepted === CLOUD_GROUP_COUNT
+    && mistOk && cirrOk && farOk && famCountOk;
   gate("G36-band", ok,
     ok
-      ? `main [${mainBase.toFixed(0)},${mainTop.toFixed(0)}] n=${main.length}, far [2000,2400]+3km n=${far.length} minPlan ${(minFarPlan).toFixed(0)}, near ${(minNear).toFixed(0)} (≥900), far ${(minFar).toFixed(0)} (≥400)`
-      : `band broken (near=${minNear.toFixed(0)} ≥900, far=${minFar.toFixed(0)} ≥400, farPlan=${minFarPlan.toFixed(0)} ≥3000, main=${main.length} far=${far.length})`);
+      ? `base ${band36.base.toFixed(0)} top ${band36.top.toFixed(0)} camYmax ${band36.camYmax.toFixed(0)} (poses ${poses36.length}), cúmulos ${band36.accepted}/${CLOUD_GROUP_COUNT} minCam ${(minCamPlan).toFixed(0)} (≥1500) minRoute ${(minRoute).toFixed(0)} (≥900) minGround ${(minGround).toFixed(0)} (≥500) rej=${band36.rejected.cam}/${band36.rejected.route}/${band36.rejected.ground}/${band36.rejected.attempts}, bruma ${mistB.length}/40, cirros ${cirrB.length}/6, anillo ${farB.length} boards/${band36.families.far} grupos, total ${boards36.length}≤260`
+      : `band broken (base=${band36.base.toFixed(0)} exp=${expBase.toFixed(0)} camYmax=${band36.camYmax.toFixed(0)} exp=${camYmax.toFixed(0)} cum=${band36.accepted}/${CLOUD_GROUP_COUNT} minCam=${minCamPlan.toFixed(0)} ≥1500 minRoute=${minRoute.toFixed(0)} ≥900 minGround=${minGround.toFixed(0)} ≥500 rej=${band36.rejected.cam}/${band36.rejected.route}/${band36.rejected.ground}/${band36.rejected.attempts} mist=${mistB.length}/40 ok=${mistOk} cirr=${cirrB.length}/6 ok=${cirrOk} far=${farB.length} ok=${farOk} fam=${famCountOk})`);
 }
 
 // --- heightfield array for the G36 layout recompute (same RG decode) ---
@@ -1099,10 +1125,11 @@ function elevFull36(): Float32Array {
   return out;
 }
 
-// --- G24c cloud cover (§4b FASE 4c: PIXEL meter, no try/catch). __cloudCoverPx
-// in [0.26,0.34] at 12:00 in s=0.18/0.50/0.80, ≥0.15 at 9:00 and 20:50.
-// Node checks the CONTRACT (flat probe pass + sky-mask count + G41/G42/G43
-// readers + loud failure path); the NUMBERS come from prod.
+// --- G24c cloud cover (N2b: PIXEL meter + family filter, no try/catch).
+// __cloudCoverPx in [0.20,0.40] at 12:00 in s=0.18/0.50/0.80, ≥0.12 at
+// 8:30 and 20:30. Node checks the CONTRACT (flat probe pass + sky-mask
+// count + G41/G43/G44 readers + family filter + per-family table + loud
+// failure path); the NUMBERS come from prod.
 {
   const viewerSrcC = readFileSync("src/engine/viewer.ts", "utf8");
   const cloudSrcC = readFileSync("src/engine/clouds.ts", "utf8");
@@ -1113,23 +1140,79 @@ function elevFull36(): Float32Array {
   const parentBack = viewerSrcC.includes("prevParent");
   const g414243 = viewerSrcC.includes("__cloudDense") && viewerSrcC.includes("__cloudOnTerr")
     && viewerSrcC.includes("__cloudLuma") && viewerSrcC.includes("publishCloudColor");
-  const layoutOk = cloudSrcC.includes("CLOUD_BAND_LIFT_M") && cloudSrcC.includes("CLOUD_FAR_MIN_M");
-  const ok = flatPass && skyMask && loud && parentBack && g414243 && layoutOk;
+  const g44 = viewerSrcC.includes("__cloudComps");
+  const famFilter = viewerSrcC.includes("uFamFilter") && viewerSrcC.includes("__cloudCoverPxFam");
+  const layoutOk = cloudSrcC.includes("CLOUD_BASE_LIFT_M") && cloudSrcC.includes("CLOUD_CLEAR_CAM_M");
+  const ok = flatPass && skyMask && loud && parentBack && g414243 && g44 && famFilter && layoutOk;
   gate("G24c-cover", ok,
     ok
-      ? "flat probe (live uniforms, loud errors, parent restore) + sky-mask → __cloudCoverPx + G41/G42/G43 — measure [0.26,0.34] @12:00, ≥0.15 @9:00/20:50"
-      : `cover contract broken (flat=${flatPass} mask=${skyMask} loud=${loud} parent=${parentBack} g414243=${g414243} layout=${layoutOk})`);
+      ? "flat probe (live uniforms, loud errors, parent restore) + sky-mask → __cloudCoverPx + G41/G43/G44 + ?family=N → __cloudCoverPxFam — measure [0.20,0.40] @12:00, ≥0.12 @8:30/20:30"
+      : `cover contract broken (flat=${flatPass} mask=${skyMask} loud=${loud} parent=${parentBack} g414243=${g414243} g44=${g44} fam=${famFilter} layout=${layoutOk})`);
 }
 
-// --- G41 dense cores (§4b FASE 4c): top-decile cloud RT alpha ≥ 0.8.
-// Node checks the reader exists; the NUMBER comes from prod.
+// --- G49 mist (N2b: bruma de valle). ?family=1 sobre TERRENO:
+// [0,08,0,25] @07:30 s=0,05; 0 @12:00; [0,04,0,15] @20:00 s=0,90.
+// Node checks the CONTRACT (filtro por familia + mistAmount con rampa de
+// mañana y retorno de tarde + lectura sobre terreno); prod da los NÚMEROS.
 {
-  const viewerSrc41 = readFileSync("src/engine/viewer.ts", "utf8");
-  const ok = viewerSrc41.includes("__cloudDense");
-  gate("G41-cores", ok,
+  const viewerSrc49 = readFileSync("src/engine/viewer.ts", "utf8");
+  const sunSrc49 = readFileSync("src/engine/sun.ts", "utf8");
+  const cloudSrc49 = readFileSync("src/engine/clouds.ts", "utf8");
+  const filt = viewerSrc49.includes("uFamFilter") && viewerSrc49.includes("__cloudMistTerr");
+  const amt = sunSrc49.includes("mistAmount") && sunSrc49.includes("8.0) / 2.5")
+    && sunSrc49.includes("18.5, 20.5") && viewerSrc49.includes("mistAmount(");
+  const lay = cloudSrc49.includes("CLOUD_MIST_GROUND_MAX_M") && cloudSrc49.includes("CLOUD_MIST_CLEAR_PLAN_M");
+  const ok = filt && amt && lay;
+  gate("G49-mist", ok,
     ok
-      ? "__cloudDense (top-decile RT alpha) published — measure ≥0.8 @12:00"
-      : "no __cloudDense probe in viewer.ts");
+      ? "?family=1 → __cloudMistTerr (bruma/terreno) + mistAmount (plena→08:00, 0→10:30, 60 %→noche) — measure [0.08,0.25] @07:30 s=0.05, 0 @12:00, [0.04,0.15] @20:00 s=0.90"
+      : `mist contract broken (filter=${filt} amount=${amt} layout=${lay})`);
+}
+
+// --- G50 far ring (N2b: anillo lejano). Familia 3 en la franja inferior
+// del cielo (15 % junto al horizonte) ≥ 0,25 @12:00 s=0,18/0,80; resto del
+// cielo ≤ 0,05. Node checks (__cloudLowSky/__cloudHighSky + layout en
+// anillo cuadrado a 2-4 km); prod da los NÚMEROS.
+{
+  const viewerSrc50 = readFileSync("src/engine/viewer.ts", "utf8");
+  const cloudSrc50 = readFileSync("src/engine/clouds.ts", "utf8");
+  const readers = viewerSrc50.includes("__cloudLowSky") && viewerSrc50.includes("__cloudHighSky");
+  const lay = cloudSrc50.includes("CLOUD_FAR_OUT_LO_M") && cloudSrc50.includes("CLOUD_FAR_LO_M");
+  const ok = readers && lay;
+  gate("G50-farring", ok,
+    ok
+      ? "__cloudLowSky/__cloudHighSky (franja 15 % vs resto) + anillo 2-4 km 3000-3800 m — measure low≥0.25, high≤0.05 @12:00 s=0.18/0.80"
+      : `far-ring contract broken (readers=${readers} layout=${lay})`);
+}
+
+// --- G51 cirrus (N2b). Familia 2 ≤ 0,20 del cielo y alfa máxima ≤ 0,15.
+// Node checks (uAmtCirrus + __cloudMaxAlpha + cirrus 7000-9000 m sin niebla);
+// prod da los NÚMEROS.
+{
+  const viewerSrc51 = readFileSync("src/engine/viewer.ts", "utf8");
+  const cloudSrc51 = readFileSync("src/engine/clouds.ts", "utf8");
+  const readers = viewerSrc51.includes("__cloudMaxAlpha") && viewerSrc51.includes("uAmtCirrus");
+  const lay = cloudSrc51.includes("CLOUD_CIRRUS_LO_M") && cloudSrc51.includes("vNoFog");
+  const ok = readers && lay;
+  gate("G51-cirrus", ok,
+    ok
+      ? "__cloudMaxAlpha + uAmtCirrus (7000-9000 m, sin niebla) — measure cover≤0.20, maxAlpha≤0.15 @12:00"
+      : `cirrus contract broken (readers=${readers} layout=${lay})`);
+}
+
+// --- G52 mist-vs-track (N2b: bruma y rastro). s=0,03 @07:30: rastro con
+// bruma ≥ 80 % de sin bruma (?family=off). Node checks (?family=off →
+// probe en cero + __trackOcc con cover de píxeles); prod da los NÚMEROS.
+{
+  const debugSrc52 = readFileSync("src/engine/debug.ts", "utf8");
+  const viewerSrc52 = readFileSync("src/engine/viewer.ts", "utf8");
+  const flag = debugSrc52.includes('"off"') && debugSrc52.includes("family");
+  const probe = viewerSrc52.includes("famFilter") && viewerSrc52.includes("__trackOcc");
+  const ok = flag && probe;
+  gate("G52-misttrack", ok,
+    ok
+      ? "?family=off (probe en cero) + __trackOcc — measure on≥0.80×off @07:30 s=0.03"
+      : `mist-track contract broken (flag=${flag} probe=${probe})`);
 }
 
 // --- G42 cloud colour (§4b FASE 4c): mean canvas colour of cloud pixels —
@@ -1141,6 +1224,23 @@ function elevFull36(): Float32Array {
     ok
       ? "__cloudLuma/__cloudChroma published — measure luma≥0.72 chroma≤0.10 @12:00"
       : "no __cloudLuma/__cloudChroma probe in viewer.ts");
+}
+
+// --- G46 no-feedback (N1/N2b: ningún alfa depende de una sonda).
+// Node checks statically: sin uCap/setCap en ningún sitio; el probe copia
+// valores + uFamFilter propio (nunca escribe el estado del draw). La
+// ESTABILIDAD (40 lecturas, alfa invariante) se mide en prod.
+{
+  const viewerSrc46 = readFileSync("src/engine/viewer.ts", "utf8");
+  const cloudSrc46 = readFileSync("src/engine/clouds.ts", "utf8");
+  const noCap = !viewerSrc46.includes("setCap") && !cloudSrc46.includes("uCap")
+    && !viewerSrc46.includes("uCap");
+  const probeOwn = viewerSrc46.includes("uFamFilter");
+  const ok = noCap && probeOwn;
+  gate("G46-nofeedback", ok,
+    ok
+      ? "no uCap/setCap anywhere; probe copies values + own uFamFilter — measure 40-read alpha stability in prod"
+      : `feedback risk (noCap=${noCap} probeOwn=${probeOwn})`);
 }
 
 // --- G43 terrain overlap (§4b FASE 4c): cloud-on-terrain ≤ 5% of terrain
