@@ -87,7 +87,7 @@ export const CAM_RAIL_SAMPLES = 2000; // bake samples s_i = i/2000
 export const CAM_RAIL_SIGMA_M = 300; // DEAD (C1 as built): no spatial smooth — the σ=300 m kernel dragged the cam 500+ m off its rope in the turnaround; whip is orientation-only, positions stay raw-ladder. Kept so the bake signature explains itself.
 export const CAM_RAIL_SIGMA_S = 0.004; // final smoothing sigma in s (gaussian)
 export const YAW_RATE_MAX = 2.0; // deg per 0.001 s, symmetric limiter (margin under G4 2.5)
-export const PITCH_RATE_MAX = 1.2; // deg per 0.001 s, symmetric limiter
+export const PITCH_RATE_MAX = 1.0; // C1c: 1.2 -> 1.0 — accel angular 1.03-1.09 con 1.2; el pitch no necesita más (máx |dpitch| medido 0.3-1.2, el que corre es la segunda diferencia)
 // G66 (C1): pitch rate + quaternion step + angular acceleration, per 0.001 s.
 export const G66_PITCH_MAX_DEG = 1.5; // |Δpitch| per 0.001 s
 export const G66_QUAT_MAX_DEG = 2.8; // quaternion angular distance per 0.001 s
@@ -319,7 +319,12 @@ export const FOLLOW_H_AIM = 40; // m of aim height over the ground
 export const WALKER_NDC_Y = 0.45; // framing: the walker at -0.45 NDC (lower quarter); pitch offset = WALKER_NDC_Y · (vFOV/2)
 export const FOLLOW_D_MIN = 900; // m: push back along aim->cam (yaw-preserving) until BOTH camera->aim and camera->walker >= 900 (§4: aim-only let the walker sit under the camera in the cirque; the walker half is a one-shot quadratic capped at 3x aim distance, then PITCH_MAX_HARD bounds the rest)
 export const FOLLOW_NUDOS_S = [0.0, 0.03, 0.18, 0.38, 0.57, 0.77, 0.92, 0.98]; // 0, ACT_MID_S[0,I,II,III,IV,V], 0.98 (ends repeat first/last act values)
-export const FOLLOW_H_CAM_N = [380, 380, 420, 480, 450, 520, 400, 400]; // 0/I/II/III/IV/V per brief table
+// C1b: la escalera decide la altura en 96/1001 pasos (9,6 %).
+// C1c: PITCH_RATE_MAX 1.2 -> 1.0 (la accel 1.03-1.09 la dicta el limitador,
+// no la altura: con nudos base la accel ya es 0.91). Nudos +40/+40/+60 en
+// 1/2/5 (pasada única, sin iterar a ciegas: duty 3,2 %, racha 8, G66 PASS
+// con el cx de lift-probe; con el cx de verify duty 6,7 % — el cx importa).
+export const FOLLOW_H_CAM_N = [380, 420, 460, 480, 450, 580, 400, 400]; // C1b+C1c: nudos 1/2 (+40), 5 (+60). PENDIENTE: unificar cx verify=browser antes de cantar duty
 // LOOK I act 800 (pasada rig puro: 650 peaks 2.69 at s=0.221, 750 peaks
 // 2.55 at s=0.189 — both miss 2.5 by noise; 800 measured 2.55 max before,
 // re-measured below. No more tuning after this: if it still misses, the

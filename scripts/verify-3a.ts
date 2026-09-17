@@ -36,6 +36,7 @@ const meta = JSON.parse(readFileSync("data/build/meta.json", "utf8")) as {
   resY: number;
   originX: number;
   originY: number;
+  bbox: { minx: number; miny: number; maxx: number; maxy: number };
 };
 const r = {
   n: route.x.length,
@@ -79,9 +80,12 @@ function sampleGrid(x: number, y: number): number {
   return a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy;
 }
 
-// world: +x east, north = -z
-const cx = (meta.originX + (meta.originX + meta.width * meta.resX)) / 2 - meta.resX / 2;
-const cy = (meta.originY - (meta.originY - meta.height * meta.resY)) / 2 + meta.resY / 2;
+// world: EPSG bbox centre (worldFromMeta in terrain.ts) — same convention
+// the browser rig bakes with (C1: bakeCamRail cx/cy). The old pixel-corner
+// formula below differed by ~2.5 m and moved every gate's terrain verdict.
+// (It also disagreed with lift-probe/doctor, which already use the bbox.)
+const cx = (meta.bbox.minx + meta.bbox.maxx) / 2;
+const cy = (meta.bbox.miny + meta.bbox.maxy) / 2;
 
 // FOLLOW replan: no LOS branch vote — resolve rhythm, then the follow
 // profile (rope evaluators + derived epilogue geometry). Same order as
@@ -212,7 +216,8 @@ for (let i = 0; i <= STEPS; i++) {
   }
   // clamp-duty on the baked rail: steps where the ladder mode != direct.
   // Mode is read at the NEAREST bake sample (no interpolation — modes are
-  // categorical; interpolating them would smear engagements).
+  // categorical; interpolating them would smear engagements). The runs
+  // ledger (C1b) records start/end/mode per contiguous run for the report.
   const mode = rail.mode[Math.min(rail.n, Math.max(0, Math.round(s * rail.n)))] as string;
   if (mode !== "direct") {
     clampSteps++;
@@ -355,9 +360,36 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
 }
 
 // --- G9 clearance-clamp duty (audit A4): the floor clamp is a safety net,
-// not the camera. Active in <=5% of steps, never >30 in a row. ---
-gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
-  `clamp active ${clampSteps}/${STEPS + 1} steps (${(clampSteps / (STEPS + 1) * 100).toFixed(1)}%, need <=5%), longest run ${maxClampRun} (need <=30)`);
+// not the camera. Active in <=5% of steps, never >30 in a row.
+// C1b: prints every ladder run (start, end, mode, steps) so the H_CAM
+// tuning loop knows where to lift. ---
+{
+  const runs: Array<{ s0: number; s1: number; mode: string; steps: number }> = [];
+  {
+    let runStart = -1;
+    let runMode = "";
+    for (let i = 0; i <= STEPS; i++) {
+      const s = i / STEPS;
+      const m = rail.mode[Math.min(rail.n, Math.max(0, Math.round(s * rail.n)))] as string;
+      if (m !== "direct" && runStart < 0) {
+        runStart = i;
+        runMode = m;
+      } else if (m !== "direct" && m !== runMode) {
+        runs.push({ s0: runStart / STEPS, s1: (i - 1) / STEPS, mode: runMode, steps: i - runStart });
+        runStart = i;
+        runMode = m;
+      } else if (m === "direct" && runStart >= 0) {
+        runs.push({ s0: runStart / STEPS, s1: (i - 1) / STEPS, mode: runMode, steps: i - runStart });
+        runStart = -1;
+        runMode = "";
+      }
+    }
+    if (runStart >= 0) runs.push({ s0: runStart / STEPS, s1: 1, mode: runMode, steps: STEPS + 1 - runStart });
+  }
+  const runsTxt = runs.map((x) => `${x.mode}[${x.s0.toFixed(3)}-${x.s1.toFixed(3)}:${x.steps}]`).join(" ");
+  gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
+    `clamp active ${clampSteps}/${STEPS + 1} steps (${(clampSteps / (STEPS + 1) * 100).toFixed(1)}%, need <=5%), longest run ${maxClampRun} (need <=30) — runs: ${runsTxt || "none"}`);
+}
 
 // --- G9-plan (FOLLOW): dist_planta(camera, aim) >= 0.8 x D_MIN in 95%.
 // (gate body lives after G16 below; the sweep-time belowPlan covers all
