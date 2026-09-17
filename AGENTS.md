@@ -36,3 +36,4 @@
 - Todo uniforme añadido a un ShaderMaterial o a un onBeforeCompile se DECLARA en el GLSL (`uniform float X;`). three sube material.uniforms, no los declara. Comprobación obligatoria antes de subir: window.__programs sin ningún ok=false.
 - Ningún render a target usa la escena principal. Cada pase fuera de pantalla tiene su escena propia con solo lo que necesita.
 - Una fase, un despliegue. Cuando el brief da un orden con una comprobación entre fases, el orden es parte del brief. Juntar fases para ahorrar un despliegue no ahorra nada: cuesta la localización del fallo.
+- Ningún parámetro de dibujo se retroalimenta de una sonda que lo mide; las sondas informan, no gobiernan.

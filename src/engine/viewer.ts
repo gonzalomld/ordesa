@@ -1139,7 +1139,7 @@ float wgrain(vec2 lp){
   // 96×54 target. Counted inside the TERRAIN-sky mask (occBuf): only sky
   // pixels can be cloud-covered. Same camera, same frame, no extra scene.
   // The probe material borrows the LIVE uniform objects (uMap/uDensity/
-  // uCap/uMask) — same values the draw uses, zero copies to forget.
+  // uMask) — same values the draw uses, zero copies to forget.
   // §4b FASE 4b: the pixel meter renders the cloud mesh WITHOUT terrain
   // (own mini-scene holding just the mesh — terrain would paint the mask
   // white and hide the clouds). Same mesh object, probe material, same
@@ -1168,11 +1168,12 @@ float wgrain(vec2 lp){
       }`,
     fragmentShader: `
       varying vec2 vUv; varying float vAlpha;
-      uniform sampler2D uMap; uniform float uDensity; uniform float uCap; uniform float uMask;
+      uniform sampler2D uMap; uniform float uDensity; uniform float uMask;
       void main(){
         float tex = texture2D(uMap, vUv).r;
         float m = smoothstep(uMask, uMask + 0.08, tex);
-        float a = tex * m * vAlpha * uDensity * uCap;
+        // N1: sin cap — la sonda informa, no gobierna (G46).
+        float a = tex * m * vAlpha * uDensity;
         if (a <= 0.15) discard;
         gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
       }`,
@@ -1322,14 +1323,9 @@ float wgrain(vec2 lp){
       metrics.cloudCoverage = 0;
     } else {
       clouds.group.visible = true;
-      clouds.setDensity(effCloud, sunDirV);
-      // §4b FASE 4b: cloud light follows presence (never gates it, G35).
-      // uHemiSky (valley fill, same hue family) + sun colour + dayF.
-      clouds.setLight(
-        sun.color,
-        hemiSky,
-        cloudDayF,
-      );
+      clouds.setDensity(effCloud);
+      // N1: color neutro (constante × dayF); el cálido llega por la niebla.
+      clouds.setDayF(cloudDayF);
       // A9: fade the layer as the view ray steepens (epilogue from above).
       // Elevation of the camera->target ray above horizontal, deg.
       {
@@ -1349,10 +1345,6 @@ float wgrain(vec2 lp){
       }
       clouds.update(clock.elapsedTime, camera, renderer.domElement.width, renderer.domElement.height);
       metrics.cloudCoverage = clouds.getCoverage();
-      // §4: the 20% veil cap is GONE (T1 verdict belonged to the unweighted
-      // metric). The cap now guards the CLOUD_COVERAGE target band instead:
-      // halve global alpha only while visibly above 0.38 (upper edge).
-      clouds.setCap(clouds.getCoverage() > 0.38);
     }
     line.setDim(routeDim);
     metrics.hasRock = 1;
@@ -1644,7 +1636,6 @@ float wgrain(vec2 lp){
             const pu = clouds.probeUniforms();
             (cloudPxMat.uniforms["uMap"] as { value: unknown }).value = pu.uMap;
             (cloudPxMat.uniforms["uDensity"] as { value: unknown }).value = pu.uDensity;
-            (cloudPxMat.uniforms["uCap"] as { value: unknown }).value = pu.uCap;
             (cloudPxMat.uniforms["uMask"] as { value: unknown }).value = pu.uMask;
             cloudPxWired = true;
           }

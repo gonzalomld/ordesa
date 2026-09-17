@@ -24,16 +24,14 @@ export interface Clouds {
   group: THREE.Group;
   mesh: THREE.InstancedMesh;
   centers: THREE.Vector3[];
-  /** §4b FASE 4b: live material uniforms (uMap/uDensity/uCap/uMask) for
+  /** §4b FASE 4b: live material uniforms (uMap/uDensity/uMask) for
    * the pixel-meter's flat probe pass — same values, no copies. */
   probeUniforms(): {
     uMap: { value: THREE.Texture | null };
     uDensity: { value: number };
-    uCap: { value: number };
     uMask: { value: number };
   };
-  setDensity(d: number, sunDir: THREE.Vector3): void;
-  setCap(on: boolean): void;
+  setDensity(d: number): void;
   /** A9: 0 = eye-level (full density) .. 1 = straight down (fade). */
   setZenithFade(f: number): void;
   /** §4b FASE 4b: epilogue height fade — 1 = puff at/above the camera,
@@ -41,9 +39,10 @@ export interface Clouds {
   setBelowFade(f: number): void;
   /** §4b FASE 4b: camera height for the per-puff below-fade. */
   setCamY(y: number): void;
-  /** §4b FASE 4b: cloud light — sun colour + hemisphere sky + dayF.
-   * Presence never depends on daylight (G35); this only tints. */
-  setLight(sunColor: THREE.Color, hemiSky: THREE.Color, dayF: number): void;
+  /** N1: dayF diario — smoothstep(−4°, 4°, elevación solar), escrito por
+   * el viewer desde lightingAt (misma fuente que la niebla). Solo
+   * multiplica el brillo neutro P; nunca tiñe. */
+  setDayF(f: number): void;
   update(time: number, camera: THREE.Camera, vw: number, vh: number): void;
   getCoverage(): number;
   dispose(): void;
@@ -399,14 +398,9 @@ export function buildClouds(
   const cy = (meta.bbox.miny + meta.bbox.maxy) / 2;
   const uniforms = {
     uMap: { value: null as THREE.Texture | null },
-    uSunDir: { value: new THREE.Vector3(0, 1, 0) },
-    uSunColor: { value: new THREE.Color(1, 1, 1) },
-    uHemiSky: { value: new THREE.Color(0.42, 0.55, 0.78) },
     uDayF: { value: 1 },
     uDensity: { value: 0.5 },
-    uCap: { value: 1 },
     uMask: { value: CLOUD_MASK },
-    uTime: { value: 0 },
     uZenithFade: { value: 0 },
     uBelowFade: { value: 1 },
     uCamY: { value: 0 },
@@ -421,19 +415,24 @@ export function buildClouds(
     transparent: true,
     depthWrite: false,
     depthTest: true,
+    // N1: fog:true — el tinte cálido llega por la niebla (height-fog toma
+    // el color de la captura del cielo). three solo aplica scene.fog a
+    // materiales con fog:true; scene.fog es null, así que refreshFogUniforms
+    // no toca nada: el flag queda como contrato para la F2 (niebla real).
+    fog: true,
     blending: THREE.CustomBlending,
     blendSrc: THREE.OneFactor,
     blendDst: THREE.OneMinusSrcAlphaFactor,
     vertexShader: `
       attribute vec4 aData; // x: quadrant, y: rotation, z: scale, w: alpha seed
-      varying vec2 vUv; varying float vFace; varying float vAlpha; varying vec3 vWPos; varying float vAbove;
+      varying vec2 vUv; varying float vAlpha; varying vec3 vWPos; varying float vAbove;
       varying float vSeed;
-      uniform vec3 uSunDir; uniform float uDensity; uniform float uTime; uniform float uCap; uniform float uMask;
-      uniform float uCamY;
+      uniform float uDensity; uniform float uMask;
       void main(){
         float quad = aData.x;
         vUv = vec2(mod(quad,2.0)*0.5 + uv.x*0.5, floor(quad/2.0)*0.5 + uv.y*0.5);
-        float rot = aData.y + uTime*0.004;
+        // N1: rot fija (aData.y) — sin deriva rotacional por uTime.
+        float rot = aData.y;
         vec2 p = position.xy * aData.z;
         vec2 rp = mat2(cos(rot),-sin(rot),sin(rot),cos(rot)) * p;
         vec4 c = modelMatrix * instanceMatrix * vec4(0.0,0.0,0.0,1.0);
@@ -445,26 +444,23 @@ export function buildClouds(
         // the camera, 0 when ≥ 400 m below (epilogue from above: the loop
         // stays clear, horizon puffs stay). Replaces belowFade (dead).
         vAbove = 1.0 - smoothstep(100.0, 400.0, cameraPosition.y - c.y);
-        // sun-facing factor for the lit/shade split (vertex, cheap).
-        vec3 toSun = normalize(uSunDir);
-        vFace = clamp(dot(normalize(cameraPosition - wp), toSun)*0.5+0.5, 0.0, 1.0);
         vSeed = aData.w;
         // §4b FASE 4c: uDensity gates HOW MANY puffs are on — seeds in
         // [0.75,0.95], threshold = 0.70+0.30·density (smooth 0.05 window,
         // never a pop): dawn (0.45) lights the low-seed half, noon lights
         // all. Alpha itself is NOT scaled (coverage via number+size).
+        // N1: sin uCap — el alfa no depende de ninguna sonda (G46).
         float onF = smoothstep(vSeed - 0.05, vSeed + 0.05, 0.70 + 0.30 * uDensity);
-        vAlpha = aData.w * onF * uCap;
+        vAlpha = aData.w * onF;
         gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
       }`,
     fragmentShader: `
-      varying vec2 vUv; varying float vFace; varying float vAlpha; varying vec3 vWPos; varying float vAbove;
+      varying vec2 vUv; varying float vAlpha; varying vec3 vWPos; varying float vAbove;
       varying float vSeed;
       uniform sampler2D uMap; uniform sampler2D uHeightMap;
       uniform vec2 uHMin; uniform vec2 uHSize; uniform float uHMaxY; uniform vec2 uHCenter;
       uniform float uZenithFade; uniform float uMask; uniform float uBelowFade;
-      uniform vec3 uSunColor; uniform vec3 uHemiSky; uniform float uDayF;
-      float hemiLuma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+      uniform float uDayF;
       void main(){
         // soft particles: fade where the fragment meets the terrain
         vec2 epsg = vec2(vWPos.x + uHCenter.x, uHCenter.y - vWPos.z);
@@ -476,16 +472,16 @@ export function buildClouds(
         float m = smoothstep(uMask, uMask + 0.08, tex);
         // A9: from above, billboards read as stains — fade to zenith.
         // §4b FASE 4c: above-fade (from above, ≥400 m below vanishes).
+        // N1: sin uCap (G46).
         float a = tex * m * vAlpha * soft * (1.0 - uZenithFade) * mix(1.0, vAbove, uBelowFade);
         if (a < 0.004) discard;
-        // §4b FASE 4c: VOLUME — crown lit, base shaded. top = vUv.y
-        // (sprite top = cumulus crown). lit = sun with facing; shade =
-        // desaturated hemisphere (cool, never violet). At dusk only the
-        // sun-side crown warms; at night (dayF 0) all is shade.
-        float top = smoothstep(0.25, 0.75, vUv.y);
-        vec3 lit = uSunColor * (0.85 + 0.35 * vFace);
-        vec3 shade = mix(uHemiSky, vec3(hemiLuma(uHemiSky)), 0.5) * 0.9;
-        vec3 col = mix(shade, lit, top * uDayF);
+        // N1 color neutro: vec3(0.92, 0.96, 1.06) · P, P = 0.16+0.84·dayF;
+        // panza sombreada solo por el atlas (vUv.y): mix(0.72, 1.0,
+        // smoothstep(0.2, 0.7, vUv.y)). El cálido llega por la niebla
+        // (fog:true), nunca por puff. De noche (dayF 0): P = 0.16.
+        float P = 0.16 + 0.84 * uDayF;
+        vec3 col = vec3(0.92, 0.96, 1.06) * P;
+        col *= mix(0.72, 1.0, smoothstep(0.2, 0.7, vUv.y));
         gl_FragColor = vec4(col * a, a);
       }`,
   });
@@ -496,6 +492,14 @@ export function buildClouds(
   const data = new Float32Array(CLOUD_COUNT * 4);
   const centers: THREE.Vector3[] = [];
   const scales: number[] = [];
+  // N1: deriva en X sin aparición — EPSG x por puff + velocidad (m/s =
+  // m/frame a 60 fps × 60, dt del propio bucle: sin factor fijo por frame).
+  const driftX: number[] = [];
+  const driftV: number[] = [];
+  const driftMinX = meta.bbox.minx;
+  const driftMaxX = meta.bbox.maxx;
+  // driftRnd es posterior al layout: ni cloudLayout ni el predictor cambian.
+  const driftRnd = mulberry(20260917);
   // Production layout (exported above for the Node predictor — same array).
   const layout = cloudLayout(meta, elev, route, camPoses);
   for (let i = 0; i < CLOUD_COUNT; i++) {
@@ -509,6 +513,10 @@ export function buildClouds(
     data[i * 4 + 3] = p.alpha;
     centers.push(dummy.position.clone());
     scales.push(p.scale);
+    // N1: deriva 0,6-2,4 m/frame @60fps → 36-144 m/s (rng propia, tras el
+    // layout: no toca la secuencia de cloudLayout ni el predictor).
+    driftX.push(p.x);
+    driftV.push(36 + driftRnd() * 108);
   }
   geo.setAttribute("aData", new THREE.InstancedBufferAttribute(data, 4));
   group.add(mesh);
@@ -517,11 +525,14 @@ export function buildClouds(
     uniforms.uMap.value = t;
   });
 
+  // N1: deriva en X con envoltura al borde del DEM — nada cambia de alfa
+  // con el tiempo salvo P (uDayF). La rotación es fija (aData.y).
   // V3: alpha-weighted coverage, recomputed every 6th frame.
+  let lastT = -1;
   // §4b FASE 4c: the analytic meter mirrors the DRAWN rule — per-puff
   // alpha (seed) × on-fraction (density gates count: smoothstep over the
-  // 0.05 window) × cap × texel 0.45 × mask kept-mass. uDensity NEVER
-  // scales opacity directly (that made everything veil).
+  // 0.05 window) × texel 0.45 × mask kept-mass. uDensity NEVER scales
+  // opacity directly (that made everything veil). N1: sin cap — G46.
   let coverage = 0;
   let tick = 0;
   const pv = new THREE.Vector3();
@@ -544,28 +555,16 @@ export function buildClouds(
       return {
         uMap: uniforms.uMap as { value: THREE.Texture | null },
         uDensity: uniforms.uDensity as { value: number },
-        uCap: uniforms.uCap as { value: number },
         uMask: uniforms.uMask as { value: number },
       };
     },
-    setDensity(d, sunDir) {
-      // §4b FASE 4c: uDensity gates HOW MANY puffs are on (vertex smoothstep
-      // over the seed window) — never their opacity. d = 1 → all on.
+    setDensity(d) {
+      // §4b FASE 4c/N1: uDensity gates HOW MANY puffs are on (vertex
+      // smoothstep over the seed window) — never their opacity. d = 1 →
+      // all on. N1: sin sunDir — la dirección del sol ya no tiñe puffs.
       uniforms.uDensity.value = Math.min(1, Math.max(0, d));
-      uniforms.uSunDir.value.copy(sunDir);
     },
-    /** §4b FASE 4b: cloud light — sun colour + hemisphere sky + dayF.
-     * Presence never depends on daylight (G35); this only tints. */
-    setLight(sunColor: THREE.Color, hemiSky: THREE.Color, dayF: number) {
-      (uniforms.uSunColor.value as THREE.Color).copy(sunColor);
-      (uniforms.uHemiSky.value as THREE.Color).copy(hemiSky);
-      uniforms.uDayF.value = Math.min(1, Math.max(0, dayF));
-    },
-    setCap(on) {
-      // V3: with the alpha-weighted metric the 20% cap is a real control:
-      // halve the global alpha while the visible veil exceeds it.
-      uniforms.uCap.value = on ? 0.45 : 1;
-    },
+    /** N1: setLight borrado — el color es neutro (constante × dayF). */
     setZenithFade(f: number) {
       uniforms.uZenithFade.value = Math.min(1, Math.max(0, f));
     },
@@ -575,6 +574,12 @@ export function buildClouds(
     setBelowFade(f: number) {
       uniforms.uBelowFade.value = Math.min(1, Math.max(0, f));
     },
+    /** N1: dayF diario — smoothstep(−4°, 4°, elevación solar), escrito por
+     * el viewer desde lightingAt (misma fuente que la niebla). Solo
+     * multiplica el brillo neutro P; nunca tiñe. */
+    setDayF(f: number) {
+      uniforms.uDayF.value = Math.min(1, Math.max(0, f));
+    },
     /** DEAD (§4b FASE 4c): uCamY no longer feeds any fade — kept so call
      * sites don't churn. */
     setCamY(_y: number) {
@@ -582,12 +587,29 @@ export function buildClouds(
     },
     update(time, camera, vw, vh) {
       if (!group.visible) return; // T1.1: cut group ⇒ skip CPU work too
-      uniforms.uTime.value = time;
+      // N1: deriva en X con envoltura al borde del DEM (dt real del bucle:
+      // 1 - exp no aplica aquí — es traslación lineal, no suavizado).
+      if (lastT < 0) lastT = time;
+      const dt = Math.min(0.25, Math.max(0, time - lastT));
+      lastT = time;
+      if (dt > 0) {
+        for (let i = 0; i < CLOUD_COUNT; i++) {
+          let x = (driftX[i] as number) + (driftV[i] as number) * dt;
+          const R = (scales[i] as number) * 0.5;
+          if (x > driftMaxX + R) x = driftMinX - R;
+          driftX[i] = x;
+          const c = centers[i] as THREE.Vector3;
+          c.x = x - cx;
+          dummy.position.copy(c);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(i, dummy.matrix);
+        }
+        mesh.instanceMatrix.needsUpdate = true;
+      }
       if ((tick++ % 6) !== 0 || vw <= 0 || vh <= 0) return;
       const persp = camera as THREE.PerspectiveCamera;
       const tanHalf = Math.tan(((persp.fov ?? 50) * Math.PI) / 180 / 2);
       const rawDens = uniforms.uDensity.value as number;
-      const cap = uniforms.uCap.value as number;
       const kept = maskKept(uniforms.uMask.value as number);
       // §4b FASE 4: behind-camera rejection. Vector3.project() mirrors
       // points behind the camera into NDC (w<0 flips) where they PASS the
@@ -615,13 +637,14 @@ export function buildClouds(
         if (dist <= 0) continue;
         const rPx = (((scales[i] as number) * 0.5) / dist) * (vh / (2 * tanHalf));
         // §4b FASE 4c: weight by the DRAWN rule — seed alpha × on-fraction
-        // (threshold 0.70+0.30·density over a 0.05 window) × cap × texel
+        // (threshold 0.70+0.30·density over a 0.05 window) × texel
         // 0.45 × mask kept-mass. uDensity never scales opacity (no veil).
+        // N1: sin cap — el alfa no depende de ninguna sonda (G46).
         const seed = seedAlpha[i] as number;
         const thr = 0.7 + 0.3 * rawDens;
         const t = Math.min(1, Math.max(0, (thr - (seed - 0.05)) / 0.1));
         const onF = t * t * (3 - 2 * t);
-        area += Math.PI * rPx * rPx * seed * onF * cap * 0.45 * kept;
+        area += Math.PI * rPx * rPx * seed * onF * 0.45 * kept;
       }
       coverage = Math.min(1, area / (vw * vh));
     },
