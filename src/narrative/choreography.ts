@@ -5,11 +5,19 @@
 
 export const K_SCROLL = 6; // framerate-independent smoothing rate (1/s)
 export const K_SCROLL_REDUCED = 20; // prefers-reduced-motion: native scroll, faster catch-up
-export const TRACK_VH = 900; // initial --track-vh height (vh); scroll.ts writes it to CSS at boot so it stays tweakable without recompile
-export const LENIS_DURATION = 1.2; // Lenis scroll inertia (s)
+export const TRACK_VH = 4500; // N3: 900 -> 4500 (45 pantallas): 18,1 km son ~2,5 pantallas/km; una muesca de 100 px ~= 0,24 % del viaje ~= 43 m de sendero
+export const LENIS_LERP = 0.14; // N3: frame-based damping like Everest (replaces duration/easing — the two Lenis modes are mutually exclusive, duration+easing deleted)
+export const LENIS_WHEEL_MULT = 1.0; // N3: mouse wheel multiplier (was implicit 1.0)
 export const LENIS_TOUCH_MULT = 1.6; // touch scroll multiplier
 export const LENIS_SMOOTH_WHEEL = true; // Lenis smoothWheel flag
 export const LENIS_SYNC_TOUCH = false; // Lenis syncTouch flag
+// N3 (?wheeltest=1): synthetic wheel probe — 10 notches of deltaY 100 every
+// 60 ms, per-frame log for 3 s. Base of G59/G60; literals live here, not in scroll.ts.
+export const WHEELTEST_COUNT = 10; // number of synthetic wheel notches
+export const WHEELTEST_DELTA_Y = 100; // deltaY per synthetic notch (px)
+export const WHEELTEST_INTERVAL_MS = 60; // spacing between notches (ms)
+export const WHEELTEST_LOG_MS = 3000; // per-frame recording window (ms)
+export const WHEELTEST_START_DELAY_MS = 400; // wait after the gate opens before the first notch (ms)
 
 export const SUNSET_ELEV_DEG = -0.833; // standard sunset: -0.25 solar semidiameter + -0.583 mean refraction. NOT 0 deg, NO altitude horizon-dip (blocked western wall)
 export const SUNSET_SEARCH_START_H = 18; // bisection window start, local Europe/Madrid time

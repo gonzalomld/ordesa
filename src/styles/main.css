@@ -5,8 +5,9 @@
   --font-text: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   /* Phase 3A: scroll-track height. scroll.ts writes the value at boot from
-     TRACK_VH (choreography.ts); tweakable live from devtools. */
-  --track-vh: 900vh;
+     TRACK_VH (choreography.ts); tweakable live from devtools. N3: 4500vh
+     (45 pantallas) so a 100 px wheel notch is ~0.24 % of the journey. */
+  --track-vh: 4500vh;
 }
 
 * {

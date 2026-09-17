@@ -207,6 +207,11 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     // probe la publicó, "—" si no; la analítica ya no se muestra.
     const coverPx = (window as unknown as { __cloudCoverPx?: number }).__cloudCoverPx;
     const coverTxt = coverPx === undefined || coverPx < 0 ? "—" : `${(coverPx * 100).toFixed(0)}%`;
+    // N3: scroll probe (?debug=1) — written every frame by scroll.ts, read here.
+    const sc = (window as unknown as { __scroll?: { screens: number; pxPerKm: number; settleMs: number } }).__scroll;
+    const scrollTxt = sc
+      ? `scroll ${sc.screens.toFixed(1)} pant · ${sc.pxPerKm.toFixed(2)} pant/km · asiento ${Math.round(sc.settleMs)} ms`
+      : "";
     const s =
       `frame ${metrics.msFrame.toFixed(1)} ms (${metrics.fps.toFixed(0)} fps) · js terr ${metrics.jsTerrain.toFixed(1)} · js etiq ${metrics.jsLabels.toFixed(1)}\n` +
       `gpu terr ${gpu(metrics.msTerrain)} · nub ${gpu(metrics.msClouds)} · cobertura ${coverTxt}\n` +
@@ -218,6 +223,8 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
       (metrics.luma >= 0 ? ` · luma ${metrics.luma.toFixed(3)}` : "") +
       // §4b FASE 5: "sombra L … C …" (HUD) = __lumaShadow/__chromaShadow.
       (metrics.lumaShadow >= 0 ? ` · sombra L ${metrics.lumaShadow.toFixed(3)} C ${metrics.chromaShadow.toFixed(2)}` : "") +
+      // N3 (G58/G59): línea de scroll — solo existe con ?debug=1 (la sonda la publica).
+      (scrollTxt ? `\n${scrollTxt}` : "") +
       // N2c-fix: línea de sombra (desde lo SUBIDO a uniformes, cada frame).
       (metrics.shadowHud ? `\n${metrics.shadowHud}` : "") +
       (metrics.warn ? `\nAVISO ${metrics.warn}` : "") +

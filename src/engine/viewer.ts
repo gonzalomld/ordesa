@@ -737,6 +737,9 @@ float wgrain(vec2 lp){
   // --- Phase 3A journey: scroll -> progress (single source) -> rig ---
   scroll = createScroll();
   scroll.stop(); // B7: locked until the gate opens
+  // N3: ?wheeltest=1 cam plumbing — the deferred probe samples the live
+  // camera position per frame via this getter (read-only, drives nothing).
+  scroll.setCamProbe(() => ({ x: camera.position.x, y: camera.position.y, z: camera.position.z }));
   let progress: ProgressHandle;
   try {
     // E5.2: branch choice runs inside initProgress, once, with the live
