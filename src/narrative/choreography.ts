@@ -380,6 +380,17 @@ export const GLOW_MULT = 3; // halo pass width x3, drawn first
 export const GLOW_ALPHA = 0.18; // halo opacity (cream, additive)
 export const GLOW_S_WINDOW = 0.02; // uGlow 0..1 within +-0.02 s of A3/A7/A8
 
+// --- §3 HITOS (haces verticales, Everest reference): un quad por hito de
+// tipo != "cumbre". Billboard cilíndrico (solo eje Y). Base = terreno + 2;
+// la etiqueta cuelga de la punta (labels.ts ancla wy = base + BEAM_H_M).
+export const BEAM_H_M = 320; // altura del haz sobre su base (m)
+export const BEAM_W_M = 14; // anchura del quad (m)
+export const BEAM_BASE_LIFT_M = 2; // base = punto del terreno + 2 m
+export const BEAM_COLOR = 0xf2d38a; // crema-ámbar del rastro andado × P (luz del día N1)
+export const BEAM_DIM = 0.35; // mix(0.35, 1.0, uGlow): hito no activo
+export const BEAM_EPI = 0.6; // epílogo (s >= 0.98): todos como faros
+export const BEAM_OCCLUDE = 0.25; // × si rayBlocked marca la etiqueta (misma regla que labels)
+
 // --- E4 (line floats over decimated mesh): full-res corridor around track ---
 export const CORRIDOR_HALF_M = 150; // force LOD 0 within +-150 m of the track
 export const G13_TOL_M = 12.0; // residual slope-stencil difference after the corridor fix (E4: corridor kills the LOD term; the stencil term on 8:1 walls is ~11.5 m and is NOT float — it is the drape following the wall, honest relief)

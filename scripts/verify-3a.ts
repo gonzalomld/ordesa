@@ -1334,11 +1334,11 @@ function elevFull36(): Float32Array {
       : `blit contract broken (ndc=${ndcCam} depthOff=${depthOff} order999=${order999} px=${pxProbe} afterLabels=${afterLabels})`);
 }
 
-// --- G29 main-pass counter (§4b FASE 2b): the HUD reads calls/tris from
-// the MAIN pass only (info.reset + read right after the main render;
-// passes counts render() calls). Node checks the mechanism; the NUMBERS
-// (calls=5/tris=1.8M/passes=1; skymap → passes=2, calls still 5) come
-// from prod.
+// --- G29 main-pass counter (§4b FASE 2b + §3 haces): the HUD reads
+// calls/tris from the MAIN pass only (info.reset + read right after the
+// main render; passes counts render() calls). Node checks the mechanism;
+// the NUMBERS (calls=6 con haces / 5 con ?beams=0; skymap → passes=2)
+// come from prod.
 {
   const viewerSrcG29 = readFileSync("src/engine/viewer.ts", "utf8");
   const debugSrcG29 = readFileSync("src/engine/debug.ts", "utf8");
@@ -1350,7 +1350,7 @@ function elevFull36(): Float32Array {
   const ok = resetFirst && readAfter && passesField && pollClean;
   gate("G29-counter", ok,
     ok
-      ? "HUD calls/tris = main pass (info.reset + read after main render, passes counted) — measure calls=5/passes=1 (skymap→2) in-browser"
+      ? "HUD calls/tris = main pass (info.reset + read after main render, passes counted) — measure calls=6 (?beams=0 → 5)/passes=1 (skymap→2) in-browser"
       : `counter broken (resetFirst=${resetFirst} readAfter=${readAfter} passes=${passesField} pollClean=${pollClean})`);
 }
 
@@ -1628,6 +1628,53 @@ function elevFull36(): Float32Array {
   const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
   gate("G69-G73-wiring", bad.length === 0,
     bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — panel<-actNow, subjectX easing, flotante, pswap, a11y (números en prod ?debug=1)`);
+}
+
+// --- §3 haces (G74 presencia / G75 anclaje / G76 oclusión / G77
+// artefactos): browser-measured en prod (?debug=1&skyfrac=1, ?trackpx=1
+// para __beampx). Node checks the wiring + el contrato estático; los
+// NÚMEROS viven en navegador (sonda ID + capturas ×2 + comparativa).
+{
+  const beamsSrc = readFileSync("src/engine/beams.ts", "utf8");
+  const labelsSrc = readFileSync("src/engine/labels.ts", "utf8");
+  const viewerSrcB = readFileSync("src/engine/viewer.ts", "utf8");
+  const debugSrcB = readFileSync("src/engine/debug.ts", "utf8");
+  const choreoSrc = readFileSync("src/narrative/choreography.ts", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  const checks: [string, boolean][] = [
+    // G74: un draw call (UNA InstancedMesh) + sonda ID propia -> __beampx.
+    ["UNA InstancedMesh", has(beamsSrc, "new THREE.InstancedMesh") && (beamsSrc.match(/new THREE\.InstancedMesh/g) ?? []).length === 2], // draw + ID probe (escena propia)
+    ["idMat propio + escena propia", has(beamsSrc, "idScene") && has(beamsSrc, "new THREE.Scene()")],
+    ["__beampx publicado (?trackpx=1)", has(viewerSrcB, "__beampx") && has(viewerSrcB, "countIdPixels(renderer, camera)")],
+    ["?beams=0 apaga", has(debugSrcB, 'q.get("beams") !== "0"') && has(viewerSrcB, "boot.beams")],
+    // G75: etiquetas con haz desde la PUNTA (mismo translate), cumbres igual.
+    ["anclaje punta (anchorBeam)", has(labelsSrc, "anchorBeam")],
+    ["tipWy = base + BEAM_H_M", has(beamsSrc, "+ BEAM_H_M")],
+    ["translate(-50%,-100%) intacto", has(labelsSrc, "translate(-50%,-100%)")],
+    ["cumbres sin haz", has(labelsSrc, 'hasBeam: def.tipo === "hito"')],
+    // G76: depthTest true (lo tapa el terreno), depthWrite false.
+    ["depthTest true + depthWrite false", has(beamsSrc, "depthTest: true") && has(beamsSrc, "depthWrite: false")],
+    // G77: sin aditivo (NormalBlending premultiplicado) + gaussiana sin cuentas.
+    ["sin aditivo", !has(beamsSrc, "AdditiveBlending") && has(beamsSrc, "OneMinusSrcAlphaFactor")],
+    ["gaussiana × perfil + refuerzo punta", has(beamsSrc, "exp(-u * u * 18.0)") && has(beamsSrc, "smoothstep(0.92, 1.0, v)")],
+    // Intensidad: mix(DIM,1,uGlow) ×0,25 ocluida; epílogo 0,6; P día N1.
+    ["mix(DIM,1,glow) ×oclu ×epi", has(beamsSrc, "BEAM_EPI") && has(beamsSrc, "BEAM_OCCLUDE") && has(viewerSrcB, "BEAM_DIM + (1 - BEAM_DIM) * g")],
+    ["P día N1 (0.16+0.84)", has(beamsSrc, "0.16 + 0.84 * uDayF")],
+    ["BEAM_H=320 W=14 consts", has(choreoSrc, "BEAM_H_M = 320") && has(choreoSrc, "BEAM_W_M = 14")],
+    ["BEAM_COLOR crema-ámbar", has(choreoSrc, "BEAM_COLOR = 0xf2d38a")],
+    // Ciclo 6 frames con rayBlocked (ya existe) + HUD ?debug=1.
+    ["ciclo 6f con etiquetas", has(viewerSrcB, "frames % 6 === 0") && has(viewerSrcB, "setGlow")],
+    ["rayBlocked intacto", has(labelsSrc, "export function rayBlocked")],
+    ["HUD haces N·activo·glow", has(debugSrcB, "beamHud") && has(viewerSrcB, "haces ${beams.count}")],
+    // Un solo rAF: beams.ts sin rAF propio; billboard sin CPU por frame.
+    ["sin rAF propio", !has(beamsSrc, "requestAnimationFrame")],
+    ["uniforms declarados en GLSL", has(beamsSrc, "uniform float uW; uniform float uH;")],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G74-G77-beams", bad.length === 0,
+    bad.length
+      ? `falta: ${bad.join(", ")}`
+      : `${checks.length} checks — InstancedMesh+ID, punta, oclusión, sin-aditivo, 6f, HUD (números en prod ?debug=1&skyfrac=1)`);
 }
 
 if (failures > 0) {

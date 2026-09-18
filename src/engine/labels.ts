@@ -21,6 +21,11 @@ export interface LabelRuntime {
   wx: number;
   wy: number;
   wz: number;
+  /** §3: wy de la etiqueta sin haz (punto del terreno). anchorBeam() lo
+   * sube a la punta (base + BEAM_H_M); releaseBeam() lo devuelve. */
+  groundWy: number;
+  /** §3: true si este hito lleva haz vertical (tipo hito, no cumbre). */
+  hasBeam: boolean;
   lastX: number;
   lastY: number;
   lastOpacity: string;
@@ -53,6 +58,8 @@ export function buildLabels(
         wx: def.x - cx,
         wy: def.z,
         wz: -(def.y - cy),
+        groundWy: def.z,
+        hasBeam: def.tipo === "hito",
         lastX: -1,
         lastY: -1,
         lastOpacity: "",
@@ -60,6 +67,24 @@ export function buildLabels(
         occluded: false,
       };
     });
+}
+
+/** §3: cuelga la etiqueta de la punta del haz (base + BEAM_H_M). Solo
+ * cambia wy — updateLabels proyecta igual y cuesta lo mismo. */
+export function anchorBeam(rt: LabelRuntime, tipWy: number): void {
+  if (!rt.hasBeam) return;
+  if (rt.wy !== tipWy) {
+    rt.wy = tipWy;
+    rt.lastX = -1; // forzar reproyección una vez (el ancla saltó 320 m)
+  }
+}
+
+/** §3: devuelve la etiqueta al punto del terreno (?beams=0). */
+export function releaseBeam(rt: LabelRuntime): void {
+  if (rt.wy !== rt.groundWy) {
+    rt.wy = rt.groundWy;
+    rt.lastX = -1;
+  }
 }
 
 /** March camera→label over the heightmap grid; true = terrain blocks view. */

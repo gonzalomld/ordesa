@@ -47,6 +47,8 @@ export interface Metrics {
   /** G16 (pasada rig puro): damped H correction the camera flies with. */
   corrH: number;
   luma: number;
+  /** §3 haces: línea del HUD con ?debug=1 ("haces N · activo <nombre> · glow 0.00"). */
+  beamHud: string;
   /** §4b FASE 5 (G31/G32): sonda de sombra — luma lineal media del cuartil
    * más oscuro de píxeles de terreno (?luma=1, -1 = pendiente). */
   lumaShadow: number;
@@ -87,6 +89,8 @@ export interface BootQuery {
   skycap: boolean;
   /** ?lod=N: pin the terrain LOD and disable the frame-budget rule. */
   lod: number | null;
+  /** §3 haces: ?beams=0 los apaga (comparativa con la normal). */
+  beams: boolean;
   /** N2: ?debug=atlas — blitea el atlas de nubes ×0,5 abajo a la izquierda. */
   atlas: boolean;
   /** N2b: ?family=N (0-3) u off — filtro del medidor de nubes por familia. */
@@ -145,6 +149,7 @@ export function parseBootQuery(): BootQuery {
     cloudshadow: q.get("debug") === "cloudshadow",
     cloudshadowOff: q.get("cloudshadow") === "0",
     lod: lodN !== null && Number.isFinite(lodN) && [1, 2, 3].includes(lodN) ? lodN : null,
+    beams: q.get("beams") !== "0",
   };
 }
 
@@ -186,6 +191,7 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     dist: 0,
     holgura: Infinity,
     corrH: 0,
+    beamHud: "",
     luma: -1,
     lumaShadow: -1,
     chromaShadow: -1,
@@ -239,6 +245,8 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
       (scrollTxt ? `\n${scrollTxt}` : "") +
       // N2c-fix: línea de sombra (desde lo SUBIDO a uniformes, cada frame).
       (metrics.shadowHud ? `\n${metrics.shadowHud}` : "") +
+      // §3: línea de haces (desde lo SUBIDO al atributo por instancia).
+      (metrics.beamHud ? `\n${metrics.beamHud}` : "") +
       (metrics.warn ? `\nAVISO ${metrics.warn}` : "") +
       (metrics.steep ? `\nsteep MAP · hasRock ${metrics.hasRock} · peso roca ${Math.round(metrics.rockWeightShown * 100)} %` : "");
     if (s !== last) {

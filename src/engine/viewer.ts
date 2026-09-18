@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { Sky } from "three/addons/objects/Sky.js";
 import { createRig } from "../narrative/camera-rig.ts";
 import {
+  BEAM_DIM,
   CAM_FAR,
   CAM_NEAR,
   CAM_PRESETS_S,
@@ -45,6 +46,7 @@ import {
 } from "../narrative/choreography.ts";
 import { initProgress, type ProgressHandle } from "../narrative/progress.ts";
 import { createScroll, type ScrollHandle } from "../narrative/scroll.ts";
+import { buildBeams, type BeamDef, type Beams } from "./beams.ts";
 import { buildClouds } from "./clouds.ts";
 import { cloudAmount, mistAmount } from "./sun.ts";
 import { frameClock, mountDebug, parseBootQuery } from "./debug.ts";
@@ -54,6 +56,7 @@ import { fogUniforms, makeCloudShadowTexture, patchTerrainMaterial } from "./hei
 import {
   buildLabels,
   rayBlocked,
+  releaseBeam,
   updateLabels,
   type LabelDef,
 } from "./labels.ts";
@@ -939,6 +942,35 @@ float wgrain(vec2 lp){
   };
   const labelRts = buildLabels(labelDefs.labels, world.centerX, world.centerY, labelLayer);
 
+  // --- §3 haces verticales en los hitos (Everest reference): UNA
+  // InstancedMesh, un draw call. Uno por hito tipo != "cumbre" (base =
+  // terreno + 2, altura BEAM_H_M; la etiqueta cuelga de la punta).
+  // Intensidad por hito = mix(BEAM_DIM, 1, glowNear(s, sHito)); misma
+  // ventana ±0,02 que el rastro E3. ?beams=0 los apaga (comparativa) y
+  // suelta las etiquetas al suelo.
+  const BEAM_S: Record<string, number> = {
+    pradera: 0,
+    "cota-maxima": 0.3,
+    "cola-caballo": 0.745,
+  };
+  let beams: Beams | null = null;
+  const beamDefs: BeamDef[] = [];
+  if (boot.beams) {
+    labelRts.forEach((rt, rtIndex) => {
+      if (!rt.hasBeam) return;
+      const id = rt.def.id;
+      beamDefs.push({ rtIndex, s: BEAM_S[id] ?? 0.86 });
+    });
+    beams = buildBeams(labelRts, beamDefs, world.centerX, world.centerY);
+    beams.setAnchored(true);
+    scene.add(beams.group);
+    // ?debug=steep: mapa de pesos, sin haces (como nubes/rastro/etiquetas).
+    if (boot.steep) beams.group.visible = false;
+  } else {
+    // Apagados: etiquetas al suelo (mismo anclaje que antes de §3).
+    for (const rt of labelRts) releaseBeam(rt);
+  }
+
   // --- telemetry bar (7 cols, reads progress.getState()) ---
   const tele = el("div", "tele");
   const cells: TeleCells = {
@@ -1635,6 +1667,8 @@ float wgrain(vec2 lp){
     line.setDim(routeDim);
     metrics.hasRock = 1;
     metrics.rockWeightShown = rockWeight.value;
+    // §3: luz del día N1 en los haces (cloudDayF: de noche siguen, tenues).
+    if (beams) beams.setDayF(cloudDayF);
     if (frames % 6 === 0) {
       for (const rt of labelRts) {
         rt.occluded = rayBlocked(
@@ -1647,6 +1681,23 @@ float wgrain(vec2 lp){
           camera.position.z,
           rt as unknown as Parameters<typeof rayBlocked>[7],
         );
+      }
+      // §3: intensidad por hito con el MISMO ciclo (ya existe): mix de
+      // BEAM_DIM a 1 con uGlow (ventana ±0,02 del hito), ×0,25 si la
+      // etiqueta está ocluida (misma regla que labels), 0,6 en epílogo.
+      // updateLabels sigue costando lo mismo (solo cambió wy al anclar).
+      if (beams) {
+        const epi = st.s >= EPILOGUE_S;
+        beamDefs.forEach((d, i) => {
+          const g = glowNear(st.s, d.s);
+          beams?.setGlow(i, BEAM_DIM + (1 - BEAM_DIM) * g, (labelRts[d.rtIndex] as (typeof labelRts)[number]).occluded, epi);
+        });
+        if (boot.debug) {
+          metrics.beamHud = `haces ${beams.count} · activo ${beams.activeName() ?? "—"} · glow ${beams.maxGlow().toFixed(2)}`;
+        }
+        (window as unknown as { __beamGlow?: number[] }).__beamGlow = beams.debugGlows();
+      } else if (boot.debug) {
+        metrics.beamHud = "haces 0 (?beams=0)";
       }
     }
     // Rastro/feedback-loop: FIXED FRAME ORDER, never interleaved.
@@ -2188,6 +2239,14 @@ float wgrain(vec2 lp){
         } catch {
           (window as unknown as { __trackpx?: number }).__trackpx = -1;
           (window as unknown as { __trackOcc?: { on: number; off: number; frac: number } }).__trackOcc = { on: -1, off: -1, frac: -1 };
+        }
+        // §3 G74 (?trackpx=1 -> __beampx): pase de ID de haces (idMat
+        // propio, como G15) -> píxeles por hito [pradera, cota, cola].
+        // Misma cadencia de 30 frames, escena propia, producción intacta.
+        try {
+          (window as unknown as { __beampx?: number[] }).__beampx = beams ? beams.countIdPixels(renderer, camera) : [];
+        } catch {
+          (window as unknown as { __beampx?: number[] }).__beampx = [];
         }
       }
       // §4b FASE 2b (G26 medible): one canvas pixel at (16, h-16) — inside
