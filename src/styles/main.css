@@ -2,6 +2,9 @@
   --color-rock: #737065;
   --color-ink: #1c1a17;
   --color-paper: #f4f1ea;
+  --panel-accent: #d8a94e;
+  --panel-bg: rgb(8 10 13 / 82%);
+  --panel-fg: #f4f1ea;
   --font-text: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   /* N3b: per-act scroll sections. scroll.ts writes --act-*-vh at boot
@@ -374,4 +377,298 @@ body {
   background: #5c1a1a;
   border-radius: 8px;
   font-size: 14px;
+}
+
+/* --- 3B panel de los actos (Everest reference) --- */
+#panel {
+  position: fixed;
+  left: 24px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 320px;
+  max-height: 84vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: 18;
+  padding: 20px 22px 22px;
+  color: var(--panel-fg);
+  background: var(--panel-bg);
+  border: 1px solid rgb(244 241 234 / 16%);
+  border-radius: 12px;
+  backdrop-filter: blur(10px);
+  font-size: 15px;
+  line-height: 1.6;
+  transition: height 240ms ease;
+}
+
+@media (min-width: 1280px) {
+  #panel {
+    width: 360px;
+  }
+}
+
+@media (max-width: 899px) {
+  #panel {
+    display: none;
+  }
+
+  #flotante {
+    display: none;
+  }
+}
+
+#panel :focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.panel-cintillo {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  opacity: 0.72;
+  margin-bottom: 10px;
+}
+
+.panel-titulo {
+  font-size: clamp(28px, 3vw, 40px);
+  line-height: 1.12;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  margin-bottom: 14px;
+  text-wrap: balance;
+}
+
+.panel-titulo i {
+  color: var(--panel-accent);
+}
+
+.panel-cifras {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.panel-cifra b {
+  display: block;
+  font-size: 27px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--panel-accent);
+}
+
+.panel-cifra small {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.panel-cifra span {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.62;
+  margin-top: 2px;
+}
+
+.panel-grafico {
+  margin: 4px 0 14px;
+}
+
+.panel-grafico svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.panel-graf-leyenda {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  opacity: 0.75;
+  margin-top: 6px;
+}
+
+.panel-cuerpo {
+  font-size: 15px;
+  line-height: 1.6;
+  max-width: 70ch;
+}
+
+.panel-cuerpo p + p {
+  margin-top: 0.85em;
+}
+
+.panel-fichas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 14px 0 6px;
+}
+
+.panel-ficha {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  padding: 4px 9px;
+  border: 1px solid rgb(244 241 234 / 28%);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.panel-datos {
+  margin-top: 12px;
+  border-top: 1px solid rgb(244 241 234 / 16%);
+  padding-top: 10px;
+}
+
+.panel-datos summary {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.panel-datos dl {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.panel-datos dt {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+}
+
+.panel-datos dd {
+  font-size: 13.5px;
+  line-height: 1.55;
+  opacity: 0.92;
+}
+
+.panel-pend {
+  margin-top: 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  opacity: 0.8;
+  border-left: 2px solid var(--panel-accent);
+  padding-left: 10px;
+}
+
+.pend {
+  opacity: 0.6;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.panel-x {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  color: var(--panel-fg);
+  background: transparent;
+  border: 1px solid rgb(244 241 234 / 25%);
+  border-radius: 50%;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.panel-x:hover {
+  opacity: 1;
+}
+
+.pswap {
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.pswap.out {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+/* folded: only a 44px side tab with the numeral */
+#panel.panel-collapsed {
+  width: 44px;
+  padding: 14px 0;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+#panel.panel-collapsed .panel-body {
+  display: none;
+}
+
+#panel.panel-collapsed .panel-x {
+  position: static;
+}
+
+.panel-tabnum {
+  display: none;
+  writing-mode: vertical-rl;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.3em;
+  opacity: 0.9;
+  margin-top: 12px;
+}
+
+#panel.panel-collapsed .panel-tabnum {
+  display: block;
+}
+
+/* floating act title over the 3D, right of the panel */
+#flotante {
+  position: fixed;
+  left: 400px;
+  top: 11vh;
+  z-index: 16;
+  pointer-events: none;
+  max-width: min(420px, 30vw);
+  transition: opacity 180ms ease;
+}
+
+@media (max-width: 1279px) {
+  #flotante {
+    left: 368px;
+  }
+}
+
+.flotante-ghost {
+  font-size: 240px;
+  line-height: 0.9;
+  font-weight: 700;
+  opacity: 0.08;
+  user-select: none;
+}
+
+.flotante-t {
+  font-size: clamp(20px, 2.2vw, 30px);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin-top: -0.4em;
+  text-shadow: 0 1px 12px rgb(0 0 0 / 60%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pswap,
+  #panel,
+  #flotante {
+    transition: none;
+  }
 }

@@ -768,6 +768,31 @@ float wgrain(vec2 lp){
     camera.quaternion.set(p0.quaternion[0], p0.quaternion[1], p0.quaternion[2], p0.quaternion[3]);
   }
 
+  // --- 3B panel de los actos (Everest reference): text shell, the JSON
+  // carries the words. Mounted unless the rig is excluded (?orbit=1 / ?cam=
+  // override the pose explicitly — no panel framing then). URL comes from
+  // the bundled meta (content hash, G57: nothing unhashed over the net).
+  let panel: { setAct(act: string, f: number): void } | null = null;
+  let panelMountFailed = false;
+  async function ensurePanel(): Promise<void> {
+    if (panel || panelMountFailed || boot.orbit || boot.cam !== null) return;
+    try {
+      const { mountPanel } = await import("../narrative/panel.ts");
+      const h = mountPanel({ actsUrl: `/${meta.assets?.["acts"] ?? "assets/acts.json"}` });
+      if (h) panel = { setAct: (a, f) => h.setAct(a as never, f) };
+    } catch {
+      panelMountFailed = true;
+    }
+  }
+  // Mount early (fetch in flight while the gate stands); first setAct is a
+  // no-op until the JSON arrives.
+  void ensurePanel();
+  if (boot.orbit || boot.cam !== null) {
+    rig.setSubjectClosed(true);
+  } else if (window.innerWidth < 900) {
+    // <900px the panel hides for the 3D (CSS): framing stays centred.
+    rig.setSubjectClosed(true);
+  }
   // ?orbit=1: deferred OrbitControls, rig excluded. Orbit starts where the
   // rig would have put the camera for the given ?s= (inspect the framing).
   // A7: ?cam= overrides the POSE explicitly (same precedence ?t= has over
@@ -1386,6 +1411,12 @@ float wgrain(vec2 lp){
       scroll.update(dtMs, nowMs);
       progress.update();
       rig.update(dt);
+      // 3B: the panel follows __scroll.act (same span lookup the loop owns
+      // — no recompute). Write-if-changed inside; ~0 when the act holds.
+      if (panel) {
+        const an = scroll.actNow();
+        panel.setAct(an.act, an.f);
+      }
     }
     const st = progress.getState();
     const hour = st.hourDec;

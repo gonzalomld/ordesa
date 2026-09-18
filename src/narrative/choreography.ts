@@ -347,8 +347,23 @@ export const RIM_MARGIN_M = 100; // m: clearance below the sightline
 export const RIM_ABOVE_CAM_M = 200; // m: DEAD (sloped corridor subsumes it); kept so git history explains itself
 export const RIM_HALF_ANGLE_DEG = 30; // deg: DEAD (corridor replaced the cone); kept so git history explains itself
 export const RIM_CORRIDOR_HALF_M = 150; // m: across-track half-width (frame-width at 900 m ≈ +-150 m)
-// 3B framing seed (brief §7): subject at 0.5 today, 0.66 with the text panel.
-export const SUBJECT_X = 0.5; // NDC x of the aim point (setViewOffset, not a rotation)
+// 3B framing (brief §7 + panel answers): subject at OPEN with the text
+// panel (walker + aim in the right third), CLOSED when folded/narrow/orbit.
+// The live subjectX eases toward its target with 1-exp(-k·dt) (k=8: ~95%
+// in 400 ms); only camera.setViewOffset reads it — pose/yaw/pitch/s untouched.
+export const SUBJECT_X_OPEN = 0.66; // NDC x of the aim point with the panel open
+export const SUBJECT_X_CLOSED = 0.5; // ... folded, narrow (<900px), orbit or ?cam=
+export const SUBJECT_X_K = 8; // 1/s easing rate toward the target (G73: 400 ms)
+export const SUBJECT_X_K_REDUCED = 60; // prefers-reduced-motion: effectively instant
+// 3B panel (Everest reference): crossfade + height settle, flotante window.
+export const PANEL_SWAP_MS = 180; // opacity + 6px shift on act change (brief wins over the 150 ms reference note)
+export const PANEL_HEIGHT_MS = 240; // height settle so the panel never jumps
+export const PANEL_W_WIDE = 360; // px at >=1280px viewport
+export const PANEL_W_NARROW = 320; // px at 900-1279px (<900px the panel hides)
+export const PANEL_TAB_W = 44; // folded side tab width
+export const FLOTANTE_F_IN = 0.12; // flotante fully in for f < 0.12
+export const FLOTANTE_F_OUT = 0.25; // ... faded out by f = 0.25 (epilogue keeps it)
+export const PANEL_ACCENT = "#d8a94e"; // gold: italic title tail, cifras, SVG charts (single accent + 30% grey)
 
 // --- E3 (luminous tube at milestones): width as a function of plan
 // camera->aim distance + additive halo on the same geometry, gated by uGlow

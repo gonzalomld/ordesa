@@ -1518,6 +1518,118 @@ function elevFull36(): Float32Array {
         : "no OrbitControls chunk in dist/assets — rebuild dist/ (stale or orbit not deferred)");
 }
 
+// --- G68 acts content (3B): panel words match actos.es.md char by char.
+// Compares the JSON raws against the md fields (only \r\n->\n + final
+// trim normalised); regenerates the SVGs from md+route.json and compares
+// byte by byte (deterministic build). Any failure = invented/lost text.
+{
+  const norm = (s: string): string => s.replace(/\r\n/g, "\n").trim();
+  let g68ok = true;
+  const g68bad: string[] = [];
+  const actsPath = (() => {
+    try {
+      const m = JSON.parse(readFileSync("data/build/meta.json", "utf8")) as { assets?: Record<string, string> };
+      return m.assets?.["acts"] ? `public/${m.assets["acts"] as string}` : null;
+    } catch {
+      return null;
+    }
+  })();
+  if (!actsPath || !existsSync(actsPath)) {
+    gate("G68-acts-content", false, `missing acts JSON (${actsPath ?? "no assets.acts in meta.json"}) — run scripts/15-build-acts.ts`);
+    g68ok = false;
+  } else if (!existsSync("content/actos.es.md")) {
+    gate("G68-acts-content", false, "missing content/actos.es.md");
+    g68ok = false;
+  } else {
+    const { parseActs, loadRoute, miniMd } = await import("./15-build-acts.ts");
+    const md = readFileSync("content/actos.es.md", "utf8");
+    const routeData = loadRoute();
+    const expect = parseActs(md, routeData);
+    const got = JSON.parse(readFileSync(actsPath, "utf8")) as { acts: typeof expect };
+    if (got.acts.length !== 7) {
+      gate("G68-acts-content", false, `acts JSON has ${got.acts.length} acts, need 7`);
+      g68ok = false;
+    } else {
+      const rows: string[] = [];
+      for (let i = 0; i < 7; i++) {
+        const e = expect[i] as (typeof expect)[number];
+        const g = got.acts[i] as (typeof expect)[number];
+        const fields: [string, string, string][] = [
+          ["cintillo", e.cintillo.raw, g.cintillo.raw],
+          ["titulo", e.titulo.raw, g.titulo.raw],
+          ["flotante", e.flotante.raw, g.flotante.raw],
+          ["cifra1", [e.cifra1.valor, e.cifra1.unidad, e.cifra1.etiqueta, e.cifra1.subetiqueta].join(" · "), [g.cifra1.valor, g.cifra1.unidad, g.cifra1.etiqueta, g.cifra1.subetiqueta].join(" · ")],
+          ["cifra2", [e.cifra2.valor, e.cifra2.unidad, e.cifra2.etiqueta, e.cifra2.subetiqueta].join(" · "), [g.cifra2.valor, g.cifra2.unidad, g.cifra2.etiqueta, g.cifra2.subetiqueta].join(" · ")],
+          ["fichas", e.fichas.join(" · "), g.fichas.join(" · ")],
+          ["campo", e.campo.map((r) => `${r.etiqueta} — ${r.valor}`).join(" | "), g.campo.map((r) => `${r.etiqueta} — ${r.valor}`).join(" | ")],
+          ["cuerpo", e.cuerpo.map((p) => p.raw).join("\n\n"), g.cuerpo.map((p) => p.raw).join("\n\n")],
+          ["grafico-spec", e.grafico.spec_raw, g.grafico.spec_raw],
+        ];
+        let okAct = e.key === g.key;
+        if (!okAct) g68bad.push(`${e.key}: key ${g.key}`);
+        for (const [fn, a, b] of fields) {
+          if (norm(a) !== norm(b)) {
+            okAct = false;
+            g68bad.push(`${e.key}.${fn} difiere (${a.length} vs ${b.length} chars)`);
+          }
+        }
+        // html = miniMd(raw): recompute, no second source.
+        const htmlFields: [string, string, string][] = [
+          [`${e.key}.titulo.html`, miniMd(e.titulo.raw), g.titulo.html],
+          [`${e.key}.cintillo.html`, miniMd(e.cintillo.raw), g.cintillo.html],
+        ];
+        for (const [fn, a, b] of htmlFields) {
+          if (a !== b) {
+            okAct = false;
+            g68bad.push(`${fn} html difiere`);
+          }
+        }
+        // SVG determinism: same md + same route.json -> same bytes.
+        if (e.grafico.svg !== g.grafico.svg) {
+          okAct = false;
+          g68bad.push(`${e.key}.grafico.svg difiere (${e.grafico.svg.length} vs ${g.grafico.svg.length} bytes)`);
+        }
+        rows.push(`${e.key}:${okAct ? "ok" : "DIFIERE"}`);
+        if (!okAct) g68ok = false;
+      }
+      gate("G68-acts-content", g68ok,
+        g68ok
+          ? `${rows.join(" ")} — cintillo/título/cifras/fichas/campo/cuerpo/spec char-by-char + SVG byte-identical (${actsPath})`
+          : g68bad.slice(0, 10).join(" · "));
+    }
+  }
+}
+
+// --- G69/G70/G71/G72/G73 (3B): browser-measured with ?debug=1, static
+// contract here — the numbers live in prod (barrido G69, NDC G70,
+// contraste G71, tiempos G72, plegado G73). Node checks the wiring exists:
+// panel listens to scroll.actNow, rig eases subjectX, __subjectX published.
+{
+  const panelSrc = readFileSync("src/narrative/panel.ts", "utf8");
+  const rigSrc = readFileSync("src/narrative/camera-rig.ts", "utf8");
+  const scrollSrc = readFileSync("src/narrative/scroll.ts", "utf8");
+  const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
+  const css = readFileSync("src/styles/main.css", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  const checks: [string, boolean][] = [
+    ["panel escucha act (setAct)", has(panelSrc, "setAct") && has(scrollSrc, "actNow()")],
+    ["viewer llama setAct con actNow", has(viewerSrc, "scroll.actNow()")],
+    ["un solo rAF (panel sin rAF)", !has(panelSrc, "requestAnimationFrame")],
+    ["rig eases subjectX 1-exp", has(rigSrc, "1 - Math.exp(-k") && has(rigSrc, "setViewOffset")],
+    ["__subjectX publicado", has(rigSrc, "__subjectX")],
+    ["SUJETO 0.66/0.5", has(rigSrc, "SUBJECT_X_OPEN") && has(rigSrc, "SUBJECT_X_CLOSED")],
+    ["flotante f<0.12/0.25", has(panelSrc, "FLOTANTE_F_IN") && has(panelSrc, "FLOTANTE_F_OUT")],
+    ["pswap 180ms + altura 240ms", has(css, ".pswap") && css.includes("180ms") && css.includes("240ms")],
+    ["data-lenis-prevent", has(panelSrc, "data-lenis-prevent")],
+    ["aria-live + aria-expanded", (has(panelSrc, "aria-live") || css.includes("aside")) && has(panelSrc, "aria-expanded")],
+    ["pendiente visible", has(panelSrc, 'title="pendiente de verificar"')],
+    ["solo acto vigente en DOM", has(panelSrc, "other six") || has(panelSrc, "solo") || has(panelSrc, "paintAct")],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G69-G73-wiring", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — panel<-actNow, subjectX easing, flotante, pswap, a11y (números en prod ?debug=1)`);
+}
+
 if (failures > 0) {
   console.error(`\nverify:3a: ${failures} gate(s) FAILED`);
   process.exit(1);

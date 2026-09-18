@@ -84,6 +84,9 @@ export interface ScrollHandle {
   dispose(): void;
   /** N3b: ?act= scroll target (top of the act section, px). Null = none. */
   actJumpTarget(act: string): number | null;
+  /** 3B: read-only current act section + fraction (same values the loop
+   * already computes; no recompute, no second source). The panel reads this. */
+  actNow(): { act: ActKey; f: number };
   /** N3b: expose Lenis for the ?act= scrollTo jump (viewer calls it after
    * the gate opens; locked before that like everything else). */
   jumpToAct(act: string): boolean;
@@ -433,6 +436,9 @@ export function createScroll(): ScrollHandle {
     },
     actJumpTarget(act: string): number | null {
       return actJumpTargetPx(act);
+    },
+    actNow(): { act: ActKey; f: number } {
+      return { act: curAct, f: curF };
     },
     jumpToAct(act: string): boolean {
       if (!lenis) return false;

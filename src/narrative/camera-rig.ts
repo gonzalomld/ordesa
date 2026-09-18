@@ -8,7 +8,7 @@
 import * as THREE from "three";
 import { bakeCamRail, quatYXZ, type BakedRail, type FollowProfile, type RouteLike } from "./anchors.ts";
 import { resolveFollowSafety } from "./collision.ts";
-import { CAM_CLEARANCE_M, SUBJECT_X } from "./choreography.ts";
+import { CAM_CLEARANCE_M, SUBJECT_X_CLOSED, SUBJECT_X_K, SUBJECT_X_K_REDUCED, SUBJECT_X_OPEN } from "./choreography.ts";
 import { buildPchip } from "./curve.ts";
 import type { ProgressHandle } from "./progress.ts";
 import { sampleGrid, type Meta, type World } from "../engine/terrain.ts";
@@ -61,6 +61,7 @@ export function createRig(deps: RigDeps): {
   poseAt(s: number): RigPose;
   getDiag(): RigDiag;
   getTarget(): [number, number, number];
+  setSubjectClosed(c: boolean): void;
 } {
   const { route, world, elev, meta, progress } = deps;
   const res = progress.resolved();
@@ -105,17 +106,35 @@ export function createRig(deps: RigDeps): {
   let lastTarget: [number, number, number] = [0, 0, 0];
   const diag: RigDiag = { distPlan: 0, hCam: 0, lookM: 0, backM: 0, holgura: Infinity, yaw: 0, pitch: 0, corrH: 0 };
 
-  function applyViewOffset(): void {
-    // 3B seed (brief §7): subject at SUBJECT_X via frustum shift, NOT a
-    // rotation (rotation would break G18 + decenter the aim).
-    if (SUBJECT_X === 0.5) {
+  // 3B live subject: eases toward its target with 1-exp(-k·dt) (400 ms at
+  // k=8, instant with reduced motion). Feeds ONLY setViewOffset — pose,
+  // yaw, pitch and s come from the baked rail untouched (G4/G66 intact).
+  let subjectX = SUBJECT_X_OPEN;
+  let subjectTarget = SUBJECT_X_OPEN;
+  const reducedMotion = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const onPanelCollapsed = (e: Event): void => {
+    const c = (e as CustomEvent<{ collapsed: boolean }>).detail?.collapsed ?? false;
+    subjectTarget = c ? SUBJECT_X_CLOSED : SUBJECT_X_OPEN;
+  };
+  if (typeof window !== "undefined") window.addEventListener("panel:collapsed", onPanelCollapsed);
+
+  function applyViewOffset(dt: number): void {
+    const k = reducedMotion ? SUBJECT_X_K_REDUCED : SUBJECT_X_K;
+    subjectX += (subjectTarget - subjectX) * (1 - Math.exp(-k * Math.max(0, dt)));
+    if (Math.abs(subjectX - 0.5) < 1e-4) {
       deps.camera.clearViewOffset();
-      return;
+    } else {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const offX = (0.5 - subjectX) * w;
+      deps.camera.setViewOffset(w, h, offX, 0, w, h);
     }
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const offX = (0.5 - SUBJECT_X) * w;
-    deps.camera.setViewOffset(w, h, offX, 0, w, h);
+    (window as unknown as { __subjectX?: number }).__subjectX = subjectX;
+  }
+
+  /** 3B: force the framing target (folded/narrow/orbit/?cam= -> CLOSED). */
+  function setSubjectClosed(closed: boolean): void {
+    subjectTarget = closed ? SUBJECT_X_CLOSED : SUBJECT_X_OPEN;
   }
 
   function poseAt(s: number): RigPose {
@@ -140,7 +159,8 @@ export function createRig(deps: RigDeps): {
     const quat = quatYXZ(yaw, pitch);
     deps.camera.position.set(pos[0], pos[1], pos[2]);
     deps.camera.quaternion.set(quat[0], quat[1], quat[2], quat[3]);
-    applyViewOffset();
+    // 3B: dt clamped like the scroll loop (<=250 ms); C1 pose stays pure.
+    applyViewOffset(Math.min(0.25, Math.max(0, dt)));
     lastTarget = aim;
     diag.distPlan = Math.hypot(pos[0] - aim[0], pos[2] - aim[2]);
     diag.hCam = 0;
@@ -154,7 +174,7 @@ export function createRig(deps: RigDeps): {
     diag.corrH = 0;
   }
 
-  return { update, poseAt, getDiag: () => diag, getTarget: () => lastTarget };
+  return { update, poseAt, getDiag: () => diag, getTarget: () => lastTarget, setSubjectClosed };
 }
 
 // Re-exported for verify:3a (same construction, no mirror).
