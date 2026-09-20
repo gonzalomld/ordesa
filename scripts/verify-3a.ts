@@ -1589,15 +1589,79 @@ function elevFull36(): Float32Array {
           okAct = false;
           g68bad.push(`${e.key}.grafico.svg difiere (${e.grafico.svg.length} vs ${g.grafico.svg.length} bytes)`);
         }
+        // G68 (3B-bis): cada <rect> del SVG con width ≥ 4 px + fichas sin
+        // backticks + barras con valor numérico finito (el NaN del acto 0
+        // pasaba el determinismo byte a byte sin ser correcto).
+        for (const m of g.grafico.svg.matchAll(/<rect[^>]*width="([\d.]+)"/g)) {
+          if (!(Number(m[1]) >= 4)) {
+            okAct = false;
+            g68bad.push(`${e.key}.grafico rect width=${m[1]} (<4px)`);
+          }
+        }
+        for (const f of g.fichas) {
+          if (f.includes("`")) {
+            okAct = false;
+            g68bad.push(`${e.key}.ficha con backtick: «${f.slice(0, 30)}»`);
+          }
+        }
+        if (g.grafico.kind === "barras") {
+          for (const b of g.grafico.barras ?? []) {
+            if (typeof b.valor !== "number" || !Number.isFinite(b.valor)) {
+              okAct = false;
+              g68bad.push(`${e.key}.barra «${b.etiqueta}» sin valor numérico`);
+            }
+          }
+        }
         rows.push(`${e.key}:${okAct ? "ok" : "DIFIERE"}`);
         if (!okAct) g68ok = false;
       }
       gate("G68-acts-content", g68ok,
         g68ok
-          ? `${rows.join(" ")} — cintillo/título/cifras/fichas/campo/cuerpo/spec char-by-char + SVG byte-identical (${actsPath})`
+          ? `${rows.join(" ")} — char-by-char + SVG byte-identical + rects ≥4px + fichas sin backticks (${actsPath})`
           : g68bad.slice(0, 10).join(" · "));
     }
   }
+}
+
+// --- G82 tokens Everest (3B-bis): estilos computados del panel = tokens
+// del brief (medidos en navegador con ?debug=1; aquí el contrato
+// estático: literales que el CSS debe contener). Desviación ±1px, ±0,02em.
+{
+  const css = readFileSync("src/styles/main.css", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  const checks: [string, boolean][] = [
+    ["tokens :root", ["--ink:#070b12", "--pearl:#f3f6fa", "--silver:#aebbcd", "--faint:#98a6bb", "--gold:#d8b787", "--gold-bright:#eacf9f"].every((t) => has(css.replace(/ /g, ""), t.replace(/ /g, "")))],
+    ["--gold-line + --line", has(css, "--gold-line") && has(css, "--line")],
+    ["eyebrow 10px .3em silver mb18", has(css, ".eyebrow") && has(css, "margin-bottom: 18px")],
+    ["h2 clamp(34,3.9,46) lh1.02 .005em", has(css, "clamp(34px, 3.9vw, 46px)") && has(css, "line-height: 1.02")],
+    ["tiles flex + .v 28px + .d gold", has(css, ".tiles") && has(css, "font-size: 28px")],
+    ["p 13.5px lh1.9 .011em silver", has(css, "13.5px") && has(css, "line-height: 1.9") && has(css, "0.011em")],
+    ["chips li 10px .14em + · gold", has(css, ".chips") && has(css, '"·"')],
+    ["pcard fixed 8px r20 gradiente blur", has(css, ".pcard") && has(css, "left: 8px") && has(css, "border-radius: 20px") && has(css, "blur(10px) saturate(150%)")],
+    ["pscroll inset0 pad30", has(css, ".pscroll") && has(css, "padding: 30px")],
+    ["pclose 32x32 r9 svg13", has(css, ".pclose") && has(css, "32px") && has(css, "border-radius: 9px")],
+    ["fondos sin backdrop (@supports)", has(css, "@supports not")],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G82-everest-tokens", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — tokens + medidas literales (computados en prod ?debug=1)`);
+}
+
+// --- G83 scroll invisible (3B-bis): sin barra visible, overscroll
+// contenido, rueda contenida (medido en navegador; aquí el contrato).
+{
+  const css = readFileSync("src/styles/main.css", "utf8");
+  const panelSrc = readFileSync("src/narrative/panel.ts", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  const checks: [string, boolean][] = [
+    ["scrollbar-width none", has(css, ".pscroll") && has(css, "scrollbar-width: none")],
+    ["::-webkit-scrollbar display none", has(css, "::-webkit-scrollbar") && has(css, "display: none")],
+    ["overscroll contain", has(css, "overscroll-behavior: contain")],
+    ["data-lenis-prevent", has(panelSrc, "data-lenis-prevent")],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G83-panel-scroll", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — scroll invisible + contenido (rueda en prod ?debug=1)`);
 }
 
 // --- G69/G70/G71/G72/G73 (3B): browser-measured with ?debug=1, static
@@ -1619,7 +1683,8 @@ function elevFull36(): Float32Array {
     ["__subjectX publicado", has(rigSrc, "__subjectX")],
     ["SUJETO 0.66/0.5", has(rigSrc, "SUBJECT_X_OPEN") && has(rigSrc, "SUBJECT_X_CLOSED")],
     ["flotante f<0.12/0.25", has(panelSrc, "FLOTANTE_F_IN") && has(panelSrc, "FLOTANTE_F_OUT")],
-    ["pswap 180ms + altura 240ms", has(css, ".pswap") && css.includes("180ms") && css.includes("240ms")],
+    ["entrada pstage.act escalonada", has(css, ".pstage.act") && has(css, "p-rise") && has(css, "p-track-in") && has(css, "p-rise-blur") && has(css, "p-grow-x")],
+    ["plegado scale .045 origin 20px", has(css, "scale(0.045)") || has(css, "scale(.045)")],
     ["data-lenis-prevent", has(panelSrc, "data-lenis-prevent")],
     ["aria-live + aria-expanded", (has(panelSrc, "aria-live") || css.includes("aside")) && has(panelSrc, "aria-expanded")],
     ["pendiente visible", has(panelSrc, 'title="pendiente de verificar"')],
@@ -1627,7 +1692,7 @@ function elevFull36(): Float32Array {
   ];
   const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
   gate("G69-G73-wiring", bad.length === 0,
-    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — panel<-actNow, subjectX easing, flotante, pswap, a11y (números en prod ?debug=1)`);
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — panel<-actNow, subjectX easing, flotante, pstage, plegado, a11y (números en prod ?debug=1)`);
 }
 
 // --- §3b haces Everest (G74 presencia / G75 base / G76 oclusión / G77

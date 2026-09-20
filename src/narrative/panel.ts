@@ -1,15 +1,21 @@
-// panel.ts — 3B EL PANEL DE LOS ACTOS. Single rAF rule: no rAF here —
-// the viewer loop calls setAct(act, f) every frame (write-if-changed, ~0
-// cost when the act holds). Single journey source: the panel NEVER
-// recomputes s/d/z/hour — it listens to __scroll.act (N3b) via setAct.
-// Text is painted verbatim from acts.<hash>.json (build of actos.es.md);
-// only the current act lives in the DOM (indexable), the other six don't.
+// panel.ts — 3B-bis EL PANEL DE LOS ACTOS (hoja de estilos de Everest).
+// Single rAF rule: no rAF here — the viewer loop calls setAct(act, f)
+// every frame (write-if-changed, ~0 cost when the act holds). Single
+// journey source: the panel NEVER recomputes s/d/z/hour — it listens to
+// __scroll.act (N3b) via setAct. Text is painted verbatim from
+// acts.<hash>.json (build of actos.es.md); only the current act lives in
+// the DOM (indexable), the other six don't.
+//
+// DOM (clases Everest, adaptadas al tercio izquierdo):
+//   aside.pcard > button.pclose + button.popen(+) + div.pscroll >
+//     div.pstage.act > .eyebrow + h2 + .tiles + .g + p* + ul.chips +
+//     details.fd + [pendiente]
+// G72: setAct hace un solo innerHTML por cambio de acto (≤4 ms JS);
+// G73: el plegado emite panel:collapsed (SUBJECT_X 0.66/0.5 en el rig).
 import {
   ACT_ORDER,
   FLOTANTE_F_IN,
   FLOTANTE_F_OUT,
-  PANEL_HEIGHT_MS,
-  PANEL_SWAP_MS,
   type ActKey,
 } from "./choreography.ts";
 import type { ActJson } from "../../scripts/15-build-acts.ts";
@@ -22,38 +28,80 @@ function h(html: string): string {
   return html;
 }
 
-function cifraHtml(c: ActJson["cifra1"]): string {
-  if (!c.valor) return "";
-  return `<div class="panel-cifra"><b>${h(c.valor)}</b><small>${h(c.unidad)}</small><span>${h(c.etiqueta)} · ${h(c.subetiqueta)}</span></div>`;
+/** "ACTO III · LA CORNISA · 1.811 – 1.959 M" -> rango de cotas envuelto
+ * en <span class="rng"> para el último recurso del brief (<380 px). */
+function eyebrowHtml(raw: string): string {
+  const m = raw.match(/^(.*)(1\.\d{3}(?:\s*[–→-]\s*1\.\d{3})?\s*M)$/);
+  if (!m) return h(raw);
+  return `${h((m[1] as string).trim())} <span class="rng">${h((m[2] as string).trim())}</span>`;
+}
+
+function tilesHtml(a: ActJson): string {
+  const tile = (c: ActJson["cifra1"]): string => {
+    if (!c.valor) return "";
+    return `<div class="tile"><div class="k">${h(c.etiqueta)}</div><div class="v">${h(c.valor)}<small>${h(c.unidad)}</small></div><div class="d">${h(c.subetiqueta)}</div></div>`;
+  };
+  const t = `${tile(a.cifra1)}${tile(a.cifra2)}`;
+  return t ? `<div class="tiles">${t}</div>` : "";
+}
+
+function grafHtml(a: ActJson): string {
+  const g = a.grafico;
+  if (g.kind === "barras" && g.barras && g.barras.length > 0) {
+    const vals = g.barras.map((b) => (Number.isFinite(b.valor) && b.valor > 0 ? b.valor : 0));
+    const max = Math.max(1, ...vals);
+    const rows = g.barras
+      .map((b, i) => {
+        const pct = Math.min(100, Math.max(0, (100 * (vals[i] as number)) / max));
+        return `<div class="hrow"><span class="hlab">${h(b.etiqueta)}</span><span class="htrack"><span class="hfill" style="width:${pct.toFixed(1)}%"></span></span><span class="hnum">${h(fmtNum(b.valor))}</span></div>`;
+      })
+      .join("");
+    return `<div class="g"><div class="hbars">${rows}</div></div>`;
+  }
+  // Perfil: el SVG inline del parser (byte-idéntico, G68) + caption.
+  return `<div class="g">${g.svg}<div class="cap">${h(g.spec_raw)}</div></div>`;
+}
+
+/** 279000 -> "279.000" · -3.9 -> "−3,9" (la cifra real, no el ancho). */
+function fmtNum(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  const neg = v < 0;
+  const abs = Math.abs(v);
+  const int = Math.trunc(abs);
+  const dec = abs - int;
+  const intEs = int.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  const decEs = dec > 0 ? `,${Math.round(dec * 10)}` : "";
+  return `${neg ? "−" : ""}${intEs}${decEs}`;
 }
 
 function actBody(a: ActJson): string {
   // EPI: inventory blocks + cierre (no cifras/fichas in the source).
+  // Las tiles del epílogo salen del inventario (18,1 km / +815 m,
+  // sources-fase3, mismas cifras que el Bloque 1).
   if (a.key === "EPI") {
     const blocks = (a.epiBloques ?? [])
       .map(
         (b) =>
-          `<div class="panel-epi"><div class="panel-cintillo">${h(b.titulo.toUpperCase())}</div><dl>${b.filas.map((r) => `<div><dt>${h(r.valor)}</dt><dd>${h(r.etiqueta)}</dd></div>`).join("")}</dl></div>`,
+          `<div class="fd-epi"><div class="eyebrow">${h(b.titulo.toUpperCase())}</div><dl>${b.filas.map((r) => `<div><dt>${h(r.valor)}</dt><dd>${h(r.etiqueta)}</dd></div>`).join("")}</dl></div>`,
       )
       .join("");
-    const cierre = a.epiCierre ? `<div class="panel-cuerpo"><p>${a.epiCierre.html}</p></div>` : "";
-    const pie = a.pieFuentes ? `<div class="panel-pend">${h(a.pieFuentes)}</div>` : "";
-    return `<div class="panel-cintillo">EPÍLOGO · EL INVENTARIO</div><h2 class="panel-titulo">${a.titulo.html}</h2>${blocks}${cierre}${pie}`;
+    const cierre = a.epiCierre ? `<p>${a.epiCierre.html}</p>` : "";
+    const pie = a.pieFuentes ? `<ul class="chips"><li>${h(a.pieFuentes)}</li></ul>` : "";
+    return `<div class="pstage act"><div class="eyebrow">EPÍLOGO · <b>EL INVENTARIO</b></div><h2>${a.titulo.html}</h2><div class="tiles"><div class="tile"><div class="k">RECORRIDO</div><div class="v">18,1<small>km</small></div><div class="d">CIRCULAR</div></div><div class="tile"><div class="k">DESNIVEL</div><div class="v">+815<small>m</small></div><div class="d">ACUMULADO</div></div></div>${blocks}${cierre}${pie}</div>`;
   }
-  const grafLeyenda =
-    a.grafico.kind === "barras" && a.grafico.barras
-      ? `<div class="panel-graf-leyenda">${a.grafico.barras.map((b) => `<span>${h(b.etiqueta)}</span>`).join("")}</div>`
-      : "";
-  const pend = a.pendienteRaw ? `<div class="panel-pend"><span class="pend" title="pendiente de verificar">${h(a.pendienteRaw)}</span></div>` : "";
+  const chips = a.fichas.length > 0 ? `<ul class="chips">${a.fichas.map((f) => `<li>${h(f)}</li>`).join("")}</ul>` : "";
+  const pend = a.pendienteRaw ? `<p><span class="pend" title="pendiente de verificar">${h(a.pendienteRaw)}</span></p>` : "";
   return (
-    `<div class="panel-cintillo">${h(a.cintillo.raw)}</div>` +
-    `<h2 class="panel-titulo">${a.titulo.html}</h2>` +
-    `<div class="panel-cifras">${cifraHtml(a.cifra1)}${cifraHtml(a.cifra2)}</div>` +
-    `<figure class="panel-grafico">${a.grafico.svg}${grafLeyenda}</figure>` +
-    `<div class="panel-cuerpo">${a.cuerpo.map((p) => `<p>${p.html}</p>`).join("")}</div>` +
-    `<div class="panel-fichas">${a.fichas.map((f) => `<span class="panel-ficha">${h(f)}</span>`).join("")}</div>` +
-    `<details class="panel-datos"><summary>DATOS DE CAMPO</summary><dl>${a.campo.map((r) => `<div><dt>${h(r.etiqueta)}</dt><dd>${h(r.valor)}</dd></div>`).join("")}</dl></details>` +
-    pend
+    `<div class="pstage act">` +
+    `<div class="eyebrow">${eyebrowHtml(a.cintillo.raw)}</div>` +
+    `<h2>${a.titulo.html}</h2>` +
+    tilesHtml(a) +
+    grafHtml(a) +
+    a.cuerpo.map((p) => `<p>${p.html}</p>`).join("") +
+    chips +
+    `<details class="fd"><summary>DATOS DE CAMPO</summary><table>${a.campo.map((r) => `<tr><th>${h(r.etiqueta)}</th><td>${h(r.valor)}</td></tr>`).join("")}</table></details>` +
+    pend +
+    `</div>`
   );
 }
 
@@ -72,15 +120,11 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
   aside.setAttribute("aria-live", "polite"); // salvo: index.html ya lo trae
   const flot = document.getElementById(opts.flotanteId ?? "flotante");
   aside.setAttribute("data-lenis-prevent", "");
-  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const swapMs = reduced ? 0 : PANEL_SWAP_MS;
-  const heightMs = reduced ? 0 : PANEL_HEIGHT_MS;
+  aside.classList.add("pcard");
 
   let acts: ActJson[] | null = null;
   let cur: ActKey = "0";
   let collapsed = window.innerWidth < 900;
-  let pending: ActKey | null = null;
-  let swapping = false;
 
   const W = window as unknown as { __panelAct?: string };
 
@@ -104,32 +148,62 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
   }
 
   function paintAct(a: ActJson): void {
-    const body = aside.querySelector(".panel-body");
-    if (body) body.innerHTML = actBody(a);
-    const tab = aside.querySelector(".panel-tabnum");
-    if (tab) tab.textContent = a.key;
-    const x = aside.querySelector<HTMLButtonElement>(".panel-x");
+    // G72: un solo innerHTML por cambio de acto; sin layout del canvas
+    // (el panel es fixed, el canvas nunca se re-mide).
+    const t0 = performance.now();
+    const scroller = aside.querySelector(".pscroll");
+    if (scroller) scroller.innerHTML = actBody(a);
+    popen.textContent = `+ ${a.key}`;
+    fitEyebrow();
+    const x = aside.querySelector<HTMLButtonElement>(".pclose");
     if (x) x.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    const dt = performance.now() - t0;
+    (window as unknown as { __panelSwapMs?: number }).__panelSwapMs = dt;
+  }
+
+  // Error 3 (3B-bis): el cintillo en una sola línea; si no cabe, tracking
+  // a 0,2 em (.narrow-eyebrow: también oculta .rng); como último recurso
+  // el CSS oculta .rng en <380 px de panel (@container). Solo mide el
+  // eyebrow (no el canvas).
+  function fitEyebrow(): void {
+    const eyebrow = aside.querySelector<HTMLElement>(".eyebrow");
+    if (!eyebrow) return;
+    aside.classList.remove("narrow-eyebrow");
+    if (eyebrow.scrollWidth <= eyebrow.clientWidth) return;
+    aside.classList.add("narrow-eyebrow");
   }
 
   function applyCollapsed(): void {
     aside.classList.toggle("panel-collapsed", collapsed);
-    const x = aside.querySelector<HTMLButtonElement>(".panel-x");
+    popen.hidden = !collapsed;
+    const x = aside.querySelector<HTMLButtonElement>(".pclose");
     if (x) {
       x.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      x.textContent = collapsed ? "+" : "×";
       x.setAttribute("aria-label", collapsed ? "Desplegar panel del acto" : "Plegar panel del acto");
     }
     window.dispatchEvent(new CustomEvent("panel:collapsed", { detail: { collapsed } }));
   }
 
-  // Skeleton once (no act text until the JSON arrives).
+  // Skeleton once (no act text until the JSON arrives). .pclose lleva un
+  // SVG de 13 px (no el carácter ×); .popen ("+" + numeral) vive FUERA
+  // del pcard colapsado (el plegado es scale .045 + opacity 0: los hijos
+  // no son clicables) y solo es visible plegado. .pscroll interior (G83).
   aside.innerHTML =
-    `<button class="panel-x" type="button" aria-expanded="true" aria-controls="panel" aria-label="Plegar panel del acto">×</button>` +
-    `<div class="panel-tabnum" aria-hidden="true">0</div>` +
-    `<div class="panel-body pswap"></div>`;
-  aside.querySelector(".panel-x")?.addEventListener("click", () => {
-    setCollapsed(!collapsed);
+    `<button class="pclose" type="button" aria-expanded="true" aria-controls="panel" aria-label="Plegar panel del acto"><svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true"><path d="M1 1l11 11M12 1L1 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>` +
+    `<div class="pscroll pswap"></div>`;
+  const popen = document.createElement("button");
+  popen.className = "popen-fab";
+  popen.type = "button";
+  popen.setAttribute("aria-controls", "panel");
+  popen.setAttribute("aria-label", "Desplegar panel del acto");
+  popen.textContent = "+ 0";
+  popen.hidden = true;
+  aside.after(popen);
+  aside.querySelector(".pclose")?.addEventListener("click", () => {
+    setCollapsed(true);
+  });
+  popen.addEventListener("click", () => {
+    setCollapsed(false);
   });
 
   function setCollapsed(c: boolean): void {
@@ -143,47 +217,11 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
     if (!a || !acts) return;
     cur = next;
     W.__panelAct = next;
-    const body = aside.querySelector<HTMLElement>(".panel-body");
     renderFlotante(a, f);
-    if (!body) return;
-    if (swapMs === 0) {
-      paintAct(a);
-      return;
-    }
-    if (swapping) {
-      pending = next;
-      return;
-    }
-    swapping = true;
-    // Pin the height so the swap never jumps the panel (240 ms settle).
-    const h0 = aside.offsetHeight;
-    aside.style.height = `${h0}px`;
-    body.classList.add("out");
-    window.setTimeout(() => {
-      // If another act queued mid-swap, paint the latest only.
-      const latest = pending ?? next;
-      pending = null;
-      const la = acts?.find((x) => x.key === latest);
-      if (la) {
-        cur = latest;
-        W.__panelAct = latest;
-        paintAct(la);
-        renderFlotante(la, f);
-      }
-      body.classList.remove("out");
-      // Settle to the new natural height, then release.
-      const h1 = aside.scrollHeight;
-      aside.style.height = `${h1}px`;
-      window.setTimeout(() => {
-        aside.style.height = "";
-        swapping = false;
-        if (pending) {
-          const p = pending;
-          pending = null;
-          commitAct(p, f);
-        }
-      }, heightMs);
-    }, swapMs);
+    // 3B-bis: la entrada la hace el CSS (.pstage.act > * con rise/trackIn
+    // escalonados). Sin temporizadores: pinta y listo; con reduced-motion
+    // el CSS anula las animaciones.
+    paintAct(a);
   }
 
   const handle: PanelHandle = {

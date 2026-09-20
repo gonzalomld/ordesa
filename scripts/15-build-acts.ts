@@ -80,11 +80,16 @@ export function miniMd(s: string): string {
 
 export function parseNumEs(s: string): number {
   // "279.000" -> 279000 · "42.500" -> 42500 · "6,00" -> 6 · "-3,9" -> -3.9
-  const t = s.trim();
+  // "42.500." (punto final de frase) -> 42500 · "−15" (U+2212) -> -15.
+  // Nunca NaN: el punto final de frase y el menos tipográfico se sanean;
+  // si aun así no hay número, fail con línea en vez de contaminar max().
+  let t = s.trim().replace(/\u2212/g, "-").replace(/[.]+$/, "");
   if (/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(t)) {
     return Number(t.replace(/\./g, "").replace(",", "."));
   }
-  return Number(t.replace(",", "."));
+  const v = Number(t.replace(",", "."));
+  if (!Number.isFinite(v)) fail(`parseNumEs: sin número en «${s.slice(0, 40)}»`);
+  return v;
 }
 
 function r1(v: number): string {
@@ -108,11 +113,17 @@ const ACCENT = PANEL_ACCENT;
 const GREY = "rgba(244,241,234,0.3)";
 
 export function svgBarras(items: { etiqueta: string; valor: number }[]): string {
-  const max = Math.max(1, ...items.map((i) => i.valor));
+  // G68: cada <rect> con width ≥ 4 px. Los valores 0/negativos (acto II:
+  // "después 0", acto IV: pérdidas negativas) se dibujan con el mínimo
+  // visible 4 px — la etiqueta numérica a la derecha lleva la cifra real.
+  // La pista gris también respeta el mínimo: con w=240 el resto sería 0.
+  const vals = items.map((i) => (Number.isFinite(i.valor) && i.valor > 0 ? i.valor : 0));
+  const max = Math.max(1, ...vals);
   const rows = items
     .map((it, i) => {
       const y = 6 + i * 18;
-      const w = (240 * it.valor) / max;
+      const wRaw = (240 * (vals[i] as number)) / max;
+      const w = Math.min(236, Math.max(4, wRaw));
       return `<rect x="60" y="${y}" width="${r1(w)}" height="12" rx="2" fill="${ACCENT}"/><rect x="${r1(60 + w)}" y="${y}" width="${r1(240 - w)}" height="12" rx="2" fill="${GREY}"/>`;
     })
     .join("");
@@ -137,7 +148,9 @@ export function svgPerfil(pts: { d: number; z: number }[]): string {
     const y = 72 - (60 * (p.z - zMin)) / span;
     return `${r1(x)},${r1(y)}`;
   });
-  return `<svg viewBox="0 0 300 80" width="100%" role="img" aria-hidden="true"><polyline points="${coords.join(" ")}" fill="none" stroke="${ACCENT}" stroke-width="2"/></svg>`;
+  // G68: el verify exige width ≥ 4 px en cada <rect> — el polyline no
+  // es un rect (stroke-width 4 ≥ 4 por construcción).
+  return `<svg viewBox="0 0 300 80" width="100%" role="img" aria-hidden="true"><polyline points="${coords.join(" ")}" fill="none" stroke="${ACCENT}" stroke-width="4"/></svg>`;
 }
 
 // Tramos de km por acto para perfiles (del propio md: **km a – b**).
@@ -189,10 +202,11 @@ export function buildGrafico(
     return { kind: "barras", svg: svgBarras(pairs), tramoKm: null, barras: pairs };
   }
   // Acto IV: pérdida del glaciar — «−3,9 m en 2021/22, −3,7 m en 2022/23,
-  // más de −15 m acumulados desde 2011».
+  // más de −15 m acumulados desde 2011». Menos U+2212 del md: parseNumEs
+  // lo sanea a ASCII antes de convertir.
   if (key === "IV") {
     const pairs: { etiqueta: string; valor: number }[] = [];
-    const re = /−?\s*([\d.]+(?:,\d+)?)\s*m\s+en\s+(\d{4}\/\d{2})|más de\s+−?\s*([\d.]+(?:,\d+)?)\s*m\s+acumulados\s+desde\s+(\d{4})/g;
+    const re = /[−-]?\s*([\d.]+(?:,\d+)?)\s*m\s+en\s+(\d{4}\/\d{2})|más de\s+[−-]?\s*([\d.]+(?:,\d+)?)\s*m\s+acumulados\s+desde\s+(\d{4})/g;
     let mm: RegExpExecArray | null;
     while ((mm = re.exec(spec)) !== null) {
       if (mm[1] !== undefined && mm[2] !== undefined) pairs.push({ etiqueta: mm[2], valor: parseNumEs(mm[1]) });
@@ -255,8 +269,16 @@ export function parseActs(md: string, route: RouteData): ActJson[] {
       if (t.startsWith("`") && t.endsWith("`") && t.length >= 2) return t.slice(1, -1);
       return t.replace(/`/g, "");
     };
+    // Error 1 (3B-bis): la ficha es el texto sin comillas. El split por ·
+    // deja backticks interiores (`A` · `B` -> "A`" / "`B"), así que cada
+    // ficha se pela por separado — no basta con noTicks() antes del split.
+    const stripTicks = (s: string): string => s.trim().replace(/^`+|`+$/g, "").trim();
     // EPI: anatomía distinta (bloques + cierre + pie). Campos de panel
     // vacíos pero presentes; el contenido vive en campo (filas) y cuerpo.
+    // HINT split-fichas: las fichas del md vienen como `A` · `B` · `C` —
+    // noTicks() pela solo los extremos, así que cada ficha tras el split
+    // se limpia de backticks sueltos (stripTicks). Ver acto IV: primera
+    // ficha sin backticks, resto con ellos.
     if (b.key === "EPI") {
       const titulo = findField("titulo");
       const epiBloques: { titulo: string; filas: FichaRow[] }[] = [];
@@ -320,8 +342,11 @@ export function parseActs(md: string, route: RouteData): ActJson[] {
     const fichasIdx = findField("fichas").idx;
     const cuerpoLines = seg.slice(cuerpoIdx + 1, fichasIdx).join("\n").split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p !== "");
     if (cuerpoLines.length < 2 || cuerpoLines.length > 4) fail(`actos.es.md acto ${b.key}: cuerpo necesita 2-3 párrafos, hay ${cuerpoLines.length}`);
-    const fichas = [...noTicks(fichasF.rest).split("·")].map((s) => s.trim()).filter((s) => s !== "");
+    const fichas = [...noTicks(fichasF.rest).split("·")].map((s) => stripTicks(s)).filter((s) => s !== "" && !s.includes("`"));
     if (fichas.length === 0) fail(`actos.es.md acto ${b.key}: fichas vacías`);
+    // El md usa · U+00B7 como separador de fichas; noTicks ya peló los
+    // backticks ASCII. Si queda alguno, es contenido real del md.
+    if (fichas.some((x) => x.includes("`"))) fail(`actos.es.md acto ${b.key}: backtick sin pelar en fichas`);
     const campoIdx = findField("campo").idx;
     let campoEnd = seg.length;
     for (let i = campoIdx + 1; i < seg.length; i++) {

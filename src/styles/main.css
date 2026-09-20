@@ -7,6 +7,18 @@
   --panel-fg: #f4f1ea;
   --font-text: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* 3B-bis (Everest, literal): tokens del panel. */
+  --ink: #070b12;
+  --pearl: #f3f6fa;
+  --silver: #aebbcd;
+  --faint: #98a6bb;
+  --gold: #d8b787;
+  --gold-bright: #eacf9f;
+  --gold-line: rgba(216, 183, 135, 0.32);
+  --line: rgba(243, 246, 250, 0.1);
+  --disp: "Playfair Display", Georgia, serif;
+  --story: "Archivo", system-ui, sans-serif;
+  --num: "Big Shoulders Display", "Archivo", system-ui, sans-serif;
   /* N3b: per-act scroll sections. scroll.ts writes --act-*-vh at boot
      from ACT_SCREENS (choreography.ts, SCREENS — 1 screen = 100vh);
      CSS only consumes. Sum = 4500vh = 45 screens. */
@@ -17,6 +29,42 @@
   --act-iv-vh: 500vh;
   --act-v-vh: 800vh;
   --act-epi-vh: 500vh;
+}
+
+/* 3B-bis: fuentes abiertas autoalojadas en /fonts (woff2, swap).
+   NO son las de Everest: Playfair Display 600 + itálica 500 (título),
+   Archivo 300 (cuerpo) / 600 (mayúsculas pequeñas), Big Shoulders 800
+   (numeral fantasma). */
+@font-face {
+  font-family: "Playfair Display";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/playfair-600-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Playfair Display";
+  font-style: italic;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/playfair-500italic-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 300 600;
+  font-display: swap;
+  src: url("/fonts/archivo-300-600-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Big Shoulders Display";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("/fonts/bigshoulders-800-latin.woff2") format("woff2");
 }
 
 * {
@@ -379,36 +427,52 @@ body {
   font-size: 14px;
 }
 
-/* --- 3B panel de los actos (Everest reference) --- */
-#panel {
+/* --- 3B-bis panel de los actos (hoja de estilos de Everest) ---
+   .pcard adaptado al tercio izquierdo. Medidas literales del brief.
+   G82 lee getComputedStyle de .eyebrow, h2, p, .v, .chips li y del panel
+   (background, border, backdrop-filter, radius, padding): ±1px, ±0,02em.
+   G83: scroll invisible + overscroll contenido + rueda contenida. */
+#panel.pcard {
   position: fixed;
-  left: 24px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 320px;
-  max-height: 84vh;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  left: 8px;
+  top: 8px;
+  bottom: 8px;
+  width: min(27rem, calc(100vw - 16px));
+  border-radius: 20px;
+  background: linear-gradient(160deg, rgb(13 19 32 / 74%), rgb(7 11 19 / 66%));
+  border: 1px solid rgba(243, 246, 250, 0.1);
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
+  backdrop-filter: blur(10px) saturate(150%);
+  box-shadow: 24px 0 80px rgb(2 5 10 / 40%), inset 0 1px rgb(243 246 250 / 9%);
+  overflow: hidden;
   z-index: 18;
-  padding: 20px 22px 22px;
-  color: var(--panel-fg);
-  background: var(--panel-bg);
-  border: 1px solid rgb(244 241 234 / 16%);
-  border-radius: 12px;
-  backdrop-filter: blur(10px);
-  font-size: 15px;
-  line-height: 1.6;
-  transition: height 240ms ease;
+  color: var(--pearl);
+  font-family: var(--story);
 }
 
-@media (min-width: 1280px) {
-  #panel {
-    width: 360px;
+@supports not ((backdrop-filter: blur(10px)) or (-webkit-backdrop-filter: blur(10px))) {
+  #panel.pcard {
+    background: rgb(13 19 32 / 84%);
   }
 }
 
+#panel.pcard .pscroll {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 30px;
+  padding-top: 54px;
+  scrollbar-width: none;
+  container-type: inline-size;
+}
+
+#panel.pcard .pscroll::-webkit-scrollbar {
+  display: none;
+}
+
 @media (max-width: 899px) {
-  #panel {
+  #panel.pcard {
     display: none;
   }
 
@@ -417,222 +481,520 @@ body {
   }
 }
 
-#panel :focus-visible {
-  outline: 2px solid #fff;
+#panel.pcard :focus-visible {
+  outline: 2px solid var(--gold);
   outline-offset: 2px;
 }
 
-.panel-cintillo {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.22em;
+/* eyebrow: Archivo 600 · 10px · .3em · uppercase · silver · mb 18px.
+   <b> en gold. Una sola línea (Error 3): si no cabe, tracking .2em;
+   último recurso: oculta el rango de cotas en <380px de panel. */
+#panel.pcard .eyebrow {
+  font-family: var(--story);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.3em;
   text-transform: uppercase;
-  opacity: 0.72;
-  margin-bottom: 10px;
+  color: var(--silver);
+  margin-bottom: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.panel-titulo {
-  font-size: clamp(28px, 3vw, 40px);
-  line-height: 1.12;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  margin-bottom: 14px;
+#panel.pcard .eyebrow b {
+  color: var(--gold);
+  font-weight: 600;
+}
+
+@container (max-width: 379px) {
+  #panel.pcard .eyebrow {
+    letter-spacing: 0.2em;
+  }
+
+  #panel.pcard .eyebrow .rng {
+    display: none;
+  }
+}
+
+#panel.pcard.narrow-eyebrow .eyebrow {
+  letter-spacing: 0.2em;
+}
+
+#panel.pcard.narrow-eyebrow .eyebrow .rng {
+  display: none;
+}
+
+/* h2: Playfair 600 · clamp(34px,3.9vw,46px) · lh 1.02 · .005em · pearl ·
+   balance · mb 12px · <em> itálica 500 gold-bright. <i> legacy igual. */
+#panel.pcard h2 {
+  font-family: var(--disp);
+  font-weight: 600;
+  font-size: clamp(34px, 3.9vw, 46px);
+  line-height: 1.02;
+  letter-spacing: 0.005em;
+  color: var(--pearl);
   text-wrap: balance;
+  margin-bottom: 12px;
 }
 
-.panel-titulo i {
-  color: var(--panel-accent);
+#panel.pcard h2 em,
+#panel.pcard h2 i {
+  font-style: italic;
+  font-weight: 500;
+  color: var(--gold-bright);
 }
 
-.panel-cifras {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-bottom: 14px;
+/* tiles: flex; cada .tile flex:1, padding 20px 26px 22px 0; la segunda
+   con padding-left 28px y border-left 1px --line. */
+#panel.pcard .tiles {
+  display: flex;
 }
 
-.panel-cifra b {
-  display: block;
-  font-size: 27px;
-  line-height: 1.1;
-  font-variant-numeric: tabular-nums;
-  color: var(--panel-accent);
+#panel.pcard .tile {
+  flex: 1;
+  padding: 20px 26px 22px 0;
 }
 
-.panel-cifra small {
-  font-size: 11px;
+#panel.pcard .tile + .tile {
+  padding-left: 28px;
+  border-left: 1px solid var(--line);
+}
+
+#panel.pcard .tile .k {
+  font-size: 10px;
+  font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  opacity: 0.85;
+  color: rgb(174 187 205 / 82%);
+  margin-bottom: 12px;
 }
 
-.panel-cifra span {
-  display: block;
-  font-size: 11px;
-  letter-spacing: 0.1em;
+#panel.pcard .tile .v {
+  font-family: var(--story);
+  font-weight: 300;
+  font-size: 28px;
+  line-height: 1;
+  color: var(--pearl);
+  font-variant-numeric: tabular-nums;
+}
+
+#panel.pcard .tile .v small {
+  font-size: 12.5px;
+  color: var(--silver);
+  margin-left: 3px;
+}
+
+#panel.pcard .tile .d {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  opacity: 0.62;
-  margin-top: 2px;
+  color: var(--gold);
+  margin-top: 9px;
 }
 
-.panel-grafico {
-  margin: 4px 0 14px;
+/* gráfico: flex, gap 22px, padding 28px 0 12px, border-top 1px --line.
+   svg.gfx flex 1 max-height 64px (perfiles); .cap 10px .14em uppercase.
+   .hbars (barras): grid 96px 1fr 40px, pista 3px, relleno gold. */
+#panel.pcard .g {
+  display: flex;
+  gap: 22px;
+  padding: 28px 0 12px;
+  border-top: 1px solid var(--line);
+  align-items: flex-start;
 }
 
-.panel-grafico svg {
-  display: block;
+#panel.pcard .g svg {
+  flex: 1;
+  max-height: 64px;
   width: 100%;
   height: auto;
+  display: block;
 }
 
-.panel-graf-leyenda {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  font-family: var(--font-mono);
+#panel.pcard .g .cap {
   font-size: 10px;
-  opacity: 0.75;
-  margin-top: 6px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgb(174 187 205 / 82%);
+  max-width: 46%;
 }
 
-.panel-cuerpo {
-  font-size: 15px;
-  line-height: 1.6;
-  max-width: 70ch;
+#panel.pcard .g .cap b {
+  color: var(--gold);
 }
 
-.panel-cuerpo p + p {
-  margin-top: 0.85em;
+#panel.pcard .hbars {
+  display: grid;
+  gap: 10px;
+  flex: 1;
 }
 
-.panel-fichas {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 14px 0 6px;
+#panel.pcard .hrow {
+  display: grid;
+  grid-template-columns: 96px 1fr 40px;
+  align-items: center;
+  gap: 10px;
 }
 
-.panel-ficha {
-  font-family: var(--font-mono);
+#panel.pcard .hlab {
   font-size: 10px;
-  letter-spacing: 0.12em;
-  padding: 4px 9px;
-  border: 1px solid rgb(244 241 234 / 28%);
-  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgb(174 187 205 / 82%);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#panel.pcard .htrack {
+  display: block;
+  height: 3px;
+  background: rgb(243 246 250 / 9%);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+#panel.pcard .hfill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, rgba(216, 183, 135, 0.45), var(--gold-bright));
+  transform-origin: left;
+}
+
+#panel.pcard .hnum {
+  font-size: 11px;
+  color: var(--silver);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
   white-space: nowrap;
 }
 
-.panel-datos {
-  margin-top: 12px;
-  border-top: 1px solid rgb(244 241 234 / 16%);
-  padding-top: 10px;
-}
-
-.panel-datos summary {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.24em;
-  cursor: pointer;
-  opacity: 0.85;
-}
-
-.panel-datos dl {
-  margin-top: 10px;
-  display: grid;
-  gap: 8px;
-}
-
-.panel-datos dt {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.18em;
-}
-
-.panel-datos dd {
+/* cuerpo: Archivo 300 · 13.5px · lh 1.9 · .011em · silver · mb 18px ·
+   max-width 62ch; <strong> pearl 500; <em> itálica. */
+#panel.pcard p {
+  font-family: var(--story);
+  font-weight: 300;
   font-size: 13.5px;
-  line-height: 1.55;
-  opacity: 0.92;
+  line-height: 1.9;
+  letter-spacing: 0.011em;
+  color: var(--silver);
+  margin-bottom: 18px;
+  max-width: 62ch;
 }
 
-.panel-pend {
-  margin-top: 12px;
-  font-size: 12.5px;
-  line-height: 1.55;
-  opacity: 0.8;
-  border-left: 2px solid var(--panel-accent);
-  padding-left: 10px;
+#panel.pcard p strong,
+#panel.pcard p b {
+  color: var(--pearl);
+  font-weight: 500;
 }
 
-.pend {
+#panel.pcard p em,
+#panel.pcard p i {
+  font-style: italic;
+}
+
+/* chips: mt 28px, pt 22px, border-top 1px --line, lh 2.2; li inline
+   10px 600 .14em uppercase; separador "·" gold con margin 0 10px. */
+#panel.pcard .chips {
+  list-style: none;
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+  line-height: 2.2;
+  padding-left: 0;
+}
+
+#panel.pcard .chips li {
+  display: inline;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgb(174 187 205 / 80%);
+}
+
+#panel.pcard .chips li + li::before {
+  content: "·";
+  color: var(--gold);
+  margin: 0 10px;
+}
+
+/* details.fd: mt 16px, border-top 1px --line; summary 10px 600 .3em
+   uppercase silver, padding 22px 2px 19px, marcador "✦" gold 14px que
+   rota 45° al abrir, sin marker nativo; tabla th 10px .14em uppercase
+   faint 34%, td 13.5px/1.6 silver <b> gold-bright; filas 1px. */
+#panel.pcard details.fd {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+#panel.pcard details.fd summary {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--silver);
+  padding: 22px 2px 19px;
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#panel.pcard details.fd summary::-webkit-details-marker {
+  display: none;
+}
+
+#panel.pcard details.fd summary::before {
+  content: "✦";
+  color: var(--gold);
+  font-size: 14px;
+  line-height: 1;
+  transition: transform 0.28s ease;
+}
+
+#panel.pcard details.fd[open] summary::before {
+  transform: rotate(45deg);
+}
+
+#panel.pcard details.fd table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+#panel.pcard details.fd tr + tr > * {
+  border-top: 1px solid rgba(174, 187, 205, 0.1);
+}
+
+#panel.pcard details.fd th {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+  width: 34%;
+  text-align: left;
+  vertical-align: top;
+  padding: 12px 12px 12px 0;
+}
+
+#panel.pcard details.fd td {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--silver);
+  padding: 12px 0;
+}
+
+#panel.pcard details.fd td b {
+  color: var(--gold-bright);
+}
+
+#panel.pcard .pend {
   opacity: 0.6;
   text-decoration: underline dotted;
   text-underline-offset: 3px;
 }
 
-.panel-x {
+/* pclose: absolute 14/14, 32×32, radius 9px, border, bg; svg 13px;
+   hover bg; foco visible 2px gold. .popen solo plegado. */
+#panel.pcard .pclose {
   position: absolute;
-  top: 8px;
-  right: 10px;
-  width: 30px;
-  height: 30px;
+  top: 14px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
-  color: var(--panel-fg);
-  background: transparent;
-  border: 1px solid rgb(244 241 234 / 25%);
-  border-radius: 50%;
-  font-size: 16px;
-  line-height: 1;
+  color: var(--pearl);
+  background: rgb(243 246 250 / 5%);
+  border: 1px solid rgba(243, 246, 250, 0.14);
+  border-radius: 9px;
   cursor: pointer;
-  opacity: 0.85;
+  z-index: 2;
 }
 
-.panel-x:hover {
-  opacity: 1;
+#panel.pcard .pclose svg {
+  width: 13px;
+  height: 13px;
 }
 
-.pswap {
-  transition: opacity 180ms ease, transform 180ms ease;
+#panel.pcard .pclose:hover {
+  background: rgb(243 246 250 / 12%);
 }
 
-.pswap.out {
-  opacity: 0;
-  transform: translateY(6px);
+#panel.pcard .pclose:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
 }
 
-/* folded: only a 44px side tab with the numeral */
-#panel.panel-collapsed {
-  width: 44px;
-  padding: 14px 0;
-  overflow: hidden;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-}
-
-#panel.panel-collapsed .panel-body {
-  display: none;
-}
-
-#panel.panel-collapsed .panel-x {
-  position: static;
-}
-
-.panel-tabnum {
-  display: none;
-  writing-mode: vertical-rl;
-  font-family: var(--font-mono);
+/* .popen-fab: botón "+" con numeral — vive FUERA del pcard (el plegado
+   es scale .045 + opacity 0 con pointer-events none: los hijos no son
+   clicables). Solo visible plegado (hidden en DOM al abrir). */
+.popen-fab {
+  position: fixed;
+  left: 8px;
+  top: 8px;
+  z-index: 19;
+  width: auto;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 10px;
+  display: grid;
+  place-items: center;
+  color: var(--pearl);
+  background: rgb(13 19 32 / 84%);
+  border: 1px solid rgba(243, 246, 250, 0.14);
+  border-radius: 9px;
+  cursor: pointer;
+  font-family: var(--story);
   font-size: 13px;
-  letter-spacing: 0.3em;
-  opacity: 0.9;
-  margin-top: 12px;
 }
 
-#panel.panel-collapsed .panel-tabnum {
-  display: block;
+.popen-fab[hidden] {
+  display: none;
 }
 
-/* floating act title over the 3D, right of the panel */
+/* plegado Everest: scale(.045) + opacity 0 hacia la esquina
+   (origin 20px 20px, .28s); aparece el "+" con el numeral. */
+#panel.pcard.panel-collapsed .pscroll,
+#panel.pcard.panel-collapsed .pclose {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#panel.pcard.panel-collapsed {
+  transform: scale(0.045);
+  opacity: 0;
+  transform-origin: 20px 20px;
+  transition: transform 0.28s ease, opacity 0.28s ease;
+  pointer-events: none;
+}
+
+#panel.pcard:not(.panel-collapsed) {
+  transform: scale(1);
+  opacity: 1;
+  transform-origin: 20px 20px;
+  transition: transform 0.28s ease, opacity 0.28s ease;
+}
+
+/* entrada al cambiar de acto (Everest .pstage.act): cada hijo directo
+   entra con rise .7s cubic-bezier(.19,.7,.22,1) both, escalonada 0,05 ·
+   0,16 · 0,30 · 0,44 · 0,56 · 0,68 · 0,80 s; eyebrow con trackIn
+   (.5em→.3em), h2 con riseBlur (blur 6px→0); barras growX 1s delay .95s. */
+@keyframes p-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes p-track-in {
+  from {
+    opacity: 0;
+    letter-spacing: 0.5em;
+  }
+
+  to {
+    opacity: 1;
+    letter-spacing: 0.3em;
+  }
+}
+
+@keyframes p-rise-blur {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+    filter: blur(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes p-grow-x {
+  from {
+    transform: scaleX(0);
+  }
+
+  to {
+    transform: scaleX(1);
+  }
+}
+
+#panel.pcard .pstage.act > * {
+  animation: p-rise 0.7s cubic-bezier(0.19, 0.7, 0.22, 1) both;
+}
+
+#panel.pcard .pstage.act > *:nth-child(1) {
+  animation-delay: 0.05s;
+}
+
+#panel.pcard .pstage.act > *:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+#panel.pcard .pstage.act > *:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+#panel.pcard .pstage.act > *:nth-child(4) {
+  animation-delay: 0.44s;
+}
+
+#panel.pcard .pstage.act > *:nth-child(5) {
+  animation-delay: 0.56s;
+}
+
+#panel.pcard .pstage.act > *:nth-child(6) {
+  animation-delay: 0.68s;
+}
+
+#panel.pcard .pstage.act > *:nth-child(n + 7) {
+  animation-delay: 0.8s;
+}
+
+#panel.pcard .pstage.act > .eyebrow {
+  animation-name: p-track-in;
+  animation-duration: 0.7s;
+}
+
+#panel.pcard .pstage.act > h2 {
+  animation-name: p-rise-blur;
+  animation-duration: 0.7s;
+}
+
+#panel.pcard .pstage.act .hfill {
+  animation: p-grow-x 1s cubic-bezier(0.19, 0.7, 0.22, 1) both;
+  animation-delay: 0.95s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #panel.pcard .pstage.act > *,
+  #panel.pcard .pstage.act .hfill {
+    animation: none;
+  }
+
+  #panel.pcard:not(.panel-collapsed),
+  #panel.pcard.panel-collapsed {
+    transition: none;
+  }
+}
+
+/* flotante (título sobre el 3D): Playfair 600 clamp(28px,3vw,40px),
+   pearl con sombra; numeral fantasma Big Shoulders 800 240px op .08. */
 #flotante {
   position: fixed;
   left: 400px;
@@ -650,24 +1012,24 @@ body {
 }
 
 .flotante-ghost {
+  font-family: var(--num);
+  font-weight: 800;
   font-size: 240px;
   line-height: 0.9;
-  font-weight: 700;
   opacity: 0.08;
   user-select: none;
 }
 
 .flotante-t {
-  font-size: clamp(20px, 2.2vw, 30px);
+  font-family: var(--disp);
   font-weight: 600;
-  letter-spacing: 0.02em;
+  font-size: clamp(28px, 3vw, 40px);
+  color: var(--pearl);
   margin-top: -0.4em;
-  text-shadow: 0 1px 12px rgb(0 0 0 / 60%);
+  text-shadow: 0 0 15px rgba(6, 10, 20, 0.35);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pswap,
-  #panel,
   #flotante {
     transition: none;
   }
