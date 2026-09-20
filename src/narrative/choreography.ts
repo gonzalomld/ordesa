@@ -154,8 +154,8 @@ export const HEMI_GRAY_MIX = 0.6; // §4b FASE 5 paso a: 0.4 -> 0.6 (la sombra p
 // --- F1 niebla de valle (amanecer/atardecer): la niebla baja es de hora
 // baja, no de todo el día. uDawnF = 1 − smoothstep(2°, 20°, elevación
 // solar): a las 12:00 vale 0 (mediodía intacto por construcción).
-export const FOG_DAWN_HF_MULT = 1.8; // cuánto multiplica el término de valle (×2.8 en total al alba)
-export const FOG_DAWN_DF_ADD = 0.4; // cuánto suma al fundido de distancia (horizonte fundido al cielo)
+export const FOG_DAWN_HF_MULT = 1.2; // F2: 1.8 -> 1.2 — cuánto multiplica el término de valle (×2.2 en total al alba)
+export const FOG_DAWN_DF_ADD = 0.3; // F2: 0.4 -> 0.3 — cuánto suma al fundido de distancia (horizonte fundido al cielo)
 export const G45_DUSK_MAX = 0.12; // G45: a las 07:30/20:30 el fondo del valle funde con el cielo
 export const G45_NOON_MIN = 0.2; // G45: a las 12:00 el valle sigue leyéndose (distancia ≥ 0.2)
 // --- NUBES N2b (bruma de valle, cirros, anillo lejano). Misma InstancedMesh
@@ -319,21 +319,61 @@ export const FOLLOW_H_AIM = 40; // m of aim height over the ground
 export const WALKER_NDC_Y = 0.45; // framing: the walker at -0.45 NDC (lower quarter); pitch offset = WALKER_NDC_Y · (vFOV/2)
 export const FOLLOW_D_MIN = 900; // m: push back along aim->cam (yaw-preserving) until BOTH camera->aim and camera->walker >= 900 (§4: aim-only let the walker sit under the camera in the cirque; the walker half is a one-shot quadratic capped at 3x aim distance, then PITCH_MAX_HARD bounds the rest)
 export const FOLLOW_NUDOS_S = [0.0, 0.03, 0.18, 0.38, 0.57, 0.77, 0.92, 0.98]; // 0, ACT_MID_S[0,I,II,III,IV,V], 0.98 (ends repeat first/last act values)
-// C1b: la escalera decide la altura en 96/1001 pasos (9,6 %).
-// C1c: PITCH_RATE_MAX 1.2 -> 1.0 (la accel 1.03-1.09 la dicta el limitador,
-// no la altura: con nudos base la accel ya es 0.91). Nudos +40/+40/+60 en
-// 1/2/5 (pasada única, sin iterar a ciegas: duty 3,2 %, racha 8, G66 PASS
-// con el cx de lift-probe; con el cx de verify duty 6,7 % — el cx importa).
-export const FOLLOW_H_CAM_N = [380, 420, 460, 480, 450, 580, 400, 400]; // C1b+C1c: nudos 1/2 (+40), 5 (+60). PENDIENTE: unificar cx verify=browser antes de cantar duty
+// C2 EL MURO DEL MIRADOR: desplazamiento lateral del rail horneado en
+// C1. Tabla LATERAL_KNOTS = [[s, metros]] PCHIP, 0 por defecto, con un
+// bulto en el Mirador (s=0.303: la cámara sigue el sendero pegado a la
+// pared; H_CAM no lo resolvía — no es altura). Se aplica al anclaje
+// P(d−BACK) en la normal horizontal del rastro hacia el VALLE (lado con
+// menor cota media a 300 m, calculado por muestra en anchors.ts). La
+// mira NO se desplaza: la cámara sale sobre el vacío y mira a la pared
+// con el caminante en el borde. ANTES del limitador y del filtrado de
+// C1: G4/G66 se cumplen por construcción. Escalera: 500 m; si G19 aún
+// falla en 0.28-0.32, 700 m (máximo) antes de tocar H_CAM.
+//
+// C2-paso-2 (MEDIDO 20-sep: G19-antes +53 m en s=0.303, G19-después +47 m
+// en s=0.891 — el bulto desplazó el fallo, no lo eliminó).
+// El s=0.89 NO es anclaje (ya está en el lado bajo) NI mira (look 650
+// rompe G3 23.11 < 25 en s=0.763: la mira corta hunde la cámara en la
+// subida al circo — reversado) NI altura (lift +300 m solo baja el over
+// +46 → +36: el rayo pivota en la mira y la pared está a 100 m de ella).
+// Es GEOMETRÍA: el rayo de 1.7 km vuela sobre el circo y la pared norte
+// del Soaso (+37 m a 100 m de la mira, across −150, medio encuadre fuera
+// del eje) lo corta. Candidatos para otra fase: estrechar el corredor
+// G19 a ±60 m (el frame a 900 m) o mira al caminante en el circo. NO se
+// toca más en C2: un solo bulto (Mirador) + epílogo + ventana G9 + G78.
+// C2-addendum-5a: nudos 0/0.03 380/420 -> 520/500 (el anclaje cae en la
+// ladera tras la Pradera: cota cam >=1780 en s∈[0,0.03], sobre el techo
+// de niebla 1620). MEDIDO paso a): cota SI (1821-1839), escalera OFF
+// (direct en s<0.02), holgura 83/88/117 (<120 en s<0.03: el anclaje
+// sigue sobre la ladera 1413-1480, no sobre el prado). Paso b) necesario.
+export const LATERAL_KNOTS: [number, number][] = [
+  [0.0, 250],
+  [0.02, 250],
+  [0.05, 0],
+  [0.24, 0],
+  [0.27, 350],
+  [0.3, 500],
+  [0.33, 350],
+  [0.36, 0],
+];
+export const LATERAL_MAX_M = 700; // techo de la escalera C2 (paso 2)
+export const FOLLOW_H_CAM_N = [520, 500, 460, 480, 450, 580, 400, 400]; // C1b+C1c: nudos 1/2 (+40), 5 (+60). C2-addendum-5a: nudos 0/0.03 380/420 -> 520/500 (el anclaje cae en la ladera tras la Pradera: cota cam >=1780 en s∈[0,0.03], sobre el techo de niebla 1620). PENDIENTE: unificar cx verify=browser antes de cantar duty
 // LOOK I act 800 (pasada rig puro: 650 peaks 2.69 at s=0.221, 750 peaks
 // 2.55 at s=0.189 — both miss 2.5 by noise; 800 measured 2.55 max before,
 // re-measured below. No more tuning after this: if it still misses, the
 // window [0.19, 0.24] grows, never the LOOK).
-export const FOLLOW_LOOK_N = [700, 700, 800, 900, 800, 500, 900, 900]; // I = 800, rest brief verbatim
+export const FOLLOW_LOOK_N = [700, 700, 800, 900, 800, 500, 900, 900]; // I = 800, rest brief verbatim (C2-paso-2 REVERSADO: 650 rompía G3 — ver nota en LATERAL_KNOTS)
 export const FOLLOW_BACK_N = [500, 500, 450, 500, 500, 450, 500, 500]; // ditto
 // Epilogue (E4 amendment): derived from the loop geometry, never hand-set.
 export const EPI_FIT = 1.15; // 15 % margin so the whole loop fits any aspect
-export const EPI_PITCH = 34; // deg: height = z_centroid + distPlan * tan(34)
+// C2: EPI_PITCH 34 -> 20 (a 5053 m con 28° el borde superior queda a −8°:
+// sin cielo). Altura = z_centroide + distPlan·tan(20°) con el MISMO
+// distPlan; si el bucle deja de caber (cobertura G78 < 0,95 en el peor
+// de s=0.99/0.995/1.0), distPlan sube 10 % por paso (máx +30 %, medido
+// en la pose horneada con FOV 50° 16:9). Se rehornea el blend [0,98, 1].
+export const EPI_PITCH = 20; // deg: height = z_centroid + distPlan * tan(20)
+export const EPI_DIST_UP_PCT = 0.1; // +10 % por paso hasta que quepa el bucle
+export const EPI_DIST_UP_MAX = 0.3; // ...máximo +30 %
 export const EPI_AZ_DEG = 225; // SW of the centroid (canyon mouth side)
 // G19 rim test (brief §3): terrain stays 100 m below the SIGHTLINE.
 // RIM_USE = SLOPED corridor, CLIPPED + NARROW (E2 follow-up + endpoint

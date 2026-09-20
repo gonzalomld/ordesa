@@ -34,6 +34,10 @@ export const fogUniforms = {
   /** F1: factor de niebla de hora baja — 1 al alba/ocaso, 0 a mediodía.
    * Multiplica el término de valle y suma al de distancia. */
   uDawnF: { value: 0 },
+  /** F2: dirección del sol en mundo (uniforme compartido — lo escribe
+   * applyLighting en viewer.ts junto a uDawnF; G40: se DECLARA en el GLSL
+   * de abajo). La niebla baja lo usa para calentarse mirando al sol. */
+  uSunDirW: { value: new THREE.Vector3(0, 1, 0) },
   /** N2c: sombras de nube sobre el terreno (24 gaussianas + ruido a dos
    * escalas). Antes de la niebla: la distancia se funde con el cielo, no
    * con la sombra. uCloudDebug: 1 = gris = factor de sombra (verlo).
@@ -112,6 +116,7 @@ export function patchTerrainMaterial(mat: THREE.Material): void {
     s.uniforms.uHemiSky = fogUniforms.uHemiSky;
     s.uniforms.uHemiDay = fogUniforms.uHemiDay;
     s.uniforms.uDawnF = fogUniforms.uDawnF;
+    s.uniforms.uSunDirW = fogUniforms.uSunDirW;
     // N2c: sombras de nube (regla G40: todo uniforme se DECLARA en el GLSL
     // de abajo — three sube material.uniforms, no los declara).
     s.uniforms.uCloud = fogUniforms.uCloud;
@@ -130,7 +135,7 @@ varying vec3 vWPos;
 uniform float uFogTop; uniform float uFogDensity; uniform vec3 uSkyColor;
 uniform sampler2D uSkyMap; uniform float uHasSkyMap;
 uniform float uCloudShade; uniform float uTime;
-uniform vec3 uHemiSky; uniform float uHemiDay; uniform float uDawnF;
+uniform vec3 uHemiSky; uniform float uHemiDay; uniform float uDawnF; uniform vec3 uSunDirW;
 uniform sampler2D uCloud; uniform float uCloudK; uniform vec2 uDrift; uniform vec4 uClouds[24]; uniform float uCloudDebug;
 float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
@@ -140,12 +145,20 @@ float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
         "#include <fog_fragment>",
         `#include <fog_fragment>
 {
-  float hfrac = clamp(1.0 - (vWPos.y - (uFogTop - 500.0)) / 500.0, 0.0, 1.0);
+  // F2: rampa de 220 m en vez de 500 — techo definido ("mar", no degradado).
+  float hfrac = clamp(1.0 - (vWPos.y - (uFogTop - 220.0)) / 220.0, 0.0, 1.0);
   float camd = length(vWPos - cameraPosition);
   // F1 niebla de valle: el término bajo se multiplica al alba/ocaso
   // (uDawnF = 1 − smoothstep(2°,20°,elev)) y el de distancia suma para
   // fundir el horizonte con el cielo. A mediodía uDawnF = 0: intacto.
   float hf = hfrac * hfrac * uFogDensity * (1.0 + uDawnF * ${FOG_DAWN_HF_MULT.toFixed(2)});
+  // F2 aire limpio cerca: los primeros 350 m sin velo — el suelo que
+  // pisas se ve.
+  hf *= smoothstep(0.0, 350.0, camd);
+  // F2 techo y lenguas: la densidad baja se modula con ruido en planta,
+  // lento y con deriva (reutiliza uCloud y uDrift de este shader).
+  float wisp = 0.75 + 0.5 * texture2D(uCloud, vWPos.xz * (1.0 / 2600.0) + uDrift * 0.6).r;
+  hf *= wisp;
   // U1/V2: D8 condition — ≥80% attenuation at 10.8 km (the model edge
   // behind Monte Perdido) with Monte Perdido itself still readable.
   // Squared-exponential: slow start, steep finish.
@@ -190,12 +203,25 @@ float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
   gl_FragColor.rgb += hemiMix * uHemiDay * 0.35;
   // S9: fog colour sampled from the 64×32 sky capture along the view ray —
   // the far terrain dissolves into the actual sky, dawn and dusk included.
+  // F2: la baja es FRÍA salvo donde mira al sol o en su techo; la de
+  // distancia es el cielo (G45 intacta). La mezcla final aplica lowCol
+  // con peso hf y haze con peso df, normalizando por f.
   vec3 haze = uSkyColor;
   if (uHasSkyMap > 0.5) {
     vec3 vd = normalize(vWPos - cameraPosition);
     vec2 skuv = vec2(atan(vd.z, vd.x) / 6.2831853 + 0.5, clamp(vd.y * 0.5 + 0.5, 0.0, 1.0));
     haze = texture2D(uSkyMap, skuv).rgb;
   }
+  vec3 fogCool = vec3(0.70, 0.745, 0.80) * (0.35 + 0.65 * uHemiDay);
+  vec3 fogWarm = haze;
+  float toSun = pow(max(0.0, dot(normalize(vWPos - cameraPosition), normalize(uSunDirW))), 3.0);
+  float topF = smoothstep(uFogTop - 120.0, uFogTop, vWPos.y);
+  vec3 lowCol = mix(fogCool, fogWarm, clamp(uDawnF * (0.25 * toSun + 0.55 * topF), 0.0, 1.0));
+  // Pesos = los sumandos exactos de f (hf·0.85 y df·(…)): con df=0 el
+  // color es lowCol, con hf=0 es haze (G45 intacta). haze pasa a ser el
+  // color final de niebla (dos colores en un solo mix).
+  float dfW = df * (0.45 + 0.55 * uFogDensity + uDawnF * ${FOG_DAWN_DF_ADD.toFixed(2)});
+  haze = (lowCol * (hf * 0.85) + haze * dfW) / max(f, 1e-4);
   gl_FragColor.rgb = mix(gl_FragColor.rgb, haze, f);
 }`,
       );

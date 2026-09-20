@@ -5,7 +5,7 @@
 // · G16 nod · G17 void · G18 align · G19 rim · + OrbitControls anti-bundle
 // (C10: chunk-name based, the minifier mangles identifiers).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CAM_RAIL_SAMPLES, CORRIDOR_HALF_M, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G23_COVERAGE, G23_Y_MAX, G23_Y_MIN, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_MAX_DEG, G66_ACCEL_MAX_DEG, G66_PITCH_MAX_DEG, G66_QUAT_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
+import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CAM_RAIL_SAMPLES, CORRIDOR_HALF_M, EPI_PITCH, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G23_COVERAGE, G23_Y_MAX, G23_Y_MIN, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_MAX_DEG, G66_ACCEL_MAX_DEG, G66_PITCH_MAX_DEG, G66_QUAT_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
 import { alongTrackRun, bakeCamRail, bisectSunset, followAt, quatDistDeg, quatYXZ, resolveAnchors, resolveFollowProfile, ropeHeadingDeg, trackAt, zRawAt } from "../src/narrative/anchors.ts";
 import { resolveFollowSafety } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
@@ -91,7 +91,7 @@ const cy = (meta.bbox.miny + meta.bbox.maxy) / 2;
 // profile (rope evaluators + derived epilogue geometry). Same order as
 // progress.ts: resolve -> profile -> PCHIPs (s->d only; camera has no table).
 const res = resolveAnchors(r);
-res.follow = resolveFollowProfile(r);
+res.follow = resolveFollowProfile(r, sampleGrid, meta.bbox);
 const follow = res.follow;
 const pchipSD = buildPchip(res.sAnchors, res.dAnchorsM, "s->d");
 const pchipTD = buildPchip(res.timeD, res.timeH, "time");
@@ -360,7 +360,8 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
 }
 
 // --- G9 clearance-clamp duty (audit A4): the floor clamp is a safety net,
-// not the camera. Active in <=5% of steps, never >30 in a row.
+// not the camera. Active in <=5% of steps in s in [0.02, 0.98] (C2: the
+// arranque and the epilogue have their own pose), never >30 in a row.
 // C1b: prints every ladder run (start, end, mode, steps) so the H_CAM
 // tuning loop knows where to lift. ---
 {
@@ -386,9 +387,30 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
     }
     if (runStart >= 0) runs.push({ s0: runStart / STEPS, s1: 1, mode: runMode, steps: STEPS + 1 - runStart });
   }
+  // C2 window: s in [0.02, 0.98] like the other smoothness gates.
+  let winSteps = 0;
+  let winClamp = 0;
+  let winMaxRun = 0;
+  let winCur = 0;
+  for (let i = 0; i <= STEPS; i++) {
+    const s = i / STEPS;
+    if (s < 0.02 || s >= EPILOGUE_S) {
+      winCur = 0;
+      continue;
+    }
+    winSteps++;
+    const m = rail.mode[Math.min(rail.n, Math.max(0, Math.round(s * rail.n)))] as string;
+    if (m !== "direct") {
+      winClamp++;
+      winCur++;
+      winMaxRun = Math.max(winMaxRun, winCur);
+    } else {
+      winCur = 0;
+    }
+  }
   const runsTxt = runs.map((x) => `${x.mode}[${x.s0.toFixed(3)}-${x.s1.toFixed(3)}:${x.steps}]`).join(" ");
-  gate("G9-clamp-duty", clampSteps <= 50 && maxClampRun <= 30,
-    `clamp active ${clampSteps}/${STEPS + 1} steps (${(clampSteps / (STEPS + 1) * 100).toFixed(1)}%, need <=5%), longest run ${maxClampRun} (need <=30) — runs: ${runsTxt || "none"}`);
+  gate("G9-clamp-duty", winClamp / Math.max(1, winSteps) <= 0.05 && winMaxRun <= 30,
+    `clamp active ${winClamp}/${winSteps} steps in [0.02,0.98] (${(winClamp / Math.max(1, winSteps) * 100).toFixed(1)}%, need <=5%), longest run ${winMaxRun} (need <=30) — runs: ${runsTxt || "none"}`);
 }
 
 // --- G9-plan (FOLLOW): dist_planta(camera, aim) >= 0.8 x D_MIN in 95%.
@@ -459,6 +481,54 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
     hemiOk
       ? `HEMI_GRAY_MIX=${HEMI_GRAY_MIX} HEMI_LUMA_FLOOR=${HEMI_LUMA_FLOOR} HEMI_DAY=${HEMI_DAY} SHADOW_INTENSITY=${SHADOW_INTENSITY} (sun.shadow.intensity applied) — measure luma/__lumaShadow/__chromaShadow per step`
       : `hemi steps drifted (mix=${HEMI_GRAY_MIX} floor=${HEMI_LUMA_FLOOR} day=${HEMI_DAY} shadow=${SHADOW_INTENSITY}, applied=${viewerSrcG31.includes("sun.shadow.intensity = SHADOW_INTENSITY")})`);
+}
+
+// --- G78 epílogo (C2): en s=1.0 el bucle completo dentro del encuadre
+// (cobertura ≥ 0,95 sobre el rastro) — medido en geometría pura
+// (proyección NDC con el yaw/pitch horneados + FOV 50°), y contrato del
+// pitch 20° + distPlan adaptativo. s=0.99/0.995 son TRANSICIÓN (blend
+// 0.5/0.875: la cámara aún viaja hacia la pose de epílogo y el bucle no
+// tiene por qué caber). __skyFrac ∈ [0.15, 0.35] vive en prod
+// (?debug=1&skyfrac=1).
+{
+  const fovV = (50 * Math.PI) / 180;
+  const tanV = Math.tan(fovV / 2);
+  const fovH = 2 * Math.atan(tanV * (16 / 9));
+  const tanH = Math.tan(fovH / 2);
+  // C2: el bucle debe caber en la POSE de epílogo (s=1.0, blend 1.0).
+  const sE = 1.0;
+  const camXE = rail.fCamX(sE) - cx;
+  const camYE = rail.fCamY(sE);
+  const camZE = -(rail.fCamZ(sE) - cy);
+  const yawE = (rail.fYaw(sE) * Math.PI) / 180;
+  const pitchE = (rail.fPitch(sE) * Math.PI) / 180;
+  // forward = R_y(-yaw)·R_x(-pitch)·(0,0,-1), right/up del mismo marco.
+  const cp = Math.cos(pitchE);
+  const sp = Math.sin(pitchE);
+  const cyw = Math.cos(yawE);
+  const syw = Math.sin(yawE);
+  const fwd: [number, number, number] = [syw * cp, -sp, -cyw * cp];
+  const right: [number, number, number] = [cyw, 0, syw];
+  const up: [number, number, number] = [-syw * sp, -cp, cyw * sp];
+  let inside = 0;
+  let nE = 0;
+  for (let i = 0; i < r.n; i += 4) {
+    // r.x=easting, r.y=northing, r.z=alt (RouteLike EPSG). Mundo del gate:
+    // X=easting-cx, Y=alt, Z=-(northing-cy) — igual que el sweep.
+    const vx = (r.x[i] as number) - cx - camXE;
+    const vy = (r.z[i] as number) - camYE;
+    const vz = -((r.y[i] as number) - cy) - camZE;
+    const z = vx * fwd[0] + vy * fwd[1] + vz * fwd[2];
+    if (z <= 1) continue;
+    nE++;
+    const x = vx * right[0] + vy * right[1] + vz * right[2];
+    const y = vx * up[0] + vy * up[1] + vz * up[2];
+    if (Math.abs(x / (z * tanH)) <= 1 && Math.abs(y / (z * tanV)) <= 1) inside++;
+  }
+  const cov = inside / Math.max(1, nE);
+  const pitchOk = EPI_PITCH === 20;
+  gate("G78-epilogo", cov >= 0.95 && pitchOk,
+    `bucle en encuadre s=1.0 (${inside}/${nE} (${(cov * 100).toFixed(1)}%, need ≥95%)), EPI_PITCH=${EPI_PITCH} (need 20), distPlan=${follow.epiDistPlan.toFixed(0)} m, centroid=(${follow.centroid.x.toFixed(0)},${follow.centroid.y.toFixed(0)},${follow.centroid.z.toFixed(0)}) — __skyFrac [0.15,0.35] en prod ?debug=1&skyfrac=1`);
 }
 
 // --- G12 sky band contract (FOLLOW, píxeles): [0.12, 0.30] por pase de
@@ -682,6 +752,30 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
   }
   gate("G18-align", max <= G18_TOL_DEG,
     `max|yawBaked-rope|=${max.toFixed(1)} deg (need <=${G18_TOL_DEG}) at s=${(at / STEPS).toFixed(4)}, no exemptions (C1 rail)`);
+}
+
+// --- G91 arranque por encima de la niebla (C2-addendum-5): cota de
+// cámara ≥ 1780 m en s ∈ [0, 0.03] (techo de niebla del alba 1620 m) y
+// holgura ≥ 120 m en ese tramo. Si falla, seguimos dentro de la niebla.
+{
+  let minCam = Infinity;
+  let minCamS = 0;
+  let minHolg = Infinity;
+  let minHolgS = 0;
+  for (const s of [0, 0.005, 0.01, 0.015, 0.02, 0.025, 0.03]) {
+    const camY = rail.fCamY(s);
+    const terr = sampleGrid(rail.fCamX(s), rail.fCamZ(s));
+    if (camY < minCam) {
+      minCam = camY;
+      minCamS = s;
+    }
+    if (camY - terr < minHolg) {
+      minHolg = camY - terr;
+      minHolgS = s;
+    }
+  }
+  gate("G91-arranque-niebla", minCam >= 1780 && minHolg >= 120,
+    `cota min ${minCam.toFixed(0)} m en s=${minCamS.toFixed(3)} (need ≥1780), holgura min ${minHolg.toFixed(0)} m en s=${minHolgS.toFixed(3)} (need ≥120) — techo niebla 1620 m`);
 }
 
 // --- G19 rim (C1 baked rail): terrain stays 100 m below the SIGHTLINE.

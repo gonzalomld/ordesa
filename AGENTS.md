@@ -38,5 +38,6 @@
 - Una fase, un despliegue. Cuando el brief da un orden con una comprobación entre fases, el orden es parte del brief. Juntar fases para ahorrar un despliegue no ahorra nada: cuesta la localización del fallo.
 - Ningún parámetro de dibujo se retroalimenta de una sonda que lo mide; las sondas informan, no gobiernan.
 - Las sombras de nube se aplican antes de la niebla: la distancia se funde con el cielo, no con la sombra.
+- La niebla baja y la bruma de distancia son dos colores: la baja es fría salvo donde mira al sol o en su techo; la de distancia es el cielo.
 - Todo asset que cambia con el código lleva hash de contenido o viaja dentro del bundle; nada sin hash se pide por red.
 - Mezcla aditiva: permitida SOLO en haces §3b (+ halo E3); prohibida en la línea del rastro.

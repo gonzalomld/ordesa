@@ -267,6 +267,8 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     // B4: position follows the rig target every frame (viewer loop sets
     // sun.position/target from the same dir); colours only here.
     sunDirV.copy(dir);
+    // F2: la niebla baja mira al sol (uSunDirW compartido con el shader).
+    (fogUniforms.uSunDirW.value as THREE.Vector3).copy(dir);
     sun.color.setHex(L.sunColor);
     sun.intensity = L.sunIntensity;
     (skyU["turbidity"] as { value: number }).value = L.turbidity;

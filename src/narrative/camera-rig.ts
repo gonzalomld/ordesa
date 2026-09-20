@@ -6,7 +6,7 @@
 // camera (C11: with ?orbit=1 the rig is instantiated for poseAt but must
 // not write).
 import * as THREE from "three";
-import { bakeCamRail, quatYXZ, type BakedRail, type FollowProfile, type RouteLike } from "./anchors.ts";
+import { bakeCamRail, quatYXZ, resolveFollowProfile, type BakedRail, type FollowProfile, type RouteLike } from "./anchors.ts";
 import { resolveFollowSafety } from "./collision.ts";
 import { CAM_CLEARANCE_M, SUBJECT_X_CLOSED, SUBJECT_X_K, SUBJECT_X_K_REDUCED, SUBJECT_X_OPEN } from "./choreography.ts";
 import { buildPchip } from "./curve.ts";
@@ -65,7 +65,14 @@ export function createRig(deps: RigDeps): {
 } {
   const { route, world, elev, meta, progress } = deps;
   const res = progress.resolved();
-  const follow: FollowProfile = res.follow as FollowProfile;
+  // C2: el perfil del epílogo se re-deriva con heightfield (Z del
+  // centroide + escalera de cobertura G78) antes de hornear. progress.ts
+  // no importa engine/terrain (dirección de dependencias); el rig sí.
+  const follow: FollowProfile = resolveFollowProfile(
+    route,
+    (x: number, y: number) => sampleGrid(elev, meta, x, y),
+    { minx: meta.bbox.minx, miny: meta.bbox.miny, maxx: meta.bbox.maxx, maxy: meta.bbox.maxy },
+  );
   const pchipSD = buildPchip(res.sAnchors, res.dAnchorsM, "s->d");
 
   // C1 bake (once): EPSG [x, z, y] rail via the shared bakeCamRail.

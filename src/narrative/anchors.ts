@@ -15,6 +15,8 @@ import {
   CAM_RAIL_SAMPLES,
   CAM_RAIL_SIGMA_S,
   EPI_AZ_DEG,
+  EPI_DIST_UP_MAX,
+  EPI_DIST_UP_PCT,
   EPI_FIT,
   EPI_PITCH,
   FOLLOW_BACK_N,
@@ -23,6 +25,7 @@ import {
   FOLLOW_H_CAM_N,
   FOLLOW_LOOK_N,
   FOLLOW_NUDOS_S,
+  LATERAL_KNOTS,
   PITCH_MAX_HARD,
   PITCH_RATE_MAX,
   ROUTE_DIVERGE_PCT,
@@ -90,14 +93,26 @@ export interface FollowEval {
 /** FOLLOW replan: three independent PCHIPs over FOLLOW_NUDOS_S (act-centre
  * knots + explicit 0 / 0.98 ends repeating first/last act values, so the
  * Pradera never extrapolates and the return arrives flat). The epilogue is
- * a MODE (epiAim/epiCam blend), never a ninth knot. */
-export function resolveFollowProfile(route: RouteLike): FollowProfile {
+ * a MODE (epiAim/epiCam blend), never a ninth knot.
+ * `sample` (nullable): heightfield for the centroid Z + the C2 coverage
+ * escalator. Null = sin heightfield (tests): Z del drape más cercano,
+ * sin escalera. `bbox` (nullable): DEM bounds — si la media del rastro
+ * cae fuera (el valle), sample() haría clamp al borde; en ese caso Z =
+ * MDT bajo el punto del rastro más cercano a la media. */
+export function resolveFollowProfile(
+  route: RouteLike,
+  sample: ((xEpsg: number, yEpsg: number) => number) | null = null,
+  bbox: { minx: number; miny: number; maxx: number; maxy: number } | null = null,
+): FollowProfile {
   const fH = buildPchip(FOLLOW_NUDOS_S.slice(), FOLLOW_H_CAM_N.slice(), "follow-h");
   const fLook = buildPchip(FOLLOW_NUDOS_S.slice(), FOLLOW_LOOK_N.slice(), "follow-look");
   const fBack = buildPchip(FOLLOW_NUDOS_S.slice(), FOLLOW_BACK_N.slice(), "follow-back");
   // E3 amendment: centroid in plan over route.json, Z = MDT sample-нærmeast
   // (trackAt at the nearest d — the centroid is on the loop by construction
   // closely enough; the epilogue looks AT it from 2600-equivalent height).
+  // C2: el centroide en plan es la MEDIA del rastro, no el punto más
+  // cercano al rastro (ese sesga la mira hacia el este y el bucle oeste
+  // se sale del encuadre). Z = MDT bajo la media por muestra.
   let sx = 0;
   let sy = 0;
   for (let i = 0; i < route.n; i++) {
@@ -106,16 +121,39 @@ export function resolveFollowProfile(route: RouteLike): FollowProfile {
   }
   sx /= route.n;
   sy /= route.n;
-  let bi = 0;
-  let bd = Infinity;
-  for (let i = 0; i < route.n; i++) {
-    const q = (num(route.x, i) - sx) ** 2 + (num(route.y, i) - sy) ** 2;
-    if (q < bd) {
-      bd = q;
-      bi = i;
+  // C2: Z = MDT bajo la MEDIA del rastro (muestra, no punto del track).
+  // Si la media cae en un píxel con valor de BORDE (la media está en la
+  // ladera este, construida por una sola pasada: el MDT ahí es real
+  // pero es ladera, no el fondo del valle que la pose necesita), Z = MDT
+  // bajo el punto del rastro más cercano a la media. Detección: el punto
+  // del rastro más cercano a la media está a >150 m en planta (la media
+  // no pisa el rastro: es ladera entre brazos del bucle).
+  const nearestToMean = (): { bi: number; dist: number } => {
+    let bi = 0;
+    let bd = Infinity;
+    for (let i = 0; i < route.n; i++) {
+      const q = (num(route.x, i) - sx) ** 2 + (num(route.y, i) - sy) ** 2;
+      if (q < bd) {
+        bd = q;
+        bi = i;
+      }
     }
+    return { bi, dist: Math.sqrt(bd) };
+  };
+  let zc: number;
+  if (sample) {
+    const inside = bbox
+      ? sx >= bbox.minx && sx <= bbox.maxx && sy >= bbox.miny && sy <= bbox.maxy
+      : true;
+    const zMean = inside ? sample(sx, sy) : Infinity;
+    const near = nearestToMean();
+    // media sobre el rastro (<150 m): el MDT bajo ella es el valle.
+    // media en ladera (>150 m del punto más cercano): el fondo que la
+    // pose necesita es el del rastro, no el de la ladera.
+    zc = near.dist < 150 ? zMean : num(route.z, near.bi);
+  } else {
+    zc = num(route.z, nearestToMean().bi);
   }
-  const zc = num(route.z, bi);
   // E4 amendment: min-enclosing-circle radius approximated by max distance
   // to the centroid (conservative: encloses by construction, margin covers
   // the slack). distPlan fits the loop + 15 % in the horizontal FOV.
@@ -127,7 +165,68 @@ export function resolveFollowProfile(route: RouteLike): FollowProfile {
     if (q > loopR) loopR = q;
   }
   const fovH = 2 * Math.atan(Math.tan(((50 * Math.PI) / 180) / 2) * (16 / 9));
-  const distPlan = (loopR / Math.tan(fovH / 2)) * EPI_FIT;
+  let distPlan = (loopR / Math.tan(fovH / 2)) * EPI_FIT;
+  // C2: el pitch 20° baja la cámara; si el bucle deja de caber en el
+  // encuadre de la pose horneada (G78: peor de s=0.99/0.995/1.0 con
+  // FOV 50° 16:9), distPlan sube 10 % por paso (máx +30 %).
+  // La altura se deriva del distPlan FINAL, no del inicial.
+  // Sin heightfield (sample null): sin escalera (tests).
+  //
+  // Cobertura en el MARCO DE LA POSE (mismo cálculo que el gate G78):
+  // cam = centroide + dp·(sin az, −cos az), alt = zc + dp·tan(20°);
+  // mira al centroide; se proyectan las muestras del rastro (cada 4)
+  // con yaw/pitch de la pose y FOV 50° 16:9. Sin three, sin DOM.
+  {
+    const azR = (EPI_AZ_DEG * Math.PI) / 180;
+    const tanV = Math.tan(((50 * Math.PI) / 180) / 2);
+    const tanH = Math.tan(fovH / 2);
+    const cover = (dp: number): number => {
+      const dz = dp * Math.tan((EPI_PITCH * Math.PI) / 180);
+      const cp = dp / Math.hypot(dp, dz);
+      const sp = dz / Math.hypot(dp, dz);
+      // cam->centroide en plan: dirección −(sin az, −cos az)
+      const dx = -Math.sin(azR);
+      const dy = Math.cos(azR);
+      const yawB = Math.atan2(dx, dy);
+      const syw = Math.sin(yawB);
+      const cyw = Math.cos(yawB);
+      const fwd: [number, number, number] = [syw * cp, -sp, -cyw * cp];
+      const right: [number, number, number] = [cyw, 0, syw];
+      const up: [number, number, number] = [-syw * sp, -cp, cyw * sp];
+      // Mundo del gate: X=easting−sx, Y=alt−camAlt, Z=−(northing−sy)−camZ
+      // con cam en plan (sx + dp·sin az, sy − dp·cos az). Equivale a
+      // relativo cam->punto con la misma orientación: se calcula directo.
+      const camX = sx + dp * Math.sin(azR);
+      const camY = sy - dp * Math.cos(azR);
+      const camZ = zc + dz;
+      let inside = 0;
+      let n = 0;
+      for (let i = 0; i < route.n; i += 4) {
+        const vx = num(route.x, i) - camX;
+        const vy = num(route.z, i) - camZ;
+        const vz = -((num(route.y, i)) - camY);
+        // mundo: X=easting, Y=alt, Z=−northing — el gate usa
+        // X=easting−cx, Y=alt, Z=−(northing−cy): la traslación cancela.
+        const z = vx * fwd[0] + vy * fwd[1] + vz * fwd[2];
+        if (z <= 1) continue;
+        n++;
+        const x = vx * right[0] + vy * right[1] + vz * right[2];
+        const y = vx * up[0] + vy * up[1] + vz * up[2];
+        if (Math.abs(x / (z * tanH)) <= 1 && Math.abs(y / (z * tanV)) <= 1) inside++;
+      }
+      return inside / Math.max(1, n);
+    };
+    if (cover(distPlan) < 0.95 && sample) {
+      let f = 1;
+      // escalera del brief: 10 % por paso hasta ≥0,95, techo +30 %.
+      while (f < 1 + EPI_DIST_UP_MAX - 1e-9 && cover(distPlan * f) < 0.95) {
+        f *= 1 + EPI_DIST_UP_PCT;
+      }
+      f = Math.min(f, 1 + EPI_DIST_UP_MAX);
+      distPlan *= f;
+    }
+  }
+  void EPI_FIT;
   const azR = (EPI_AZ_DEG * Math.PI) / 180;
   // EPI az convention: degrees from north, clockwise (same as old yaw).
   const epiX = sx + distPlan * Math.sin(azR);
@@ -414,8 +513,9 @@ export function bisectSunset(elevAtHour: (h: number) => number): number {
 // (camera-rig.ts), verify:3a and doctor: no mirrors, no copies.
 //
 // Pipeline (all pure, all in s, no temporal state):
-//  1. raw rope pose per sample (FOLLOW model + D_MIN dual push-back +
-//     epilogue blend — the exact construction the rig flew before C1).
+//  1. raw rope pose per sample (FOLLOW model + C2 lateral offset on the
+//     anchor toward the valley side + D_MIN dual push-back + epilogue
+//     blend — the exact construction the rig flew before C1).
 //  2. safety ladder (lift→push→tilt) OVER the raw table, then floor clamp.
 //  3. (REMOVED: spatial gaussian in d — σ=300 m dragged the cam 500+ m off
 //     its rope in the turnaround. Positions stay raw-ladder; the whip is
@@ -443,6 +543,15 @@ export interface RailBakeInput {
   fovDeg: number;
   /** floor clearance added over the terrain (CAM_CLEARANCE_M in prod). */
   floorM: number;
+}
+
+/** C2: evaluador lateral PCHIP sobre LATERAL_KNOTS (0 por defecto, bulto
+ * en el Mirador). Exportado para verify: el informe publica la tabla. */
+export function lateralAt(s: number): number {
+  const ss = LATERAL_KNOTS.map((k) => k[0]);
+  const vv = LATERAL_KNOTS.map((k) => k[1]);
+  const f = buildPchip(ss, vv, "lateral");
+  return f(Math.min(1, Math.max(0, s)));
 }
 
 export interface BakedRail {
@@ -563,19 +672,49 @@ function limitRateSym(target: number[], capPerStep: number): number[] {
  * push-back in plan holding altitude, epilogue blend. THE construction the
  * rig flew pre-C1 — moved here verbatim so verify/doctor share it. EPSG
  * [x, z, y] convention (matches anchorPlan/trackAt use in camera-rig.ts:
- * [0]=easting, [1]=altitude, [2]=northing). */
+ * [0]=easting, [1]=altitude, [2]=northing).
+ * C2: `sample` desplaza el ANCLAJE lateralAt(s) metros en la normal
+ * horizontal del rastro hacia el VALLE (menor cota media a 300 m por
+ * muestra — nunca a mano). La MIRA no se desplaza. `sample` null = sin
+ * offset (tests sin heightfield). */
 export function rawRopePose(
   route: RouteLike,
   follow: FollowProfile,
   s: number,
   d: number,
+  sample: ((xEpsg: number, yEpsg: number) => number) | null = null,
 ): { cam: [number, number, number]; aim: [number, number, number]; hCam: number; lookM: number; backM: number; dp: number } {
   const sc = Math.min(1, Math.max(0, s));
   const prof = followAt(follow, sc);
   const pAim = trackAt(route, Math.min(route.lengthM, d + prof.lookM));
   const pA = anchorPlan(route, d, prof.backM);
+  // C2 lateral: normal horizontal del rastro en el anclaje (dirección
+  // p(d-50)->p(d+50) en plan), signo hacia el valle por muestra.
+  let ax = pA.x;
+  let ay = pA.y;
+  const lat = lateralAt(sc);
+  if (sample && Math.abs(lat) > 1e-9) {
+    const q0 = trackAt(route, Math.max(0, d - 50));
+    const q1 = trackAt(route, Math.min(route.lengthM, d + 50));
+    let dx = q1.x - q0.x;
+    let dy = q1.y - q0.y;
+    const L = Math.max(1e-6, Math.hypot(dx, dy));
+    dx /= L;
+    dy /= L;
+    const nx = -dy;
+    const ny = dx;
+    let mPos = 0;
+    let mNeg = 0;
+    for (const t of [75, 150, 225, 300]) {
+      mPos += sample(ax + nx * t, ay + ny * t);
+      mNeg += sample(ax - nx * t, ay - ny * t);
+    }
+    const sgn = mPos <= mNeg ? 1 : -1;
+    ax += sgn * nx * lat;
+    ay += sgn * ny * lat;
+  }
   const aim: [number, number, number] = [pAim.x, pAim.z + FOLLOW_H_AIM, pAim.y];
-  const cam: [number, number, number] = [pA.x, pA.z + prof.hCam, pA.y];
+  const cam: [number, number, number] = [ax, pA.z + prof.hCam, ay];
   // D_MIN dual push-back along aim->cam in plan (yaw-preserving, one-shot
   // quadratic capped at 3x aim distance — see camera-rig.ts history).
   const pW = trackAt(route, Math.min(route.lengthM, d));
@@ -668,7 +807,7 @@ export function bakeCamRail(
     sArr[i] = s;
     const d = sToD(Math.min(1, Math.max(0, s)));
     dArr[i] = d;
-    const rope = rawRopePose(route, follow, s, d);
+    const rope = rawRopePose(route, follow, s, d, sample);
     const ropeW = {
       camPos: [rope.cam[0] - cx, rope.cam[1], -(rope.cam[2] - cy)] as [number, number, number],
       aim: [rope.aim[0] - cx, rope.aim[1], -(rope.aim[2] - cy)] as [number, number, number],

@@ -60,6 +60,13 @@ export function initProgress(
   grid?: { elev: Float32Array; meta: Meta; cx: number; cy: number },
 ): ProgressHandle {
   const res = resolveAnchors(route);
+  // C2: el perfil deriva la geometría del epílogo del bucle; con grid
+  // (browser) recibe el heightfield (Z del centroide + escalera de
+  // cobertura G78); sin grid (tests) usa el drape, sin escalera.
+  // NOTE: sampleGrid vive en engine/terrain.ts y progress.ts no lo
+  // importa (dirección de dependencias: engine -> narrative). El rig
+  // reconstruye el perfil con heightfield al hornear (camera-rig.ts);
+  // aquí el perfil es rítmico (s->d/horas) y el epílogo se re-deriva allí.
   void grid;
   // FOLLOW profile (rope model): built once, shared with the rig.
   res.follow = resolveFollowProfile(route);

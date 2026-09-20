@@ -101,7 +101,9 @@ export function lightingAt(t: string | number): Lighting {
   // valley fog: max at sunrise, floor 0.55 at midday (U1: fog10km ≥ 0.80 —
   // the x⁴ distance curve keeps the valley readable, only the far edge melts)
   const fogDensity = e <= 0 ? 1 : Math.max(0.55, 1 - (h - 7.1) / 3.4);
-  const fogTopM = lerp(1750, 1400, Math.min(1, Math.max(0, (h - 7) / 3.5)));
+  // F2: techo al alba 1750 -> 1620 m (la Pradera está a 1321: 300 m de
+  // capa, no 430); la caída a 1400 se mantiene.
+  const fogTopM = lerp(1620, 1400, Math.min(1, Math.max(0, (h - 7) / 3.5)));
   // N2: amount(h) sustituye a cloudDensity — sigue expuesto como cloudDensity
   // para no remover llamadas (misma semántica: presencia, nunca gate de sol).
   const cloudDensity = cloudAmount(h);
