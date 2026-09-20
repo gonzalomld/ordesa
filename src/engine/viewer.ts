@@ -1696,21 +1696,18 @@ float wgrain(vec2 lp){
         beams.setWalker(wwx, wwy, wwz);
       }
       beams.tick();
-      // G81: caminante sobre P(d) — proyección del centro del haz vs
-      // punto del rastro (≤4 px). Solo informa (?debug=1), no gobierna.
+      // G81: base del haz del caminante a ≤2 m de P(d) en planta y en
+      // cota, en METROS y en el mundo. Solo informa (?debug=1), no gobierna.
       if (boot.debug) {
         const dw = st.s >= EPILOGUE_S ? route.lengthM : Math.min(st.d, route.lengthM);
         const pw = trackAt(route, dw);
         const [px, py, pz] = epsgToWorld(pw.x, pw.y, pw.z, world);
-        const a = new THREE.Vector3(px, py, pz).project(camera);
-        const b = new THREE.Vector3(px, py + 130, pz).project(camera);
-        const ax = (a.x * 0.5 + 0.5) * window.innerWidth;
-        const ay = (-a.y * 0.5 + 0.5) * window.innerHeight;
-        const bx = (b.x * 0.5 + 0.5) * window.innerWidth;
-        const by = (-b.y * 0.5 + 0.5) * window.innerHeight;
-        const gap = Math.hypot(ax - bx, ay - by);
-        (window as unknown as { __walkerOk?: boolean }).__walkerOk = gap <= 4 || a.z > 1 || b.z > 1;
-        (window as unknown as { __walkerGap?: number }).__walkerGap = gap;
+        const base = beams.walkerBase();
+        const gapM = Math.hypot(base.x - px, base.z - pz);
+        const gapY = Math.abs(base.y - py);
+        (window as unknown as { __walkerGapM?: number }).__walkerGapM = gapM;
+        (window as unknown as { __walkerGapY?: number }).__walkerGapY = gapY;
+        (window as unknown as { __walkerOk?: boolean }).__walkerOk = gapM <= 2 && gapY <= 2;
       }
     }
     if (frames % 6 === 0) {
@@ -1738,7 +1735,8 @@ float wgrain(vec2 lp){
         });
         if (boot.debug) {
           const wok = (window as unknown as { __walkerOk?: boolean }).__walkerOk ?? true;
-          metrics.beamHud = beams.beamHud(st.s, wok);
+          const gapM = (window as unknown as { __walkerGapM?: number }).__walkerGapM;
+          metrics.beamHud = beams.beamHud(st.s, wok, gapM);
         }
         (window as unknown as { __beamGlow?: number[] }).__beamGlow = beams.debugGlows();
         (window as unknown as { __beamPassed?: number }).__beamPassed = beams.passedCount();

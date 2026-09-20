@@ -1673,9 +1673,10 @@ function elevFull36(): Float32Array {
     ["fase por instancia (i·1,7)", has(beamsSrc, "BEAM_PHASE_STEP") || has(beamsSrc, "1.7")],
     ["fade distancia /6000", has(beamsSrc, "6000") || has(choreoSrc, "BEAM_DIST_FAR_M = 6000")],
     ["G80 publicado (__beamBeat)", has(beamsSrc, "__beamBeat")],
-    // G81: caminante naranja sobre P(d) del rastro real, +130 m.
-    ["caminante instancia +1", has(beamsSrc, "walkerIndex") && has(beamsSrc, "setWalker")],
+    // G81: base del haz del caminante a ≤2 m de P(d) en planta y cota.
+    ["caminante instancia +1", has(beamsSrc, "walkerIndex") && has(beamsSrc, "setWalker") && has(beamsSrc, "walkerBase")],
     ["P(d) del rastro (trackAt)", has(viewerSrcB, "trackAt(route, dw)") && has(anchorsSrc, "export function trackAt")],
+    ["G81 metros mundo (__walkerGapM/Y)", has(viewerSrcB, "__walkerGapM") && has(viewerSrcB, "__walkerGapY") && has(viewerSrcB, "gapM <= 2 && gapY <= 2")],
     ["G81 publicado (__walkerOk)", has(viewerSrcB, "__walkerOk")],
     // Oclusión ×0,25 + P día N1 + HUD ?debug=1.
     ["oclusión ×0,25", has(beamsSrc, "BEAM_OCCLUDE") && has(viewerSrcB, "setOccluded")],
@@ -1683,7 +1684,7 @@ function elevFull36(): Float32Array {
     // Ciclo 6 frames con rayBlocked (ya existe) + HUD ?debug=1.
     ["ciclo 6f con etiquetas", has(viewerSrcB, "frames % 6 === 0") && has(viewerSrcB, "setOccluded")],
     ["rayBlocked intacto", has(labelsSrc, "export function rayBlocked")],
-    ["HUD haces N·pasados·próximo", has(debugSrcB, "beamHud") && has(beamsSrc, "beamHud(sNow")],
+    ["HUD haces N·pasados·próximo+gap", has(debugSrcB, "beamHud") && has(beamsSrc, "beamHud(sNow") && has(beamsSrc, "gap ${walkerGapM")],
     // Un solo rAF: beams.ts sin rAF propio; latido en GPU, pulso en tick.
     ["sin rAF propio", !has(beamsSrc, "requestAnimationFrame")],
     ["uniforms declarados en GLSL", has(beamsSrc, "uniform sampler2D uMap; uniform float uDayF;")],

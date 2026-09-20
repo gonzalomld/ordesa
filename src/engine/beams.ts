@@ -75,6 +75,8 @@ export interface Beams {
   setAnchored(on: boolean): void;
   /** caminante: base del cilindro en P(d) del rastro real (mundo). */
   setWalker(wx: number, wy: number, wz: number): void;
+  /** G81: base del haz del caminante en el mundo (para la sonda en metros). */
+  walkerBase(): { x: number; y: number; z: number };
   /** cada frame: uTime + avance de pulsos (única CPU por frame). */
   tick(): void;
   /** G74: pase de ID con su propio idMat (como G15) -> píxeles por hito
@@ -87,7 +89,7 @@ export interface Beams {
   /** Δs al próximo hito (HUD, NaN si todos pasados). */
   nextDeltaS(sNow: number): number;
   /** HUD ?debug=1. */
-  beamHud(sNow: number, walkerOk: boolean): string;
+  beamHud(sNow: number, walkerOk: boolean, walkerGapM?: number): string;
   debugGlows(): number[];
   /** G80: factor de latido actual por hito (0,26…0,74, periodo ≈3,9 s). */
   debugBeats(): number[];
@@ -330,6 +332,9 @@ export function buildBeams(
       mesh.instanceMatrix.needsUpdate = true;
       idMesh.instanceMatrix.needsUpdate = true;
     },
+    walkerBase(): { x: number; y: number; z: number } {
+      return { x: baseX[n] as number, y: baseY[n] as number, z: baseZ[n] as number };
+    },
     tick(): void {
       const tMs = performance.now();
       uTime.value = tMs;
@@ -383,7 +388,7 @@ export function buildBeams(
       }
       return NaN;
     },
-    beamHud(sNow: number, walkerOk: boolean): string {
+    beamHud(sNow: number, walkerOk: boolean, walkerGapM?: number): string {
       let k = 0;
       let nx: BeamDef | null = null;
       for (let i = 0; i < n; i++) {
@@ -394,7 +399,8 @@ export function buildBeams(
         ? `próximo ${(rts[(nx as BeamDef).rtIndex] as LabelRuntime).def.nombre ?? "—"} Δs=${((nx as BeamDef).s - sNow).toFixed(3)}`
         : "próximo —";
       void anchored;
-      return `haces ${n} · pasados ${k} · ${nextTxt} · caminante P(d) ${walkerOk ? "ok" : "—"}`;
+      const gapTxt = walkerGapM !== undefined && Number.isFinite(walkerGapM) ? ` (gap ${walkerGapM.toFixed(1)} m)` : "";
+      return `haces ${n} · pasados ${k} · ${nextTxt} · caminante P(d) ${walkerOk ? "ok" : "—"}${gapTxt}`;
     },
     debugGlows(): number[] {
       return defs.map((_, i) => (passed[i] ? 1 : 0));
