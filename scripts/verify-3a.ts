@@ -1761,6 +1761,80 @@ function elevFull36(): Float32Array {
       : `${checks.length} checks — cilindros+ID, base, oclusión, aditivo-solo-haces, estado/latido/caminante, 6f, HUD (números en prod ?debug=1&skyfrac=1)`);
 }
 
+// --- G84 pie del gráfico (3B-bis2): el panel NO pinta spec_raw (sigue
+// en el JSON para trazabilidad y G68). Si hay campo `pie:`, ese se pinta
+// con .cap; si no, el hueco queda vacío. Medido en navegador (?debug=1);
+// aquí el contrato estático.
+{
+  const panelSrc = readFileSync("src/narrative/panel.ts", "utf8");
+  const actsSrc = readFileSync("scripts/15-build-acts.ts", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  const checks: [string, boolean][] = [
+    ["spec_raw no renderizado", !has(panelSrc, "g.spec_raw") && !has(panelSrc, ".spec_raw")],
+    ["campo pie: opcional en parser", has(actsSrc, "pie:") && has(actsSrc, "pie: { raw: string; html: string } | null")],
+    ["panel pinta a.pie con .cap", has(panelSrc, "a.pie") && has(panelSrc, '"cap"')],
+    ["sin pies inventados (null sin campo)", has(actsSrc, "pie: null") || has(panelSrc, "a.pie ?")],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G84-grafico-pie", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — spec_raw fuera del DOM, pie: opcional (literal en prod ?debug=1)`);
+}
+
+// --- G85 flotante sin solape (3B-bis2): a la derecha del panel desde el
+// ancho real (--panel-w + 24px), plegado a clamp(24px,4vw,64px), resize
+// recoloca. Medido en navegador a 1280/1600/1920 (?debug=1); aquí el contrato.
+{
+  const panelSrc = readFileSync("src/narrative/panel.ts", "utf8");
+  const css = readFileSync("src/styles/main.css", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  const checks: [string, boolean][] = [
+    ["sin left mágico 400px", !has(css, "left: 400px") && !has(css, "left: 368px")],
+    ["--panel-w + 24px aire", has(panelSrc, "--panel-w") && has(css, "--panel-w") && has(css, "+ 24px")],
+    ["plegado clamp(24,4vw,64)", has(panelSrc, "clamp(24px, 4vw, 64px)")],
+    ["resize recoloca", has(panelSrc, 'addEventListener("resize"')],
+    ["mide ancho real (getBoundingClientRect)", has(panelSrc, "getBoundingClientRect")],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G85-flotante-solape", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — flotante desde ancho real (solape 0px en prod ?debug=1)`);
+}
+
+// --- G86 fichas sin huérfanos (3B-bis2): li nowrap + &nbsp; número-unidad
+// en el parser; la ficha que no quepa rompe sola (.allow-break). Medido
+// con Range en navegador (?debug=1); aquí el contrato.
+{
+  const panelSrc = readFileSync("src/narrative/panel.ts", "utf8");
+  const actsSrc = readFileSync("scripts/15-build-acts.ts", "utf8");
+  const css = readFileSync("src/styles/main.css", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  const checks: [string, boolean][] = [
+    ["li nowrap", has(css, ".chips li") && has(css, "white-space: nowrap")],
+    ["nbsp número-unidad en parser", has(actsSrc, "&nbsp;")],
+    ["ficha larga rompe sola", has(panelSrc, "allow-break") && has(css, "allow-break")],
+    ["line-height 2.2 intacto", has(css, "line-height: 2.2")],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G86-fichas-huerfanos", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — nowrap + nbsp + ruptura aislada (Range en prod ?debug=1)`);
+}
+
+// --- G87 anti-blanco (3B-bis2): 2,5 s tras pintar, hijos con opacidad 0
+// pierden la animación y quedan a 1 (pestaña en segundo plano). Un solo
+// timeout por cambio, cancelado al siguiente. Medido en navegador; aquí el contrato.
+{
+  const panelSrc = readFileSync("src/narrative/panel.ts", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  const checks: [string, boolean][] = [
+    ["guard 2500ms", has(panelSrc, "2500")],
+    ["un timeout por cambio (clearTimeout)", has(panelSrc, "clearTimeout")],
+    ["quīta animación + opacidad 1", has(panelSrc, 'animation = "none"') && has(panelSrc, 'opacity = "1"')],
+    ["lee opacidad computada", has(panelSrc, "getComputedStyle")],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G87-anti-blanco", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — seguro 2,5s (opacidad 1 a los 3s en prod ?debug=1)`);
+}
+
 if (failures > 0) {
   console.error(`\nverify:3a: ${failures} gate(s) FAILED`);
   process.exit(1);

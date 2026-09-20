@@ -698,7 +698,9 @@ body {
 }
 
 /* chips: mt 28px, pt 22px, border-top 1px --line, lh 2.2; li inline
-   10px 600 .14em uppercase; separador "·" gold con margin 0 10px. */
+   10px 600 .14em uppercase; separador "·" gold con margin 0 10px.
+   3B-bis2: cada li nowrap (rompe SOLO la ficha que no quepa); el número
+   y su unidad van con &nbsp; desde el parser (G86: sin tokens <3). */
 #panel.pcard .chips {
   list-style: none;
   margin-top: 28px;
@@ -715,6 +717,11 @@ body {
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: rgb(174 187 205 / 80%);
+  white-space: nowrap;
+}
+
+#panel.pcard .chips li.allow-break {
+  white-space: normal;
 }
 
 #panel.pcard .chips li + li::before {
@@ -994,21 +1001,18 @@ body {
 }
 
 /* flotante (título sobre el 3D): Playfair 600 clamp(28px,3vw,40px),
-   pearl con sombra; numeral fantasma Big Shoulders 800 240px op .08. */
+   pearl con sombra; numeral fantasma Big Shoulders 800 240px op .08.
+   3B-bis2: a la derecha del panel sin número mágico (--panel-w del
+   pcard real + 24 px de aire); plegado u oculto: clamp(24px,4vw,64px).
+   El JS escribe left inline en cada pintado/plegado/resize. */
 #flotante {
   position: fixed;
-  left: 400px;
+  left: calc(var(--panel-w, 27rem) + 24px);
   top: 11vh;
   z-index: 16;
   pointer-events: none;
   max-width: min(420px, 30vw);
   transition: opacity 180ms ease;
-}
-
-@media (max-width: 1279px) {
-  #flotante {
-    left: 368px;
-  }
 }
 
 .flotante-ghost {

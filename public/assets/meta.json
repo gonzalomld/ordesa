@@ -38,7 +38,7 @@
     "terrain-normal": "assets/terrain-normal.1c34820c.webp",
     "clouds-atlas": "assets/clouds-atlas.0239d658.webp",
     "clouds-atlas-png": "assets/clouds-atlas.0239d658.png",
-    "acts": "assets/acts.c927d94f.json"
+    "acts": "assets/acts.9c93da4e.json"
   },
   "sizesBytes": {
     "terrain-base": 1701032,
@@ -48,7 +48,7 @@
     "terrain-normal": 544238,
     "clouds-atlas": 64076,
     "clouds-atlas-png": 321969,
-    "acts": 29774
+    "acts": 29911
   },
   "corridorMarginM": 400,
   "flight": {

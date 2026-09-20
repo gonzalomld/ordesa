@@ -56,10 +56,14 @@ function grafHtml(a: ActJson): string {
         return `<div class="hrow"><span class="hlab">${h(b.etiqueta)}</span><span class="htrack"><span class="hfill" style="width:${pct.toFixed(1)}%"></span></span><span class="hnum">${h(fmtNum(b.valor))}</span></div>`;
       })
       .join("");
-    return `<div class="g"><div class="hbars">${rows}</div></div>`;
+    // 3B-bis2: el pie es el campo opcional `pie:` del md (estilo .cap).
+    // Sin campo no hay texto: spec_raw NO se renderiza (G84).
+    const cap = a.pie ? `<div class="cap">${a.pie.html}</div>` : "";
+    return `<div class="g"><div class="hbars">${rows}</div>${cap}</div>`;
   }
-  // Perfil: el SVG inline del parser (byte-idéntico, G68) + caption.
-  return `<div class="g">${g.svg}<div class="cap">${h(g.spec_raw)}</div></div>`;
+  // Perfil: el SVG inline del parser (byte-idéntico, G68) + pie opcional.
+  const cap = a.pie ? `<div class="cap">${a.pie.html}</div>` : "";
+  return `<div class="g">${g.svg}${cap}</div>`;
 }
 
 /** 279000 -> "279.000" · -3.9 -> "−3,9" (la cifra real, no el ancho). */
@@ -128,6 +132,22 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
 
   const W = window as unknown as { __panelAct?: string };
 
+  // 3B-bis2 (cambio 2): el flotante vive a la derecha del panel sin número
+  // mágico: --panel-w (ancho real del pcard) + 24 px de aire. Plegado (o
+  // <900 px, panel oculto): clamp(24px, 4vw, 64px). Resize recoloca.
+  function placeFlotante(): void {
+    if (!flot) return;
+    const narrow = window.innerWidth < 900;
+    if (collapsed || narrow) {
+      flot.style.left = "clamp(24px, 4vw, 64px)";
+      aside.style.setProperty("--panel-w", "0px");
+    } else {
+      const w = aside.getBoundingClientRect().width;
+      aside.style.setProperty("--panel-w", `${Math.round(w)}px`);
+      flot.style.left = `calc(var(--panel-w, 27rem) + 24px)`;
+    }
+  }
+
   function renderFlotante(a: ActJson, f: number): void {
     if (!flot) return;
     // Epilogue keeps it; otherwise visible f<0.12, gone by f=0.25.
@@ -147,6 +167,28 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
       `<div class="flotante-t">${h(a.flotante.titulo)}</div>`;
   }
 
+  // 3B-bis2 (cambio 4): seguro anti-panel-en-blanco. Con la pestaña en
+  // segundo plano las animaciones no avanzan y `both` deja opacidad 0:
+  // 2,5 s tras pintar, los hijos con opacidad computada 0 pierden la
+  // animación y quedan a 1. Un solo timeout por cambio, cancelado si el
+  // siguiente acto llega antes. Solo informa (G87), no gobierna.
+  let blankGuard = 0;
+  function armBlankGuard(): void {
+    if (blankGuard) window.clearTimeout(blankGuard);
+    blankGuard = window.setTimeout(() => {
+      blankGuard = 0;
+      const stage = aside.querySelector(".pstage.act");
+      if (!stage) return;
+      for (const kid of Array.from(stage.children)) {
+        const el = kid as HTMLElement;
+        if (window.getComputedStyle(el).opacity === "0") {
+          el.style.animation = "none";
+          el.style.opacity = "1";
+        }
+      }
+    }, 2500);
+  }
+
   function paintAct(a: ActJson): void {
     // G72: un solo innerHTML por cambio de acto; sin layout del canvas
     // (el panel es fixed, el canvas nunca se re-mide).
@@ -155,6 +197,9 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
     if (scroller) scroller.innerHTML = actBody(a);
     popen.textContent = `+ ${a.key}`;
     fitEyebrow();
+    fitChips();
+    placeFlotante();
+    armBlankGuard();
     const x = aside.querySelector<HTMLButtonElement>(".pclose");
     if (x) x.setAttribute("aria-expanded", collapsed ? "false" : "true");
     const dt = performance.now() - t0;
@@ -173,9 +218,20 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
     aside.classList.add("narrow-eyebrow");
   }
 
+  // G86 (3B-bis2): la ficha que no quepa rompe SOLA (.allow-break); el
+  // resto queda nowrap. Solo mide los li (no el canvas).
+  function fitChips(): void {
+    const lis = Array.from(aside.querySelectorAll<HTMLElement>(".chips li"));
+    for (const li of lis) {
+      li.classList.remove("allow-break");
+      if (li.scrollWidth > li.clientWidth + 1) li.classList.add("allow-break");
+    }
+  }
+
   function applyCollapsed(): void {
     aside.classList.toggle("panel-collapsed", collapsed);
     popen.hidden = !collapsed;
+    placeFlotante();
     const x = aside.querySelector<HTMLButtonElement>(".pclose");
     if (x) {
       x.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -205,6 +261,7 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
   popen.addEventListener("click", () => {
     setCollapsed(false);
   });
+  window.addEventListener("resize", placeFlotante);
 
   function setCollapsed(c: boolean): void {
     // <900px the panel stays hidden for the 3D (CSS display:none rules).

@@ -46,6 +46,9 @@ export interface ActJson {
   fichasRaw: string;
   campo: FichaRow[];
   pendienteRaw: string | null;
+  /** 3B-bis2: pie opcional del gráfico (campo `pie:` del md). Hoy ningún
+   * acto lo trae: si es null, el panel NO pinta spec_raw (G84). */
+  pie: { raw: string; html: string } | null;
   epiBloques: { titulo: string; filas: FichaRow[] }[];
   epiCierre: { raw: string; html: string } | null;
   pieFuentes: string | null;
@@ -272,7 +275,15 @@ export function parseActs(md: string, route: RouteData): ActJson[] {
     // Error 1 (3B-bis): la ficha es el texto sin comillas. El split por ·
     // deja backticks interiores (`A` · `B` -> "A`" / "`B"), así que cada
     // ficha se pela por separado — no basta con noTicks() antes del split.
+    // G86 (3B-bis2): &nbsp; entre número y unidad («31,5 %» con espacio
+    // duro) para que nunca quede un token suelto de <3 caracteres.
     const stripTicks = (s: string): string => s.trim().replace(/^`+|`+$/g, "").trim();
+    const hardenUnit = (s: string): string =>
+      s
+        .replace(/(\d[.,\d]*)\s+(m|km|%|ha|h|años|días|ejemplares|glaciares|metros|kilómetros)\b/gi, "$1&nbsp;$2")
+        // «31,5 %» con espacio normal: el % quedaría huérfano (medido en
+        // prod: ficha de 281 px). El md también trae «80 %» en cuerpo.
+        .replace(/(\d)\s+%/g, "$1&nbsp;%");
     // EPI: anatomía distinta (bloques + cierre + pie). Campos de panel
     // vacíos pero presentes; el contenido vive en campo (filas) y cuerpo.
     // HINT split-fichas: las fichas del md vienen como `A` · `B` · `C` —
@@ -312,6 +323,7 @@ export function parseActs(md: string, route: RouteData): ActJson[] {
         fichas: [], fichasRaw: "",
         campo: epiBloques.flatMap((x) => x.filas),
         pendienteRaw: pieM ? (pieM[1] as string).trim() : null,
+        pie: null,
         epiBloques,
         epiCierre: cierreRaw ? { raw: cierreRaw, html: miniMd(cierreRaw) } : null,
         pieFuentes: pieM ? (pieM[1] as string).trim() : null,
@@ -342,7 +354,7 @@ export function parseActs(md: string, route: RouteData): ActJson[] {
     const fichasIdx = findField("fichas").idx;
     const cuerpoLines = seg.slice(cuerpoIdx + 1, fichasIdx).join("\n").split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p !== "");
     if (cuerpoLines.length < 2 || cuerpoLines.length > 4) fail(`actos.es.md acto ${b.key}: cuerpo necesita 2-3 párrafos, hay ${cuerpoLines.length}`);
-    const fichas = [...noTicks(fichasF.rest).split("·")].map((s) => stripTicks(s)).filter((s) => s !== "" && !s.includes("`"));
+    const fichas = [...noTicks(fichasF.rest).split("·")].map((s) => hardenUnit(stripTicks(s))).filter((s) => s !== "" && !s.includes("`"));
     if (fichas.length === 0) fail(`actos.es.md acto ${b.key}: fichas vacías`);
     // El md usa · U+00B7 como separador de fichas; noTicks ya peló los
     // backticks ASCII. Si queda alguno, es contenido real del md.
@@ -372,6 +384,18 @@ export function parseActs(md: string, route: RouteData): ActJson[] {
       : null;
     const g = buildGrafico(b.key, grafico.rest, route);
     const fl = parseFlotante(flotante.rest.trim());
+    // 3B-bis2: campo opcional `pie:` — pie del gráfico con estilo .cap.
+    // Hoy ningún acto lo trae: null = hueco vacío, sin spec_raw (G84).
+    // Se busca entre fichas y campo para no romper la anatomía del cuerpo.
+    let pie: { raw: string; html: string } | null = null;
+    for (let i = fichasIdx + 1; i < campoIdx; i++) {
+      const pm = (seg[i] as string).trim().match(/^\*\*pie:\*\*\s*(.*)$/i);
+      if (pm && (pm[1] as string).trim() !== "") {
+        const raw = noTicks(pm[1] as string);
+        pie = { raw, html: miniMd(raw) };
+        break;
+      }
+    }
     out.push({
       key: b.key, heading: b.heading, kmRaw: kmLine,
       cintillo: { raw: noTicks(cintillo.rest), html: miniMd(noTicks(cintillo.rest)) },
@@ -381,7 +405,7 @@ export function parseActs(md: string, route: RouteData): ActJson[] {
       grafico: { kind: g.kind, spec_raw: grafico.rest.trim(), svg: g.svg, tramoKm: g.tramoKm, barras: g.barras },
       cuerpo: cuerpoLines.map((p) => ({ raw: p, html: miniMd(p) })),
       fichas, fichasRaw: noTicks(fichasF.rest),
-      campo, pendienteRaw,
+      campo, pendienteRaw, pie,
       epiBloques: [], epiCierre: null, pieFuentes: null,
     });
   });
