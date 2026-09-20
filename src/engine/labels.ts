@@ -21,8 +21,9 @@ export interface LabelRuntime {
   wx: number;
   wy: number;
   wz: number;
-  /** §3: wy de la etiqueta sin haz (punto del terreno). anchorBeam() lo
-   * sube a la punta (base + BEAM_H_M); releaseBeam() lo devuelve. */
+  /** §3b: wy de la etiqueta (punto del terreno + 2 m, la BASE del haz).
+   * anchorBeam() lo fija a la base; releaseBeam() lo devuelve al suelo.
+   * El haz sube por detrás, como Everest. */
   groundWy: number;
   /** §3: true si este hito lleva haz vertical (tipo hito, no cumbre). */
   hasBeam: boolean;
@@ -69,13 +70,13 @@ export function buildLabels(
     });
 }
 
-/** §3: cuelga la etiqueta de la punta del haz (base + BEAM_H_M). Solo
- * cambia wy — updateLabels proyecta igual y cuesta lo mismo. */
-export function anchorBeam(rt: LabelRuntime, tipWy: number): void {
+/** §3b: fija la etiqueta a la BASE del haz (terreno + 2 m, Everest).
+ * Solo cambia wy — updateLabels proyecta igual y cuesta lo mismo. */
+export function anchorBeam(rt: LabelRuntime, baseWy: number): void {
   if (!rt.hasBeam) return;
-  if (rt.wy !== tipWy) {
-    rt.wy = tipWy;
-    rt.lastX = -1; // forzar reproyección una vez (el ancla saltó 320 m)
+  if (rt.wy !== baseWy) {
+    rt.wy = baseWy;
+    rt.lastX = -1; // forzar reproyección una vez (el ancla saltó 2 m)
   }
 }
 

@@ -1630,16 +1630,18 @@ function elevFull36(): Float32Array {
     bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — panel<-actNow, subjectX easing, flotante, pswap, a11y (números en prod ?debug=1)`);
 }
 
-// --- §3 haces (G74 presencia / G75 anclaje / G76 oclusión / G77
-// artefactos): browser-measured en prod (?debug=1&skyfrac=1, ?trackpx=1
-// para __beampx). Node checks the wiring + el contrato estático; los
-// NÚMEROS viven en navegador (sonda ID + capturas ×2 + comparativa).
+// --- §3b haces Everest (G74 presencia / G75 base / G76 oclusión / G77
+// artefactos / G79 estado / G80 latido / G81 caminante): browser-measured
+// en prod (?debug=1&skyfrac=1, ?trackpx=1 para __beampx). Node checks the
+// wiring + el contrato estático; los NÚMEROS viven en navegador (sonda ID
+// + capturas ×2 + comparativa + barrido de estado).
 {
   const beamsSrc = readFileSync("src/engine/beams.ts", "utf8");
   const labelsSrc = readFileSync("src/engine/labels.ts", "utf8");
   const viewerSrcB = readFileSync("src/engine/viewer.ts", "utf8");
   const debugSrcB = readFileSync("src/engine/debug.ts", "utf8");
   const choreoSrc = readFileSync("src/narrative/choreography.ts", "utf8");
+  const anchorsSrc = readFileSync("src/narrative/anchors.ts", "utf8");
   const has = (s: string, k: string): boolean => s.includes(k);
   const checks: [string, boolean][] = [
     // G74: un draw call (UNA InstancedMesh) + sonda ID propia -> __beampx.
@@ -1647,34 +1649,50 @@ function elevFull36(): Float32Array {
     ["idMat propio + escena propia", has(beamsSrc, "idScene") && has(beamsSrc, "new THREE.Scene()")],
     ["__beampx publicado (?trackpx=1)", has(viewerSrcB, "__beampx") && has(viewerSrcB, "countIdPixels(renderer, camera)")],
     ["?beams=0 apaga", has(debugSrcB, 'q.get("beams") !== "0"') && has(viewerSrcB, "boot.beams")],
-    // G75: etiquetas con haz desde la PUNTA (mismo translate), cumbres igual.
-    ["anclaje punta (anchorBeam)", has(labelsSrc, "anchorBeam")],
-    ["tipWy = base + BEAM_H_M", has(beamsSrc, "+ BEAM_H_M")],
+    // G75: etiquetas en la BASE del haz (Everest), a ≤6 px del pie.
+    ["anclaje base (anchorBeam)", has(labelsSrc, "anchorBeam")],
+    ["etiqueta a la base, no a la punta", has(beamsSrc, "vuelve a la BASE") || has(labelsSrc, "la BASE del haz")],
+    ["sin tipWy de punta", !has(beamsSrc, "tipWy")],
     ["translate(-50%,-100%) intacto", has(labelsSrc, "translate(-50%,-100%)")],
     ["cumbres sin haz", has(labelsSrc, 'hasBeam: def.tipo === "hito"')],
     // G76: depthTest true (lo tapa el terreno), depthWrite false.
     ["depthTest true + depthWrite false", has(beamsSrc, "depthTest: true") && has(beamsSrc, "depthWrite: false")],
-    // G77: sin aditivo (NormalBlending premultiplicado) + gaussiana sin cuentas.
-    ["sin aditivo", !has(beamsSrc, "AdditiveBlending") && has(beamsSrc, "OneMinusSrcAlphaFactor")],
-    ["gaussiana × perfil + refuerzo punta", has(beamsSrc, "exp(-u * u * 18.0)") && has(beamsSrc, "smoothstep(0.92, 1.0, v)")],
-    // Intensidad: mix(DIM,1,uGlow) ×0,25 ocluida; epílogo 0,6; P día N1.
-    ["mix(DIM,1,glow) ×oclu ×epi", has(beamsSrc, "BEAM_EPI") && has(beamsSrc, "BEAM_OCCLUDE") && has(viewerSrcB, "BEAM_DIM + (1 - BEAM_DIM) * g")],
+    // G77: ADITIVO solo en haces (regla nueva), textura Everest, sin niebla propia.
+    ["aditivo solo haces", has(beamsSrc, "AdditiveBlending") && has(viewerSrcB, "prohibida en la línea") === false && !has(readFileSync("src/engine/route-line.ts", "utf8"), "AdditiveBlending") === false],
+    ["textura Everest 16x128", has(beamsSrc, "16") && has(beamsSrc, "128") && has(beamsSrc, "255,205,140") && has(beamsSrc, "255,210,150")],
+    ["cilindro unitario instanciado", has(beamsSrc, "CylinderGeometry(1, 1, 1")],
+    ["BEAM_H=420 R=12 consts", has(choreoSrc, "BEAM_H_M = 420") && has(choreoSrc, "BEAM_R_M = 12")],
+    ["ámbar/verde/naranja consts", has(choreoSrc, "BEAM_AMBER") && has(choreoSrc, "BEAM_GREEN") && has(choreoSrc, "BEAM_WALK")],
+    // G79: estado por flanco desde s_hito (única fuente progress.ts).
+    ["estado por flanco (setState)", has(beamsSrc, "setState") && has(beamsSrc, "BEAM_PASS_EPS_S")],
+    ["s_hito desde progress (PCHIP viva)", has(viewerSrcB, "progress.sFromD") && has(viewerSrcB, "única fuente")],
+    ["una vez por cruce (pulseT0)", has(beamsSrc, "pulseT0") && has(beamsSrc, "BEAM_PULSE_MS")],
+    ["G79 publicado (__beamPassed)", has(viewerSrcB, "__beamPassed")],
+    // G80: latido en el vertex con uTime, periodo ≈3,9 s, amplitud ±0,24.
+    ["latido vertex (uTime)", has(beamsSrc, "uTime") && has(beamsSrc, "BEAM_HEART_K") && has(beamsSrc, "aPhase")],
+    ["fase por instancia (i·1,7)", has(beamsSrc, "BEAM_PHASE_STEP") || has(beamsSrc, "1.7")],
+    ["fade distancia /6000", has(beamsSrc, "6000") || has(choreoSrc, "BEAM_DIST_FAR_M = 6000")],
+    ["G80 publicado (__beamBeat)", has(beamsSrc, "__beamBeat")],
+    // G81: caminante naranja sobre P(d) del rastro real, +130 m.
+    ["caminante instancia +1", has(beamsSrc, "walkerIndex") && has(beamsSrc, "setWalker")],
+    ["P(d) del rastro (trackAt)", has(viewerSrcB, "trackAt(route, dw)") && has(anchorsSrc, "export function trackAt")],
+    ["G81 publicado (__walkerOk)", has(viewerSrcB, "__walkerOk")],
+    // Oclusión ×0,25 + P día N1 + HUD ?debug=1.
+    ["oclusión ×0,25", has(beamsSrc, "BEAM_OCCLUDE") && has(viewerSrcB, "setOccluded")],
     ["P día N1 (0.16+0.84)", has(beamsSrc, "0.16 + 0.84 * uDayF")],
-    ["BEAM_H=320 W=14 consts", has(choreoSrc, "BEAM_H_M = 320") && has(choreoSrc, "BEAM_W_M = 14")],
-    ["BEAM_COLOR crema-ámbar", has(choreoSrc, "BEAM_COLOR = 0xf2d38a")],
     // Ciclo 6 frames con rayBlocked (ya existe) + HUD ?debug=1.
-    ["ciclo 6f con etiquetas", has(viewerSrcB, "frames % 6 === 0") && has(viewerSrcB, "setGlow")],
+    ["ciclo 6f con etiquetas", has(viewerSrcB, "frames % 6 === 0") && has(viewerSrcB, "setOccluded")],
     ["rayBlocked intacto", has(labelsSrc, "export function rayBlocked")],
-    ["HUD haces N·activo·glow", has(debugSrcB, "beamHud") && has(viewerSrcB, "haces ${beams.count}")],
-    // Un solo rAF: beams.ts sin rAF propio; billboard sin CPU por frame.
+    ["HUD haces N·pasados·próximo", has(debugSrcB, "beamHud") && has(beamsSrc, "beamHud(sNow")],
+    // Un solo rAF: beams.ts sin rAF propio; latido en GPU, pulso en tick.
     ["sin rAF propio", !has(beamsSrc, "requestAnimationFrame")],
-    ["uniforms declarados en GLSL", has(beamsSrc, "uniform float uW; uniform float uH;")],
+    ["uniforms declarados en GLSL", has(beamsSrc, "uniform sampler2D uMap; uniform float uDayF;")],
   ];
   const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
   gate("G74-G77-beams", bad.length === 0,
     bad.length
       ? `falta: ${bad.join(", ")}`
-      : `${checks.length} checks — InstancedMesh+ID, punta, oclusión, sin-aditivo, 6f, HUD (números en prod ?debug=1&skyfrac=1)`);
+      : `${checks.length} checks — cilindros+ID, base, oclusión, aditivo-solo-haces, estado/latido/caminante, 6f, HUD (números en prod ?debug=1&skyfrac=1)`);
 }
 
 if (failures > 0) {

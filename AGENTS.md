@@ -39,3 +39,4 @@
 - Ningún parámetro de dibujo se retroalimenta de una sonda que lo mide; las sondas informan, no gobiernan.
 - Las sombras de nube se aplican antes de la niebla: la distancia se funde con el cielo, no con la sombra.
 - Todo asset que cambia con el código lleva hash de contenido o viaja dentro del bundle; nada sin hash se pide por red.
+- Mezcla aditiva: permitida SOLO en haces §3b (+ halo E3); prohibida en la línea del rastro.

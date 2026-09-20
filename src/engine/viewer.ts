@@ -6,7 +6,6 @@ import * as THREE from "three";
 import { Sky } from "three/addons/objects/Sky.js";
 import { createRig } from "../narrative/camera-rig.ts";
 import {
-  BEAM_DIM,
   CAM_FAR,
   CAM_NEAR,
   CAM_PRESETS_S,
@@ -60,7 +59,9 @@ import {
   updateLabels,
   type LabelDef,
 } from "./labels.ts";
+import { trackAt } from "../narrative/anchors.ts";
 import { buildRouteLine, renderCount } from "./route-line.ts";
+import { epsgToWorld } from "./terrain.ts";
 import { lightingAt, sunPosition } from "./sun.ts";
 import {
   driveTelemetry,
@@ -942,16 +943,24 @@ float wgrain(vec2 lp){
   };
   const labelRts = buildLabels(labelDefs.labels, world.centerX, world.centerY, labelLayer);
 
-  // --- §3 haces verticales en los hitos (Everest reference): UNA
-  // InstancedMesh, un draw call. Uno por hito tipo != "cumbre" (base =
-  // terreno + 2, altura BEAM_H_M; la etiqueta cuelga de la punta).
-  // Intensidad por hito = mix(BEAM_DIM, 1, glowNear(s, sHito)); misma
-  // ventana ±0,02 que el rastro E3. ?beams=0 los apaga (comparativa) y
-  // suelta las etiquetas al suelo.
+  // --- §3b haces Everest en los hitos: UNA InstancedMesh de cilindros
+  // (Ø24 m × 420 m) + instancia del caminante (Ø12 m × 260 m, naranja).
+  // s_hito resuelto desde d del hito con la única fuente progress.ts
+  // (bisección sobre la PCHIP s->d viva, como actBounds). Estado pasado =
+  // s >= s_hito − 0,0005 → verde; pendiente → ámbar. Pulso +45 % 0,7 s
+  // una vez por cruce (flanco en beams.setState). La etiqueta vuelve a
+  // la BASE (terreno + 2 m); el haz sube por detrás. ?beams=0 los apaga
+  // (comparativa) y suelta las etiquetas al suelo.
   const BEAM_S: Record<string, number> = {
     pradera: 0,
     "cota-maxima": 0.3,
     "cola-caballo": 0.745,
+  };
+  // d del hito (m): labels.json la trae cuando el pipeline la escribe.
+  const BEAM_D: Record<string, number> = {
+    pradera: 0,
+    "cota-maxima": 2440.1,
+    "cola-caballo": 9670.5,
   };
   let beams: Beams | null = null;
   const beamDefs: BeamDef[] = [];
@@ -959,9 +968,14 @@ float wgrain(vec2 lp){
     labelRts.forEach((rt, rtIndex) => {
       if (!rt.hasBeam) return;
       const id = rt.def.id;
-      beamDefs.push({ rtIndex, s: BEAM_S[id] ?? 0.86 });
+      const dd = (rt.def as { d?: number }).d ?? BEAM_D[id] ?? null;
+      // §3b: s_hito desde d con la única fuente progress.ts (sFromD sobre
+      // la PCHIP viva); el fallback a BEAM_S solo si el hito no trae d.
+      const s = dd !== null && Number.isFinite(dd) ? progress.sFromD(dd) : (BEAM_S[id] ?? 0.86);
+      void BEAM_S;
+      beamDefs.push({ rtIndex, s });
     });
-    beams = buildBeams(labelRts, beamDefs, world.centerX, world.centerY);
+    beams = buildBeams(labelRts, beamDefs);
     beams.setAnchored(true);
     scene.add(beams.group);
     // ?debug=steep: mapa de pesos, sin haces (como nubes/rastro/etiquetas).
@@ -1667,8 +1681,38 @@ float wgrain(vec2 lp){
     line.setDim(routeDim);
     metrics.hasRock = 1;
     metrics.rockWeightShown = rockWeight.value;
-    // §3: luz del día N1 en los haces (cloudDayF: de noche siguen, tenues).
-    if (beams) beams.setDayF(cloudDayF);
+    // §3b: haces Everest — cada frame: uTime + pulsos (única CPU) +
+    // caminante sobre P(d) del rastro real. Cada 6 frames: estado por
+    // flanco (una vez por cruce) + oclusión rayBlocked (×0,25).
+    if (beams) {
+      beams.setDayF(cloudDayF);
+      {
+        // Caminante: P(d) del rastro real (trackAt sobre route), no del
+        // rail de cámara. Epílogo: final del bucle. Base en P(d): el
+        // cilindro (260 m, base en y=0) queda centrado a +130 m.
+        const dw = st.s >= EPILOGUE_S ? route.lengthM : Math.min(st.d, route.lengthM);
+        const pw = trackAt(route, dw);
+        const [wwx, wwy, wwz] = epsgToWorld(pw.x, pw.y, pw.z, world);
+        beams.setWalker(wwx, wwy, wwz);
+      }
+      beams.tick();
+      // G81: caminante sobre P(d) — proyección del centro del haz vs
+      // punto del rastro (≤4 px). Solo informa (?debug=1), no gobierna.
+      if (boot.debug) {
+        const dw = st.s >= EPILOGUE_S ? route.lengthM : Math.min(st.d, route.lengthM);
+        const pw = trackAt(route, dw);
+        const [px, py, pz] = epsgToWorld(pw.x, pw.y, pw.z, world);
+        const a = new THREE.Vector3(px, py, pz).project(camera);
+        const b = new THREE.Vector3(px, py + 130, pz).project(camera);
+        const ax = (a.x * 0.5 + 0.5) * window.innerWidth;
+        const ay = (-a.y * 0.5 + 0.5) * window.innerHeight;
+        const bx = (b.x * 0.5 + 0.5) * window.innerWidth;
+        const by = (-b.y * 0.5 + 0.5) * window.innerHeight;
+        const gap = Math.hypot(ax - bx, ay - by);
+        (window as unknown as { __walkerOk?: boolean }).__walkerOk = gap <= 4 || a.z > 1 || b.z > 1;
+        (window as unknown as { __walkerGap?: number }).__walkerGap = gap;
+      }
+    }
     if (frames % 6 === 0) {
       for (const rt of labelRts) {
         rt.occluded = rayBlocked(
@@ -1682,20 +1726,22 @@ float wgrain(vec2 lp){
           rt as unknown as Parameters<typeof rayBlocked>[7],
         );
       }
-      // §3: intensidad por hito con el MISMO ciclo (ya existe): mix de
-      // BEAM_DIM a 1 con uGlow (ventana ±0,02 del hito), ×0,25 si la
-      // etiqueta está ocluida (misma regla que labels), 0,6 en epílogo.
-      // updateLabels sigue costando lo mismo (solo cambió wy al anclar).
+      // §3b: estado SOLO por flanco (setState escribe aState + pulso solo
+      // al cruzar) + oclusión ×0,25. La etiqueta sigue costando lo mismo
+      // (solo cambió wy a la base).
       if (beams) {
-        const epi = st.s >= EPILOGUE_S;
+        const { passed, next } = beams.setState(st.s);
+        void passed;
+        void next;
         beamDefs.forEach((d, i) => {
-          const g = glowNear(st.s, d.s);
-          beams?.setGlow(i, BEAM_DIM + (1 - BEAM_DIM) * g, (labelRts[d.rtIndex] as (typeof labelRts)[number]).occluded, epi);
+          beams?.setOccluded(i, (labelRts[d.rtIndex] as (typeof labelRts)[number]).occluded);
         });
         if (boot.debug) {
-          metrics.beamHud = `haces ${beams.count} · activo ${beams.activeName() ?? "—"} · glow ${beams.maxGlow().toFixed(2)}`;
+          const wok = (window as unknown as { __walkerOk?: boolean }).__walkerOk ?? true;
+          metrics.beamHud = beams.beamHud(st.s, wok);
         }
         (window as unknown as { __beamGlow?: number[] }).__beamGlow = beams.debugGlows();
+        (window as unknown as { __beamPassed?: number }).__beamPassed = beams.passedCount();
       } else if (boot.debug) {
         metrics.beamHud = "haces 0 (?beams=0)";
       }

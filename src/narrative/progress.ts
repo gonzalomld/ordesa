@@ -32,6 +32,10 @@ export interface ProgressHandle {
    * PCHIP by bisection) + route end at EPILOGUE_S exactly + 1.0.
    * scroll.ts reads this via setActBounds() at boot. */
   actBounds(): number[];
+  /** §3b: inversa s(d) sobre la PCHIP s->d viva (misma bisección que
+   * actBounds — la PCHIP es la única fuente de s↔d). G79 resuelve s_hito
+   * desde d del hito sin segunda fuente. */
+  sFromD(dTarget: number): number;
 }
 
 export function parseHourParam(raw: string | null): number | null {
@@ -154,11 +158,25 @@ export function initProgress(
   }
 
   update();
+  // §3b: s_hito desde d sobre la PCHIP viva (bisección exacta, 100
+  // iteraciones como actBounds — la PCHIP es la única fuente).
+  function sFromD(dTarget: number): number {
+    const dc = Math.min(dTarget, route.lengthM);
+    let lo = 0;
+    let hi = EPILOGUE_S;
+    for (let i = 0; i < 100; i++) {
+      const mid = (lo + hi) / 2;
+      if (pchipSD(mid) < dc) lo = mid;
+      else hi = mid;
+    }
+    return (lo + hi) / 2;
+  }
   return {
     getState: () => st,
     update,
     resolved: () => res,
     actBounds,
+    sFromD,
   };
 }
 

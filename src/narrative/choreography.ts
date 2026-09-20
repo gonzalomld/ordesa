@@ -380,16 +380,31 @@ export const GLOW_MULT = 3; // halo pass width x3, drawn first
 export const GLOW_ALPHA = 0.18; // halo opacity (cream, additive)
 export const GLOW_S_WINDOW = 0.02; // uGlow 0..1 within +-0.02 s of A3/A7/A8
 
-// --- §3 HITOS (haces verticales, Everest reference): un quad por hito de
-// tipo != "cumbre". Billboard cilíndrico (solo eje Y). Base = terreno + 2;
-// la etiqueta cuelga de la punta (labels.ts ancla wy = base + BEAM_H_M).
-export const BEAM_H_M = 320; // altura del haz sobre su base (m)
-export const BEAM_W_M = 14; // anchura del quad (m)
+// --- §3b HITOS (haces Everest): cilindros instanciados con estado,
+// latido en el vertex, pulso al cruzar y caminante naranja. Base =
+// terreno + 2; la etiqueta vuelve a la BASE (labels.ts ancla wy = base,
+// el haz sube por detrás). Aditivo permitido SOLO aquí (y halo E3).
+export const BEAM_H_M = 420; // altura del haz sobre su base (m)
+export const BEAM_R_M = 12; // radio del cilindro (Ø24 m)
+export const BEAM_W_M = 24; // alias = diámetro (compat: ID pass + verify)
 export const BEAM_BASE_LIFT_M = 2; // base = punto del terreno + 2 m
-export const BEAM_COLOR = 0xf2d38a; // crema-ámbar del rastro andado × P (luz del día N1)
-export const BEAM_DIM = 0.35; // mix(0.35, 1.0, uGlow): hito no activo
-export const BEAM_EPI = 0.6; // epílogo (s >= 0.98): todos como faros
+export const BEAM_WALK_H_M = 260; // caminante: Ø12 m × 260 m
+export const BEAM_WALK_R_M = 6;
+export const BEAM_AMBER = 0xffcd96; // pendiente (s < s_hito - eps)
+export const BEAM_GREEN = 0x9fddac; // pasado (s >= s_hito - eps)
+export const BEAM_WALK = 0xffa366; // caminante naranja, sin latido
+export const BEAM_COLOR = 0xffcd96; // compat: ámbar por defecto
+export const BEAM_DIM = 1; // compat: el latido vive en el vertex, no en CPU
+export const BEAM_EPI = 0.6; // compat: en epílogo todos están pasados por estado
 export const BEAM_OCCLUDE = 0.25; // × si rayBlocked marca la etiqueta (misma regla que labels)
+export const BEAM_PASS_EPS_S = 0.0005; // pasado = s >= s_hito - eps
+export const BEAM_HEART_K = 0.0016; // latido: sin(t·0.0016 + i·1.7), periodo ≈3.9 s
+export const BEAM_HEART_A = 0.24; // amplitud ±0.24 sobre base 0.5
+export const BEAM_HEART_BASE = 0.5;
+export const BEAM_PHASE_STEP = 1.7; // fase = índice·1.7
+export const BEAM_DIST_FAR_M = 6000; // fade: clamp(1.4 - dist/6000, 0, 1)
+export const BEAM_PULSE_MS = 700; // pulso +45 % de altura, una vez por cruce
+export const BEAM_PULSE_K = 0.45;
 
 // --- E4 (line floats over decimated mesh): full-res corridor around track ---
 export const CORRIDOR_HALF_M = 150; // force LOD 0 within +-150 m of the track
