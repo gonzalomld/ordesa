@@ -1840,28 +1840,35 @@ float wgrain(vec2 lp){
         }
       }
       const g = LUMA_GRID;
-      const w = Math.max(1, Math.floor(renderer.domElement.width / 2));
-      const h = Math.max(1, Math.floor(renderer.domElement.height / 2));
+      // L1: full drawing-buffer sampling. domElement.width/height ARE
+      // buffer px (CSS px x pixelRatio); halving them read only the
+      // lower-left quarter (a shadowed wall at s=0.18). Exact g×g cell
+      // centres so __lumaGrid always holds 1024 values.
+      const w = Math.max(1, renderer.domElement.width);
+      const h = Math.max(1, renderer.domElement.height);
       const buf = new Uint8Array(w * h * 4);
       const gl = renderer.getContext() as WebGL2RenderingContext;
       gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
       let sum = 0;
-      let cnt = 0;
-      const sx = Math.max(1, Math.floor(w / g));
-      const sy = Math.max(1, Math.floor(h / g));
-      for (let yy = 0; yy < h; yy += sy) {
-        for (let xx = 0; xx < w; xx += sx) {
-          const o = (yy * w + xx) * 4;
+      const lumaGrid: number[] = [];
+      const lin = (c: number): number => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+      for (let gy = 0; gy < g; gy++) {
+        for (let gx = 0; gx < g; gx++) {
+          const fx = Math.min(w - 1, Math.floor((gx + 0.5) * (w / g)));
+          const fy = Math.min(h - 1, Math.floor((gy + 0.5) * (h / g)));
+          const o = (fy * w + fx) * 4;
           const rr = (buf[o] as number) / 255;
           const gg = (buf[o + 1] as number) / 255;
           const bb = (buf[o + 2] as number) / 255;
           // sRGB -> linear approx + Rec.709 luma
-          const lin = (c: number): number => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
-          sum += 0.2126 * lin(rr) + 0.7152 * lin(gg) + 0.0722 * lin(bb);
-          cnt++;
+          const l = 0.2126 * lin(rr) + 0.7152 * lin(gg) + 0.0722 * lin(bb);
+          sum += l;
+          lumaGrid.push(l);
         }
       }
-      (window as unknown as { __luma?: number }).__luma = cnt > 0 ? sum / cnt : 0;
+      (window as unknown as { __luma?: number }).__luma = lumaGrid.length > 0 ? sum / lumaGrid.length : 0;
+      (window as unknown as { __lumaGrid?: number[] }).__lumaGrid = lumaGrid;
+      (window as unknown as { __lumaRect?: { x: number; y: number; w: number; h: number } }).__lumaRect = { x: 0, y: 0, w, h };
       if (boot.debug) metrics.luma = (window as unknown as { __luma?: number }).__luma ?? -1;
       // G12/G17: occluder pass — terrain only, flat white, clear black.
       // Black = sky (nothing occludes). Lower-half black = void (G17).
