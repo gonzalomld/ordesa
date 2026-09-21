@@ -158,6 +158,14 @@ export const FOG_DAWN_HF_MULT = 1.2; // F2: 1.8 -> 1.2 — cuánto multiplica el
 export const FOG_DAWN_DF_ADD = 0.3; // F2: 0.4 -> 0.3 — cuánto suma al fundido de distancia (horizonte fundido al cielo)
 export const G45_DUSK_MAX = 0.12; // G45: a las 07:30/20:30 el fondo del valle funde con el cielo
 export const G45_NOON_MIN = 0.2; // G45: a las 12:00 el valle sigue leyéndose (distancia ≥ 0.2)
+// --- F2b: la niebla baja no puede ser más brillante que el cielo. fogCool
+// se deriva de uHemiSky (lleva la hora dentro): desaturado parcial
+// (gris-azul, no azul saturado), ganancia 1,6 (dispersa, algo más
+// brillante que el cielo en esa dirección, nunca el doble) y techo
+// absoluto 0,55 lineal (a mediodía luminosa, nunca quemada).
+export const FOG_COOL_DESAT = 0.55;
+export const FOG_COOL_GAIN = 1.6;
+export const FOG_COOL_MAX = 0.55;
 // --- NUBES N2b (bruma de valle, cirros, anillo lejano). Misma InstancedMesh
 // (calls no crece). Familias: 0 cúmulo (N2), 1 bruma, 2 cirro, 3 anillo.
 export const CLOUD_FAM_CUMULUS = 0;

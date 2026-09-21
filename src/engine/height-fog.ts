@@ -9,7 +9,7 @@
 // the outgoing fragment. Intensity NEVER scales with sin(solar altitude):
 // at 07:24 with the sun at 2.1 deg the valley still needs full sky light.
 import * as THREE from "three";
-import { FOG_DAWN_DF_ADD, FOG_DAWN_HF_MULT, HEMI_GRAY_MIX } from "../narrative/choreography.ts";
+import { FOG_COOL_DESAT, FOG_COOL_GAIN, FOG_COOL_MAX, FOG_DAWN_DF_ADD, FOG_DAWN_HF_MULT, HEMI_GRAY_MIX } from "../narrative/choreography.ts";
 
 export interface FogParams {
   fogTopM: number; // ceiling: full fog below, fading above
@@ -212,7 +212,13 @@ float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
     vec2 skuv = vec2(atan(vd.z, vd.x) / 6.2831853 + 0.5, clamp(vd.y * 0.5 + 0.5, 0.0, 1.0));
     haze = texture2D(uSkyMap, skuv).rgb;
   }
-  vec3 fogCool = vec3(0.70, 0.745, 0.80) * (0.35 + 0.65 * uHemiDay);
+  // F2b: fogCool DERIVA de la luz real del cielo (uHemiSky lleva la hora
+  // dentro — fuera el factor constante). Desaturado parcial (gris-azul),
+  // ganancia 1,6 (dispersa, algo más brillante, nunca el doble) y techo
+  // absoluto 0,55 lineal (nunca quemada).
+  float lumaSky = dot(uHemiSky, vec3(0.2126, 0.7152, 0.0722));
+  vec3 fogBase = mix(uHemiSky, vec3(lumaSky), ${FOG_COOL_DESAT.toFixed(2)});
+  vec3 fogCool = min(fogBase * ${FOG_COOL_GAIN.toFixed(2)}, vec3(${FOG_COOL_MAX.toFixed(2)}));
   vec3 fogWarm = haze;
   float toSun = pow(max(0.0, dot(normalize(vWPos - cameraPosition), normalize(uSunDirW))), 3.0);
   float topF = smoothstep(uFogTop - 120.0, uFogTop, vWPos.y);
