@@ -397,18 +397,20 @@ export const EPI_PITCH = 20; // deg: height = z_centroid + distPlan * tan(20)
 export const EPI_DIST_UP_PCT = 0.1; // +10 % por paso hasta que quepa el bucle
 export const EPI_DIST_UP_MAX = 0.3; // ...máximo +30 %
 export const EPI_AZ_DEG = 225; // SW of the centroid (canyon mouth side)
-// G19 rim test (brief §3): terrain stays 100 m below the SIGHTLINE.
-// RIM_USE = SLOPED corridor, CLIPPED + NARROW (E2 follow-up + endpoint
-// corrections): max MDT within [0, LOOK] along the aim ray, +-150 m across
-// (frame-width at 900 m range), measured against the ray altitude. The
-// +-300 m corridor counts the wall foot at s=0.605/0.897 (+25 at the edge,
-// 150-300 m across, while the ray flies high above the wall base) —
-// across-track terrain the frame edge never reaches at 16:9.
+// G19 rim test (brief §3, REDEFINIDA G19r): terrain stays 100 m below the
+// SIGHTLINE — pero G19 mide OBSTRUCCIÓN, no fondo: solo cuenta terreno en
+// el 70 % inicial del rayo cámara→mira (RIM_ALONG_MAX) y a menos de 60 m
+// del eje de visión (RIM_CORRIDOR_HALF_M). Más allá del 70 % es la pared
+// de fondo detrás del sujeto (s=0.891: over +47 m al 96 % del rayo,
+// across −150 — el fotograma es correcto); a ±150 m el corredor cazaba
+// ladera que el frame a 900 m nunca alcanza. El margen vertical (+100 m)
+// se mantiene.
 export const RIM_RADIUS_M = 1500; // m: DEAD (clipped to LOOK, see gate); kept so git history explains itself
 export const RIM_MARGIN_M = 100; // m: clearance below the sightline
 export const RIM_ABOVE_CAM_M = 200; // m: DEAD (sloped corridor subsumes it); kept so git history explains itself
 export const RIM_HALF_ANGLE_DEG = 30; // deg: DEAD (corridor replaced the cone); kept so git history explains itself
-export const RIM_CORRIDOR_HALF_M = 150; // m: across-track half-width (frame-width at 900 m ≈ +-150 m)
+export const RIM_CORRIDOR_HALF_M = 60; // m: G19r — across-track half-width (solo cerca del eje; antes 150: cazaba fondo)
+export const RIM_ALONG_MAX = 0.7; // G19r — fracción útil del rayo cámara→mira (más allá es fondo, no obstrucción)
 // 3B framing (brief §7 + panel answers): subject at OPEN with the text
 // panel (walker + aim in the right third), CLOSED when folded/narrow/orbit.
 // The live subjectX eases toward its target with 1-exp(-k·dt) (k=8: ~95%
@@ -438,8 +440,10 @@ export const LINE_W_FAR = 2; // px above LINE_W_D_FAR (sober line)
 export const LINE_W_NEAR = 3.5; // px below LINE_W_D_NEAR (§1 cinta: thin drone ribbon)
 export const LINE_W_D_FAR = 2000; // m: smoothstep upper edge (was 2600)
 export const LINE_W_D_NEAR = 600; // m: smoothstep lower edge (was 1200)
-export const GLOW_MULT = 3; // halo pass width x3, drawn first
-export const GLOW_ALPHA = 0.18; // halo opacity (cream, additive)
+export const GLOW_MULT = 2.4; // §2 halo continuo: width x2.4, drawn first (was x3: a poca distancia engordaba el rastro hasta parecer una cinta)
+export const GLOW_ALPHA_BASE = 0.1; // §2: halo opacity fuera de hitos — respira siempre, no solo en ventana
+export const GLOW_ALPHA_HITO = 0.18; // §2: halo opacity en el hito (el valor de antes, sigue destacando)
+export const GLOW_W_MAX_PX = 9; // §2: tope absoluto del ancho del halo en píxeles
 export const GLOW_S_WINDOW = 0.02; // uGlow 0..1 within +-0.02 s of A3/A7/A8
 
 // --- §3b HITOS (haces Everest): cilindros instanciados con estado,
@@ -550,3 +554,17 @@ export const DEBUG_STILLS: number[] = [6.75, 8.7, 14 + 4 / 60, 17.5];
 // divergence warning in verify:3a and doctor. The real axis is route.lengthM.
 export const BRIEF_LENGTH_M = 18125.9;
 export const ROUTE_DIVERGE_PCT = 2; // beyond ~360 m the track changed or the resample is wrong: stop and report
+
+// --- §5 PAREDES (roca estratificada triplanar, viewer.ts): solo los planos
+// verticales muestrean la roca (el suelo conserva la ortofoto); los estratos
+// quedan horizontales porque la V de la textura es siempre vWPos2.y.
+export const ROCK_SCALE_A = 90; // m por baldosa (escala grande)
+export const ROCK_SCALE_B = 47; // m por baldosa (escala chica, offset 0.5)
+export const ROCK_MIX = 0.75; // mezcla roca sobre ortofoto en pared
+export const ROCK_CORRIDOR_K = 0.45; // en el corredor (4k con detalle) la mezcla baja ×0.45
+export const ROCK_NORMAL_W = 0.6; // peso de la normal de roca (× steep)
+export const ROCK_FAR_M = 4500; // más allá: la roca se aplana (sin hervor)
+export const ROCK_NEAR_M = 1200; // más acá: detalle pleno
+export const ROCK_GRAIN_K = 0.25; // grano heredado, último retoque (era 0.45)
+export const ROCK_MASK_SCALE = 900; // máscara lenta entre escalas (wnoise xz/900)
+export const ROCK_WALL_POW = 4; // exponente triplanar vertical (el grano sigue con 6)

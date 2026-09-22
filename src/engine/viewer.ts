@@ -30,6 +30,16 @@ import {
   HEMI_NIGHT,
   HEMI_SKY_RGB,
   LUMA_GRID,
+  ROCK_CORRIDOR_K,
+  ROCK_FAR_M,
+  ROCK_GRAIN_K,
+  ROCK_MASK_SCALE,
+  ROCK_MIX,
+  ROCK_NEAR_M,
+  ROCK_NORMAL_W,
+  ROCK_SCALE_A,
+  ROCK_SCALE_B,
+  ROCK_WALL_POW,
   SHADOW_EPS_DEG,
   SHADOW_EXTENT_M,
   SHADOW_FAR_M,
@@ -584,7 +594,6 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         terrainMat.map = neutral;
       }
       patchTerrainMaterial(terrainMat);
-      terrainMat.customProgramCacheKey = () => "ordesa-base+corridor+n2c";
       const prev = terrainMat.onBeforeCompile.bind(terrainMat);
       terrainMat.onBeforeCompile = (s: {
         uniforms: Record<string, unknown>;
@@ -597,9 +606,14 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uNormalStrength"] = normalStrength;
         s.uniforms["uWallDeg"] = wallDeg;
         s.uniforms["uRockWeight"] = rockWeight;
+        s.uniforms["uRockMix"] = rockMix;
+        s.uniforms["uRockDebug"] = rockDebug;
         s.uniforms["uGrainK"] = grainK;
         s.uniforms["uHasCorr"] = hasCorr;
         s.uniforms["uHasNormal"] = hasNormal;
+        s.uniforms["uRock"] = rockUniform;
+        s.uniforms["uRockNormal"] = rockNormalUniform;
+        s.uniforms["uHasRock"] = hasRock;
         s.vertexShader = s.vertexShader
           // P0: own varying (vTerrainUv = uv) — never vMapUv, which three
           // only declares under USE_MAP and vanishes mapless.
@@ -611,12 +625,15 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
             "#include <common>",
             `#include <common>
 uniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNormalStrength; varying vec3 vUv2c;
-uniform float uWallDeg; uniform float uRockWeight; uniform float uGrainK;
+uniform float uWallDeg; uniform float uRockWeight; uniform float uRockMix; uniform float uRockDebug; uniform float uGrainK;
 uniform float uHasCorr; uniform float uHasNormal;
+uniform sampler2D uRock; uniform sampler2D uRockNormal; uniform float uHasRock;
 varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv;
 float gSteep = 0.0;
 float gRaw = 0.0;
 float gGrain = 0.0;
+float grockMix = 0.0;
+float gluma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 float whash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
 float wnoise(vec2 p){
   vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
@@ -626,6 +643,34 @@ float wnoise(vec2 p){
 float wgrain(vec2 lp){
   vec2 p = vec2(lp.x / 2.5, lp.y);
   return wnoise(p) * 0.5714 + wnoise(p * 2.3) * 0.2857 + wnoise(p * 5.1) * 0.1429;
+}
+// §5: roca estratificada triplanar (solo planos verticales, V = mundo.y).
+vec3 rockTriplanar(vec3 wp, vec3 wn){
+  float wx = pow(abs(wn.x), ${(ROCK_WALL_POW as number).toFixed(1)});
+  float wz = pow(abs(wn.z), ${(ROCK_WALL_POW as number).toFixed(1)});
+  float ws = max(wx + wz, 1e-4);
+  vec3 r1 = texture2D(uRock, vec2(wp.z, wp.y) / ${(ROCK_SCALE_A as number).toFixed(1)}).rgb * (wx / ws)
+          + texture2D(uRock, vec2(wp.x, wp.y) / ${(ROCK_SCALE_A as number).toFixed(1)}).rgb * (wz / ws);
+  vec3 r2 = texture2D(uRock, vec2(wp.z, wp.y) / ${(ROCK_SCALE_B as number).toFixed(1)} + 0.5).rgb * (wx / ws)
+          + texture2D(uRock, vec2(wp.x, wp.y) / ${(ROCK_SCALE_B as number).toFixed(1)} + 0.5).rgb * (wz / ws);
+  float rmx = smoothstep(0.35, 0.65, wnoise(wp.xz / ${(ROCK_MASK_SCALE as number).toFixed(1)}));
+  vec3 rock = mix(r1, r2, rmx);
+  float dfa = smoothstep(${(ROCK_FAR_M as number).toFixed(1)}, ${(ROCK_NEAR_M as number).toFixed(1)}, length(wp - cameraPosition));
+  rock = mix(vec3(gluma(rock)), rock, 0.25 + 0.75 * dfa);
+  return rock;
+}
+vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
+  float wx = pow(abs(wn.x), ${(ROCK_WALL_POW as number).toFixed(1)});
+  float wz = pow(abs(wn.z), ${(ROCK_WALL_POW as number).toFixed(1)});
+  float ws = max(wx + wz, 1e-4);
+  vec3 n1 = texture2D(uRockNormal, vec2(wp.z, wp.y) / ${(ROCK_SCALE_A as number).toFixed(1)}).rgb * (wx / ws)
+          + texture2D(uRockNormal, vec2(wp.x, wp.y) / ${(ROCK_SCALE_A as number).toFixed(1)}).rgb * (wz / ws);
+  vec3 n2 = texture2D(uRockNormal, vec2(wp.z, wp.y) / ${(ROCK_SCALE_B as number).toFixed(1)} + 0.5).rgb * (wx / ws)
+          + texture2D(uRockNormal, vec2(wp.x, wp.y) / ${(ROCK_SCALE_B as number).toFixed(1)} + 0.5).rgb * (wz / ws);
+  float rmx = smoothstep(0.35, 0.65, wnoise(wp.xz / ${(ROCK_MASK_SCALE as number).toFixed(1)}));
+  // Espacio tangente (x, y, z≈1), como nt2: el bloque de normales la suma
+  // en el mismo espacio que el grano existente (vec3(x, y, 0)).
+  return mix(n1, n2, rmx) * 2.0 - 1.0;
 }`,
           )
           .replace(
@@ -641,6 +686,22 @@ float wgrain(vec2 lp){
   gRaw = rawSteep;
   float steep = rawSteep * uRockWeight;
   gSteep = steep;
+  // §5: roca triplanar sobre la ortofoto (solo pared; el suelo conserva
+  // la cenital). Tono = color medio local (luma 1): la pared no se despega.
+  float rockK = steep * uRockMix * uHasRock * mix(1.0, ${(ROCK_CORRIDOR_K as number).toFixed(2)}, wcorr);
+  grockMix = rockK;
+  if (rockK > 0.001) {
+    vec3 rock = rockTriplanar(vWPos2, wn2);
+    if (uRockDebug > 0.5) {
+      // §5 ?debug=rock: la roca tal cual sobre la geometría — sin tono de
+      // ortofoto ni grano posterior (la luz/tonemapping siguen: el contrato
+      // de color no cambia, solo se ve la textura).
+      alb = rock;
+    } else {
+      vec3 tono = alb / max(gluma(alb), 1e-3);
+      alb = mix(alb, rock * tono, clamp(rockK, 0.0, 1.0));
+    }
+  }
   if (steep > 0.001) {
     float rep = 38.0;
     float wx = pow(abs(wn2.x), 6.0);
@@ -654,7 +715,11 @@ float wgrain(vec2 lp){
     }
     gGrain = grain;
     float grano = grain * uGrainK * steep;
-    alb *= (1.0 + grano);
+    if (uRockDebug > 0.5) {
+      alb = alb * 1.0;
+    } else {
+      alb *= (1.0 + grano);
+    }
   }
   diffuseColor.rgb = alb;
 #endif`,
@@ -678,13 +743,34 @@ float wgrain(vec2 lp){
     float hY = wgrain(pxX + vec2(0.0, eN / repN)) * (wxN / wsumN) + wgrain(pxZ + vec2(0.0, eN / repN)) * (wzN / wsumN);
     latNV = vec2(hX - hC, hY - hC) * (repN / max(eN, 1e-4)) * 0.02;
   }
+  // §5: la normal de roca se suma con peso steep · 0,6 (solo pared).
+  vec3 rockPert = vec3(0.0);
+  if (uHasRock > 0.5 && gSteep > 0.001) {
+    float dfaN = smoothstep(${(ROCK_FAR_M as number).toFixed(1)}, ${(ROCK_NEAR_M as number).toFixed(1)}, length(vWPos2 - cameraPosition));
+    vec3 rnT = rockNormalTriplanar(vWPos2, wnN);
+    rockPert = vec3(rnT.x, rnT.y, 0.0) * (${(ROCK_NORMAL_W as number).toFixed(2)} * dfaN);
+  }
   vec3 nt2 = texture2D(uNormalMap2, vTerrainUv).rgb * 2.0 - 1.0;
   vec2 mixN = mix(nt2.xy, latNV, clamp(gSteep, 0.0, 1.0));
   mixN *= uNormalStrength * max(uHasNormal, clamp(gSteep, 0.0, 1.0));
-  normal = normalize(normal + vec3(mixN.x, mixN.y, 0.0) * 0.35);
+  normal = normalize(normal + vec3(mixN.x, mixN.y, 0.0) * 0.35 + rockPert * clamp(gSteep, 0.0, 1.0));
 }`,
           );
-        if (boot.steep) {
+        // §5 sonda (informa, no gobierna): ¿entró el GLSL de roca al programa?
+        // Solo tras bandera (debug/rock/steep); producción no la lee.
+        if (boot.debug || boot.rock || boot.steep) {
+          (window as unknown as { __rockGLSL?: unknown }).__rockGLSL = {
+            hasRockFn: s.fragmentShader.includes("rockTriplanar(vec3"),
+            hasRockCall: s.fragmentShader.includes("rockTriplanar(vWPos2"),
+            hasDebug: s.fragmentShader.includes("uRockDebug"),
+            hasSteepMap: s.fragmentShader.includes("dithering_fragment") && s.fragmentShader.includes("gRaw"),
+            rockMixVal: (rockMix as { value: number }).value,
+            hasRockVal: (hasRock as { value: number }).value,
+            grainVal: (grainK as { value: number }).value,
+            wallDegVal: (wallDeg as { value: number }).value,
+          };
+        }
+        if (boot.steep && !boot.rock) {
           const prevSteep = terrainMat.onBeforeCompile.bind(terrainMat);
           terrainMat.onBeforeCompile = (s2: {
             uniforms: Record<string, unknown>;
@@ -712,9 +798,18 @@ float wgrain(vec2 lp){
   const normalStrength = { value: 1.0 };
   const wallDeg = { value: 30 };
   const rockWeight = { value: 1.0 };
-  const grainK = { value: 0.45 };
+  const grainK = { value: ROCK_GRAIN_K };
+  const rockMix = { value: ROCK_MIX };
+  const rockDebug = { value: boot.rock ? 1 : 0 };
   const hasCorr = { value: 0 };
   const hasNormal = { value: 0 };
+  const rockUniform = { value: null as THREE.Texture | null };
+  const rockNormalUniform = { value: null as THREE.Texture | null };
+  const hasRock = { value: 0 };
+  function armRockTex(t: THREE.Texture): void {
+    t.wrapS = THREE.RepeatWrapping;
+    t.wrapT = THREE.RepeatWrapping;
+  }
 
   rebuildTerrain();
   gate.setProgress(0.62, 1);
@@ -867,19 +962,87 @@ float wgrain(vec2 lp){
   await nextFrame();
 
   // corridor + normal + rock behind (never block first paint)
+  // §5: la roca entra por UNIFORMES (uRock/uRockNormal/uHasRock), no por
+  // código: el programa es el mismo con y sin textura (?debug=rock solo
+  // mueve uRockDebug, que también es uniforme). Clave de caché única.
+  // uHasRock es UNIFORME VIVO (objeto compartido, como uHasCorr): la GPU lo
+  // lee cada draw sin recompilar — NO necesita needsUpdate. (needsUpdate
+  // recrea el programa CON el valor viejo: esa era la carrera que dejaba
+  // rockK = 0 para siempre. Lección: los flags de textura son valores, no
+  // código; viajan como los demás pesos.)
+  async function armTex(
+    asset: string | undefined,
+    srgb: boolean,
+    apply: (t: THREE.Texture) => void,
+  ): Promise<void> {
+    if (!asset) return;
+    try {
+      const t = await loadTex(`/${asset}`, srgb);
+      armRockTex(t);
+      apply(t);
+      // El flag es valor de uniforme: la GPU lo lee en el próximo draw.
+      // needsUpdate SOLO si el MATERIAL lo pide (map nuevo, no pesos).
+    } catch {
+      /* sin textura: la neutra 1×1 sigue armada */
+    }
+  }
+  // §5 sonda (informa, no gobierna): 1 cuando albedo+normal de roca están
+  // subidos. La escribe armTex, no los .then.
+  (window as unknown as { __hasRock?: number }).__hasRock = 0;
   if (corrAsset) {
-    loadTex(`/${corrAsset}`, true).then((t) => {
+    void armTex(corrAsset, true, (t) => {
       corridorUniform.value = t;
       hasCorr.value = 1;
-      if (terrainMat) terrainMat.needsUpdate = true;
-    }).catch(() => undefined);
+    });
   }
   if (meta.assets?.["terrain-normal"] && texLevel !== "lite") {
-    loadTex(`/${meta.assets["terrain-normal"]}`, false).then((t) => {
+    void armTex(meta.assets["terrain-normal"], false, (t) => {
       normalUniform.value = t;
       hasNormal.value = 1;
-      if (terrainMat) terrainMat.needsUpdate = true;
-    }).catch(() => undefined);
+    });
+  }
+  // §5: roca estratificada (albedo + normal, RepeatWrapping — el mosaico
+  // vive en world-xz, no en UV). Detrás del primer pintado, como el resto.
+  // Neutras 1×1 desde el arranque + uHasRock = 1 SOLO cuando las DOS reales
+  // están subidas (el programa ya existe: sin bifurcación de shader).
+  {
+    const pxR = new Uint8Array([185, 178, 164, 255]);
+    const neutralR = new THREE.DataTexture(pxR, 1, 1, THREE.RGBAFormat);
+    neutralR.colorSpace = THREE.SRGBColorSpace;
+    neutralR.wrapS = THREE.RepeatWrapping;
+    neutralR.wrapT = THREE.RepeatWrapping;
+    neutralR.needsUpdate = true;
+    rockUniform.value = neutralR;
+    const pxN = new Uint8Array([128, 128, 255, 255]);
+    const neutralN = new THREE.DataTexture(pxN, 1, 1, THREE.RGBAFormat);
+    neutralN.wrapS = THREE.RepeatWrapping;
+    neutralN.wrapT = THREE.RepeatWrapping;
+    neutralN.needsUpdate = true;
+    rockNormalUniform.value = neutralN;
+  }
+  if (meta.assets?.["rock-albedo"] && meta.assets?.["rock-normal"] && texLevel !== "lite") {
+    const rockA = meta.assets["rock-albedo"];
+    const rockN = meta.assets["rock-normal"];
+    // Las DOS reales se suben por el mismo camino que corridor/normal:
+    // el flag es el valor del uniforme (sin needsUpdate, sin carrera).
+    void armTex(rockA, true, (t) => {
+      const oldA = rockUniform.value;
+      rockUniform.value = t;
+      if ((rockNormalUniform.value as THREE.DataTexture).image?.width !== 1) {
+        hasRock.value = 1;
+        (window as unknown as { __hasRock?: number }).__hasRock = 1;
+      }
+      if (oldA && (oldA as THREE.DataTexture).image?.width === 1) oldA.dispose();
+    });
+    void armTex(rockN, false, (t) => {
+      const oldN = rockNormalUniform.value;
+      rockNormalUniform.value = t;
+      if ((rockUniform.value as THREE.DataTexture).image?.width !== 1) {
+        hasRock.value = 1;
+        (window as unknown as { __hasRock?: number }).__hasRock = 1;
+      }
+      if (oldN && (oldN as THREE.DataTexture).image?.width === 1) oldN.dispose();
+    });
   }
 
   // clouds (N2-fix: barrido s ∈ [0, 0,97] SIN epílogo — la cámara del
@@ -1084,18 +1247,32 @@ float wgrain(vec2 lp){
       wLab.textContent = `peso roca ${Math.round(w * 100)} %`;
       rockWeight.value = w;
     });
-    const gLab = el("div", "hud-label", "grano 0,45");
+    const gLab = el("div", "hud-label", "grano 0,25");
     const gIn = document.createElement("input");
     gIn.type = "range";
     gIn.min = "0";
     gIn.max = "1";
     gIn.step = "0.05";
-    gIn.value = "0.45";
+    gIn.value = String(ROCK_GRAIN_K);
     gIn.setAttribute("aria-label", "intensidad del grano lateral");
     gIn.addEventListener("input", () => {
       const k = Number(gIn.value);
       gLab.textContent = `grano ${k.toFixed(2).replace(".", ",")}`;
       grainK.value = k;
+    });
+    // §5: MEZCLA ROCA (ROCK_MIX) — instrumento tras ?debug=1, como el resto.
+    const rLab = el("div", "hud-label", `mezcla roca ${Math.round(ROCK_MIX * 100)} %`);
+    const rIn = document.createElement("input");
+    rIn.type = "range";
+    rIn.min = "0";
+    rIn.max = "1";
+    rIn.step = "0.05";
+    rIn.value = String(ROCK_MIX);
+    rIn.setAttribute("aria-label", "mezcla de roca triplanar");
+    rIn.addEventListener("input", () => {
+      const k = Number(rIn.value);
+      rLab.textContent = `mezcla roca ${Math.round(k * 100)} %`;
+      rockMix.value = k;
     });
     const lodRow = el("div", "hud-row");
     // §4 correction: ONE budget level — 2→3, never 2→4. Step 4 halves the
@@ -1120,7 +1297,7 @@ float wgrain(vec2 lp){
       });
       lodRow.appendChild(b);
     }
-    hud.append(timeLab, cloudLab, cloudIn, nLab, nIn, tLab, tIn, wLab, wIn, gLab, gIn, lodRow);
+    hud.append(timeLab, cloudLab, cloudIn, nLab, nIn, tLab, tIn, wLab, wIn, gLab, gIn, rLab, rIn, lodRow);
     if (boot.steep) {
       hud.append(el("div", "hud-label", "mapa: R = peso geo · G = efectivo · B = grano"));
     }

@@ -12,8 +12,11 @@ import { Line2 } from "three/addons/lines/Line2.js";
 import { LineGeometry } from "three/addons/lines/LineGeometry.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import {
-  GLOW_ALPHA,
+  BEAM_DIST_FAR_M,
+  GLOW_ALPHA_BASE,
+  GLOW_ALPHA_HITO,
   GLOW_MULT,
+  GLOW_W_MAX_PX,
   LINE_W_D_FAR,
   LINE_W_D_NEAR,
   LINE_W_FAR,
@@ -31,8 +34,10 @@ export interface RouteLine {
   group: THREE.Group;
   setDim(f: number): void;
   setProgressDist(dM: number): void;
-  /** E3: call every frame — width from camera distance, glow from journey s. */
-  setFraming(camDistM: number, glow01: number): void;
+  /** §2 halo continuo: width x2.4 + camDist fade (mismo desvanecido que
+   * los haces); el corte progresivo y los dos colores los hereda del
+   * patchLine compartido — solo cambian anchura y opacidad. */
+  setFraming(camDistM: number, glow01: number, haloFade?: number): void;
   /** BLOQUEANTE isolation probe: expose the shared uniform for tests. */
   debugProgressDist(): number;
   /** ?debug=trackdist: gradient probe (blue Pradera → red Cola). */
@@ -233,9 +238,14 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
   ghost.renderOrder = 5;
   solid.renderOrder = 6;
   group.add(ghost, solid);
-  // E3 halo: same geometry, drawn first, width x3, additive cream at 18%.
-  const haloMat = mk(THREE.LessEqualDepth, GLOW_ALPHA);
-  haloMat.blending = THREE.AdditiveBlending;
+  // §2 halo continuo: misma geometría, mismo corte progresivo y mismos
+  // dos colores (patchLine compartido) — solo cambian anchura y opacidad.
+  // NormalBlending (igual que el trazo): el aditivo sumaba dos veces en
+  // cada unión de segmento y producía las cuentas. Sin premultiplicado:
+  // el shader del Line2 escribe diffuseColor rgb sin multiplicar por el
+  // alfa, así que premultipliedAlpha oscurecería el color.
+  const haloMat = mk(THREE.LessEqualDepth, GLOW_ALPHA_HITO);
+  haloMat.blending = THREE.NormalBlending;
   const halo = new Line2(geo, haloMat);
   halo.frustumCulled = false;
   halo.renderOrder = 4;
@@ -256,15 +266,16 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
   const idBuf = new Uint8Array(256 * 144 * 4);
   let ghostProbe = false;
   let drapedStep = meshStep;
-  // §1 cinta: setFraming owns halo.visible (glow 0 => no draw at all);
-  // setDim only scales opacities, never re-enables the draw.
+  // §2 halo continuo: siempre visible (base 0,10, hito 0,18);
+  // setDim solo escala opacidades, nunca re-apaga el dibujo.
   let lastGlow = 0;
+  let lastFade = 1;
   return {
     group,
     setDim(f: number) {
       ghostMat.opacity = (ghostProbe ? 1 : 0.25) * f;
       solidMat.opacity = 1 * f;
-      haloMat.opacity = GLOW_ALPHA * lastGlow * f;
+      haloMat.opacity = (GLOW_ALPHA_BASE + (GLOW_ALPHA_HITO - GLOW_ALPHA_BASE) * lastGlow) * lastFade * f;
     },
     setProgressDist(dM: number) {
       uProgressDist.value = dM;
@@ -299,7 +310,7 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
       return renderCount(renderer, idTarget, idBuf, idScene, camera, 256, 144,
         (rr, gg, bb) => rr > 4 || gg > 4 || bb > 4);
     },
-    setFraming(camDistM: number, glow01: number) {
+    setFraming(camDistM: number, glow01: number, haloFade?: number) {
       // §1 cinta: ONE width (3.5 px under 600 m, 2 px beyond 2000 m) for
       // walked + pending — no geometry split, pending reads via colour+alpha.
       const f = Math.min(1, Math.max(0, (LINE_W_D_FAR - camDistM) / (LINE_W_D_FAR - LINE_W_D_NEAR)));
@@ -307,13 +318,17 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
       const w = LINE_W_FAR + (LINE_W_NEAR - LINE_W_FAR) * s;
       solidMat.linewidth = w;
       ghostMat.linewidth = w;
-      haloMat.linewidth = w * GLOW_MULT;
-      // §1 cinta: outside the milestone window the halo does not draw at
-      // all (visible=false), it does not just fade to opacity 0.
+      // §2: halo x2.4 con tope absoluto 9 px — sin tope engordaba a cinta.
+      haloMat.linewidth = Math.min(w * GLOW_MULT, GLOW_W_MAX_PX);
+      // §2: el halo se dibuja SIEMPRE (base fuera de hitos, hito dentro);
+      // el tramo por venir a >3 km de la cámara no se dibuja (ruido):
+      // mismo desvanecido que los haces, clamp(1.4 - dist/6000, 0, 1).
       const g = Math.min(1, Math.max(0, glow01));
       lastGlow = g;
-      haloMat.opacity = GLOW_ALPHA * g;
-      halo.visible = g > 0.001;
+      const fade = haloFade ?? Math.min(1, Math.max(0, 1.4 - camDistM / BEAM_DIST_FAR_M));
+      lastFade = fade;
+      haloMat.opacity = (GLOW_ALPHA_BASE + (GLOW_ALPHA_HITO - GLOW_ALPHA_BASE) * g) * fade;
+      halo.visible = true;
     },
   };
 }

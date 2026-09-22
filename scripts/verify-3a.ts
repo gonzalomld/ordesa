@@ -5,7 +5,7 @@
 // · G16 nod · G17 void · G18 align · G19 rim · + OrbitControls anti-bundle
 // (C10: chunk-name based, the minifier mangles identifiers).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CAM_RAIL_SAMPLES, CORRIDOR_HALF_M, EPI_PITCH, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G23_COVERAGE, G23_Y_MAX, G23_Y_MIN, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_MAX_DEG, G66_ACCEL_MAX_DEG, G66_PITCH_MAX_DEG, G66_QUAT_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
+import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CAM_RAIL_SAMPLES, CORRIDOR_HALF_M, EPI_PITCH, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G23_COVERAGE, G23_Y_MAX, G23_Y_MIN, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_MAX_DEG, G66_ACCEL_MAX_DEG, G66_PITCH_MAX_DEG, G66_QUAT_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_ALONG_MAX, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
 import { alongTrackRun, bakeCamRail, bisectSunset, followAt, quatDistDeg, quatYXZ, resolveAnchors, resolveFollowProfile, ropeHeadingDeg, trackAt, zRawAt } from "../src/narrative/anchors.ts";
 import { resolveFollowSafety } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
@@ -800,8 +800,11 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
     `cota min ${minCam.toFixed(0)} m en s=${minCamS.toFixed(3)} (need ≥1780), holgura min ${minHolg.toFixed(0)} m en s=${minHolgS.toFixed(3)} (need ≥120) — techo niebla 1620 m`);
 }
 
-// --- G19 rim (C1 baked rail): terrain stays 100 m below the SIGHTLINE.
-// Same sloped+clipped corridor, fed with the baked cam/aim (world->EPSG).
+// --- G19 rim (C1 baked rail, REDEFINIDA G19r): terrain stays 100 m below
+// the SIGHTLINE — pero G19 mide OBSTRUCCIÓN, no fondo: solo cuenta terreno
+// en el 70 % inicial del rayo (RIM_ALONG_MAX) y a menos de 60 m del eje
+// (RIM_CORRIDOR_HALF_M). Same sloped+clipped corridor, fed with the baked
+// cam/aim (world->EPSG).
 {
   const stridePx = 4;
   const stepM = meta.resX * stridePx;
@@ -813,6 +816,8 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
   void RIM_ABOVE_CAM_M;
   let rimWorst = -Infinity;
   let rimAt = 0;
+  let rimFrac = 0;
+  let rimAcross = 0;
   for (let i = 0; i <= STEPS; i++) {
     const s = i / STEPS;
     if (s >= EPILOGUE_S) continue;
@@ -827,11 +832,16 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
     const rayDy = (aimYs[i] as number) - (camAlts[i] as number);
     const rayDp = Math.max(1e-6, Math.hypot((aimXs[i] as number) - (camWX[i] as number), (aimZs[i] as number) - (camWZ[i] as number)));
     const camAlt = camAlts[i] as number;
-    // SLOPED + CLIPPED corridor: along in [0, planDp] (never past the aim —
-    // past it the ray leaves the frame through the lookAt point).
+    // SLOPED + CLIPPED corridor (G19r): along in [0, RIM_ALONG_MAX·planDp]
+    // (más allá es fondo, no obstrucción) y across en ±RIM_CORRIDOR_HALF_M
+    // (solo cerca del eje). Nunca pasado el aim: past it the ray leaves
+    // the frame through the lookAt point.
     const planDp = Math.max(1e-6, Math.hypot((aimXs[i] as number) - (camWX[i] as number), (aimZs[i] as number) - (camWZ[i] as number)));
+    const alongMax = Math.min(planDp, RIM_ALONG_MAX * planDp);
     let worstLocal = -Infinity;
-    for (let along = 0; along <= planDp; along += stepM) {
+    let worstFrac = 0;
+    let worstAcross = 0;
+    for (let along = 0; along <= alongMax; along += stepM) {
       const rayAlt = camAlt + (rayDy * along) / rayDp;
       for (let across = -RIM_CORRIDOR_HALF_M; across <= RIM_CORRIDOR_HALF_M; across += stepM) {
         const ex = camEpsgX + fx * along + -fy * across;
@@ -840,18 +850,24 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
         const r2 = Math.min(H - 1, Math.max(0, Math.round((meta.originY - ey) / meta.resY - 0.5)));
         const z = zFull(c, r2);
         const over = z - rayAlt - RIM_MARGIN_M; // >0: terrain in frame above the sightline
-        if (over > worstLocal) worstLocal = over;
+        if (over > worstLocal) {
+          worstLocal = over;
+          worstFrac = along / planDp;
+          worstAcross = across;
+        }
       }
     }
     if (worstLocal > rimWorst) {
       rimWorst = worstLocal;
       rimAt = i;
+      rimFrac = worstFrac;
+      rimAcross = worstAcross;
     }
   }
   gate("G19-rim", rimWorst <= 0,
     rimWorst <= 0
-      ? `terrain < sightline+100 everywhere s<0.98 (best margin ${(-rimWorst).toFixed(0)} m)`
-      : `terrain EXCEEDS sightline+100 by ${rimWorst.toFixed(0)} m at s=${(rimAt / STEPS).toFixed(4)} — wall through the frame`);
+      ? `terrain < sightline+100 in useful ray (70%, ±60 m) everywhere s<0.98 (best margin ${(-rimWorst).toFixed(0)} m)`
+      : `terrain EXCEEDS sightline+100 by ${rimWorst.toFixed(0)} m at s=${(rimAt / STEPS).toFixed(4)} (along ${(rimFrac * 100).toFixed(0)}%, across ${rimAcross.toFixed(0)} m) — MURO real: along<70% y |across|<60 m`);
 }
 
 // --- G23 walker-frame (C1 baked rail): P(d) projects at y in [-0.6,-0.3]

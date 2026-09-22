@@ -41,3 +41,4 @@
 - La niebla baja y la bruma de distancia son dos colores: la baja es fría salvo donde mira al sol o en su techo; la de distancia es el cielo.
 - Todo asset que cambia con el código lleva hash de contenido o viaja dentro del bundle; nada sin hash se pide por red.
 - Mezcla aditiva: permitida SOLO en haces §3b (+ halo E3); prohibida en la línea del rastro.
+- G19 mide obstrucción, no fondo: solo cuenta terreno en el 70 % inicial del rayo y a menos de 60 m del eje de visión.

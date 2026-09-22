@@ -38,7 +38,11 @@
     "terrain-normal": "assets/terrain-normal.1c34820c.webp",
     "clouds-atlas": "assets/clouds-atlas.0239d658.webp",
     "clouds-atlas-png": "assets/clouds-atlas.0239d658.png",
-    "acts": "assets/acts.9c93da4e.json"
+    "acts": "assets/acts.9c93da4e.json",
+    "rock-albedo": "assets/rock-albedo.f7354e8d.webp",
+    "rock-albedo-png": "assets/rock-albedo.f7354e8d.png",
+    "rock-normal": "assets/rock-normal.a5d58aa3.webp",
+    "rock-normal-png": "assets/rock-normal.a5d58aa3.png"
   },
   "sizesBytes": {
     "terrain-base": 1701032,
@@ -48,7 +52,11 @@
     "terrain-normal": 544238,
     "clouds-atlas": 64076,
     "clouds-atlas-png": 321969,
-    "acts": 29911
+    "acts": 29911,
+    "rock-albedo": 16908,
+    "rock-albedo-png": 311911,
+    "rock-normal": 30566,
+    "rock-normal-png": 377754
   },
   "corridorMarginM": 400,
   "flight": {

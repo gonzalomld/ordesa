@@ -3,8 +3,13 @@ import sharp from "sharp";
 import { bakeCamRail, resolveAnchors, resolveFollowProfile } from "../src/narrative/anchors.ts";
 import { resolveFollowSafety } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
-import { CAM_CLEARANCE_M, RIM_CORRIDOR_HALF_M, RIM_MARGIN_M } from "../src/narrative/choreography.ts";
+import { CAM_CLEARANCE_M, RIM_ALONG_MAX, RIM_CORRIDOR_HALF_M, RIM_MARGIN_M } from "../src/narrative/choreography.ts";
 
+// G19r: top-9 de infracciones con la definición VIEJA (rayo completo,
+// ±150 m) y la NUEVA (70 % útil, ±60 m), en dos columnas. Misma física
+// que el gate de verify-3a.ts (baked cam/aim, sloped+clipped).
+// Uso: npx tsx scripts/g19diag.ts [s]  (sin arg: barrido 0.86-0.93;
+// con s: solo ese s, p. ej. 0.891).
 const route = JSON.parse(readFileSync("public/assets/route.json", "utf8")) as {
   x: number[]; y: number[]; z_mdt: number[]; z_raw?: number[]; d: number[]; cumClimb: number[]; lengthM: number;
 };
@@ -55,7 +60,30 @@ const W = meta.width;
 const H = meta.height;
 const zFull = (c: number, rr: number): number =>
   (pngMeta.minZ + (pngRaw[(rr * W + c) * 3] as number) * 256 + (pngRaw[(rr * W + c) * 3 + 1] as number));
+// Definiciones: VIEJA (rayo completo, ±150) vs NUEVA G19r (70 %, ±60).
+const OLD_HALF = 150;
 const NP = 9;
+interface Cand { over: number; along: number; across: number; ex: number; ey: number }
+function scan(
+  S: number, alongMax: number, halfM: number,
+  camEpsgX: number, camEpsgY: number, fx: number, fy: number,
+  camY: number, aimY: number, rayDp: number, planDp: number,
+): Cand[] {
+  const cand: Cand[] = [];
+  for (let along = 0; along <= alongMax; along += stepM) {
+    const rayAlt = camY + ((aimY - camY) * along) / rayDp;
+    for (let across = -halfM; across <= halfM; across += stepM) {
+      const ex = camEpsgX + fx * along + -fy * across;
+      const ey = camEpsgY + fy * along + fx * across;
+      const c = Math.min(W - 1, Math.max(0, Math.round((ex - meta.originX) / meta.resX - 0.5)));
+      const r2 = Math.min(H - 1, Math.max(0, Math.round((meta.originY - ey) / meta.resY - 0.5)));
+      const over = zFull(c, r2) - rayAlt - RIM_MARGIN_M;
+      cand.push({ over, along, across, ex, ey });
+    }
+  }
+  cand.sort((a, b2) => b2.over - a.over);
+  return cand;
+}
 for (const S of SARG === 0 ? [0.86, 0.87, 0.88, 0.89, 0.891, 0.899, 0.9, 0.91, 0.92, 0.93] : [SARG]) {
   const camX = rail.fCamX(S) - cx;
   const camY = rail.fCamY(S);
@@ -70,26 +98,24 @@ for (const S of SARG === 0 ? [0.86, 0.87, 0.88, 0.89, 0.891, 0.899, 0.9, 0.91, 0
   const fl = Math.max(1e-6, Math.hypot(fx, fy));
   fx /= fl;
   fy /= fl;
-  const rayDy = aimY - camY;
   const rayDp = Math.max(1e-6, Math.hypot(aimX - camX, aimZ - camZ));
   const planDp = rayDp;
-  // top-N peores: array de candidatos
-  const cand: { over: number; along: number; across: number; ex: number; ey: number }[] = [];
-  for (let along = 0; along <= planDp; along += stepM) {
-    const rayAlt = camY + (rayDy * along) / rayDp;
-    for (let across = -RIM_CORRIDOR_HALF_M; across <= RIM_CORRIDOR_HALF_M; across += stepM) {
-      const ex = camEpsgX + fx * along + -fy * across;
-      const ey = camEpsgY + fy * along + fx * across;
-      const c = Math.min(W - 1, Math.max(0, Math.round((ex - meta.originX) / meta.resX - 0.5)));
-      const r2 = Math.min(H - 1, Math.max(0, Math.round((meta.originY - ey) / meta.resY - 0.5)));
-      const over = zFull(c, r2) - rayAlt - RIM_MARGIN_M;
-      cand.push({ over, along, across, ex, ey });
-    }
-  }
-  cand.sort((a, b2) => b2.over - a.over);
+  const camDist = (along: number, across: number): number => Math.hypot(along, across);
+  const oldTop = scan(S, planDp, OLD_HALF, camEpsgX, camEpsgY, fx, fy, camY, aimY, rayDp, planDp).slice(0, NP);
+  const newTop = scan(S, Math.min(planDp, RIM_ALONG_MAX * planDp), RIM_CORRIDOR_HALF_M, camEpsgX, camEpsgY, fx, fy, camY, aimY, rayDp, planDp).slice(0, NP);
   const d = pchipSD(S);
+  const distCam = Math.hypot(camX - aimX, camZ - aimZ);
+  void distCam;
   console.log(`s=${S.toFixed(3)} d=${d.toFixed(0)} camAlt=${camY.toFixed(0)} camEx=${camEpsgX.toFixed(0)} camEy=${camEpsgY.toFixed(0)} aimAlt=${aimY.toFixed(0)} planDp=${planDp.toFixed(0)} mode=${rail.mode[Math.min(rail.n, Math.round(S * rail.n))]}`);
-  for (const t of cand.slice(0, NP)) {
-    console.log(`   over=${t.over.toFixed(0)} along=${t.along.toFixed(0)} across=${t.across.toFixed(0)} ex=${t.ex.toFixed(0)} ey=${t.ey.toFixed(0)} zTerr=${(t.over + camY + ((aimY - camY) * t.along) / rayDp + RIM_MARGIN_M).toFixed(0)}`);
+  console.log(`   --- VIEJA (rayo 100%, ±${OLD_HALF} m)  vs  NUEVA G19r (rayo ${(RIM_ALONG_MAX * 100).toFixed(0)}%, ±${RIM_CORRIDOR_HALF_M} m) ---`);
+  for (let k = 0; k < NP; k++) {
+    const o = oldTop[k] as Cand;
+    const n = newTop[k] as Cand;
+    const zO = (o.over + camY + ((aimY - camY) * o.along) / rayDp + RIM_MARGIN_M).toFixed(0);
+    const zN = (n.over + camY + ((aimY - camY) * n.along) / rayDp + RIM_MARGIN_M).toFixed(0);
+    console.log(
+      `   #${k + 1} VIEJA over=${o.over.toFixed(0)} along=${o.along.toFixed(0)}(${(100 * o.along / planDp).toFixed(0)}%) across=${o.across.toFixed(0)} dist=${camDist(o.along, o.across).toFixed(0)} ex=${o.ex.toFixed(0)} ey=${o.ey.toFixed(0)} zTerr=${zO}` +
+      `  || NUEVA over=${n.over.toFixed(0)} along=${n.along.toFixed(0)}(${(100 * n.along / planDp).toFixed(0)}%) across=${n.across.toFixed(0)} dist=${camDist(n.along, n.across).toFixed(0)} zTerr=${zN}`,
+    );
   }
 }

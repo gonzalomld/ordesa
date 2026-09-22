@@ -97,6 +97,8 @@ export interface BootQuery {
   family: number;
   /** N2c: ?debug=cloudshadow — terreno en gris = factor de sombra (verlo). */
   cloudshadow: boolean;
+  /** §5: ?debug=rock — solo la roca triplanar, sin ortofoto ni luz (verla). */
+  rock: boolean;
   /** N2c: ?cloudshadow=0 — sombras desactivadas (G55: niebla intacta). */
   cloudshadowOff: boolean;
 }
@@ -147,6 +149,7 @@ export function parseBootQuery(): BootQuery {
     atlas: q.get("debug") === "atlas",
     family,
     cloudshadow: q.get("debug") === "cloudshadow",
+    rock: q.get("debug") === "rock",
     cloudshadowOff: q.get("cloudshadow") === "0",
     lod: lodN !== null && Number.isFinite(lodN) && [1, 2, 3].includes(lodN) ? lodN : null,
     beams: q.get("beams") !== "0",
