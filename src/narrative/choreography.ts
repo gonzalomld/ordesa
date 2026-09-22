@@ -354,6 +354,20 @@ export const FOLLOW_NUDOS_S = [0.0, 0.03, 0.18, 0.38, 0.57, 0.77, 0.92, 0.98]; /
 // de niebla 1620). MEDIDO paso a): cota SI (1821-1839), escalera OFF
 // (direct en s<0.02), holgura 83/88/117 (<120 en s<0.03: el anclaje
 // sigue sobre la ladera 1413-1480, no sobre el prado). Paso b) necesario.
+// C2b EL SEGUNDO MURO (el del regreso): PROBADO y REVERTIDO 22-sep.
+// Con la visualización que enseña la magnitud que falla (scripts/g19diag.ts
+// top-9 + g19lat.ts anclaje/normal/signo): el muro en s=0.891 está a
+// along 1640/1716 (96 % del rayo, a 1,5 km de la cámara), across −150
+// (borde del corredor); en s=0.899 el over es +6 (ruido).
+// Bulto [0.84,0]-[0.87,300]-[0.89,450]-[0.92,300]-[0.95,0]: over
+// +47→+325 m en s=0.899, G4 2.00→2.78, G66 maxAccel 0.96→1.43,
+// G9 1,9→5,2 %. Paso 2 del brief (600): +350 m, G4 5.08, G9 5,7 % racha
+// 41. El mecanismo no puede: el anclaje está FRENTE al muro (no al lado)
+// y el rayo pivota en la mira (~4 m de palanca por 450 m de bulto).
+// Además el signo valle-por-muestra es inestable aquí (mPos≈mNeg ±2-4 %:
+// sgn −1 en 0.891, +1 en 0.899) y el bulto se convierte en latigazo.
+// Candidatos para otra fase: corredor G19 ±60 m o mira al caminante.
+// Bulto único del Mirador (sin cambios).
 export const LATERAL_KNOTS: [number, number][] = [
   [0.0, 250],
   [0.02, 250],
@@ -363,7 +377,7 @@ export const LATERAL_KNOTS: [number, number][] = [
   [0.3, 500],
   [0.33, 350],
   [0.36, 0],
-];
+]; // C2b: sin segundo bulto (probado 450/600 y revertido — ver nota arriba)
 export const LATERAL_MAX_M = 700; // techo de la escalera C2 (paso 2)
 export const FOLLOW_H_CAM_N = [520, 500, 460, 480, 450, 580, 400, 400]; // C1b+C1c: nudos 1/2 (+40), 5 (+60). C2-addendum-5a: nudos 0/0.03 380/420 -> 520/500 (el anclaje cae en la ladera tras la Pradera: cota cam >=1780 en s∈[0,0.03], sobre el techo de niebla 1620). PENDIENTE: unificar cx verify=browser antes de cantar duty
 // LOOK I act 800 (pasada rig puro: 650 peaks 2.69 at s=0.221, 750 peaks

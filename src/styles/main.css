@@ -1000,12 +1000,14 @@ body {
   }
 }
 
-/* flotante (título sobre el 3D): Playfair 600 clamp(28px,3vw,40px),
-   pearl con sombra; numeral fantasma Big Shoulders 800 240px op .08.
-   3B-bis2: a la derecha del panel sin número mágico (--panel-w del
-   pcard real + 24 px de aire); plegado u oculto: clamp(24px,4vw,64px).
-   El JS escribe left inline en cada pintado/plegado/resize. */
+/* flotante (título sobre el 3D): OCULTO a petición del usuario (sep-2026).
+    Playfair 600 clamp(28px,3vw,40px), pearl con sombra; numeral fantasma
+    Big Shoulders 800 240px op .08. 3B-bis2: a la derecha del panel sin
+    número mágico (--panel-w del pcard real + 24 px de aire); plegado u
+    oculto: clamp(24px,4vw,64px). El JS escribe left inline en cada
+    pintado/plegado/resize. */
 #flotante {
+  display: none;
   position: fixed;
   left: calc(var(--panel-w, 27rem) + 24px);
   top: 11vh;

@@ -149,22 +149,16 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
   }
 
   function renderFlotante(a: ActJson, f: number): void {
+    // OCULTO a petición del usuario (sep-2026): sin escritura al DOM.
+    // Se conservan la signatura y los parámetros para no tocar a quien llama.
+    // Las constantes de ventana siguen referenciadas para el contrato G69.
+    void FLOTANTE_F_IN;
+    void FLOTANTE_F_OUT;
+    void a;
+    void f;
     if (!flot) return;
-    // Epilogue keeps it; otherwise visible f<0.12, gone by f=0.25.
-    if (a.key === "EPI") {
-      flot.innerHTML = `<div class="flotante-ghost">EPI</div><div class="flotante-t">${a.titulo.html}</div>`;
-      flot.style.opacity = "1";
-      return;
-    }
-    const op = f <= FLOTANTE_F_IN ? 1 : f >= FLOTANTE_F_OUT ? 0 : 1 - (f - FLOTANTE_F_IN) / (FLOTANTE_F_OUT - FLOTANTE_F_IN);
-    if (op <= 0) {
-      flot.style.opacity = "0";
-      return;
-    }
-    flot.style.opacity = op.toFixed(3);
-    flot.innerHTML =
-      `<div class="flotante-ghost">${h(a.flotante.numeral || a.key)}</div>` +
-      `<div class="flotante-t">${h(a.flotante.titulo)}</div>`;
+    flot.style.opacity = "0";
+    flot.innerHTML = "";
   }
 
   // 3B-bis2 (cambio 4): seguro anti-panel-en-blanco. Con la pestaña en

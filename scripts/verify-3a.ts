@@ -436,6 +436,28 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
     hasProbe ? `probe in viewer (?luma=1 -> window.__luma), threshold ${G11_LUMA_MIN}, grid ${LUMA_GRID}x${LUMA_GRID} — measure at s=0.18/0.80, ?t=12:00` : "no __luma probe in viewer.ts");
 }
 
+// --- G93 luma probe cost (C2b): downsample 32×32 + readPixels de 4 KB,
+// bajo lumaOn (con ?skyfrac=1/?trackpx=1 sin ?luma=1 no corre), buffers
+// persistentes, coste medido __lumaMs ≤ 1 ms por pasada. Vía puertos del
+// renderer (escena propia + copyFramebufferToTexture: el blit crudo
+// default→FBO-propio dejaba INVALID_OPERATION en el ledger G22). Node
+// verifica el contrato; los NÚMEROS viven en navegador (?debug=1&luma=1). ---
+{
+  const src = readFileSync("src/engine/viewer.ts", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  const checks: [string, boolean][] = [
+    ["downsample 32×32 vía renderer (escena propia)", has(src, "copyFramebufferToTexture") && has(src, "lumaScene") && has(src, "new THREE.WebGLRenderTarget(LUMA_GRID, LUMA_GRID")],
+    ["sin GL crudo de ESCRITURA (cero blitFramebuffer)", !has(src, "blitFramebuffer")],
+    ["lumaBuf persistente (sin allocs)", has(src, "const lumaBuf = new Uint8Array(LUMA_GRID * LUMA_GRID * 4)")],
+    ["gate lumaOn (skyfrac/trackpx solos no corren)", has(src, "if (lumaOn) {") && has(src, "__lumaMs = lumaOn ? lumaMs : -1")],
+    ["crono downsample+lectura (__lumaMs)", has(src, "__lumaMs") && has(src, "performance.now()")],
+    ["fallback celda central sin copy", has(src, "Fallback: la celda central")],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G93-luma-cost", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — downsample 32×32 + 4 KB, gate lumaOn, buffers persistentes, __lumaMs (medir ≤1 ms en prod ?debug=1&luma=1)`);
+}
+
 // --- G31/G32/G33 (§4b FASE 5: sombras + métrica de etiquetas). Node checks
 // the CONTRACT (constantes + sonda + crono); the NUMBERS come from prod
 // (?debug=1&skyfrac=1&luma=1&t=12:00, s=0.18 y s=0.80):

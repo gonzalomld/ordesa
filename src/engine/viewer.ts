@@ -1314,8 +1314,7 @@ float wgrain(vec2 lp){
       W.__cloudChroma = -1;
     }
   }
-  // N2: cloud pixel meter — the SAME InstancedMesh with a flat probe
-  // material (atlas ALPHA × vAlpha only, no colour) into its own 96×54
+    // N2: cloud pixel meter — the SAME InstancedMesh with a flat probe  // material (atlas ALPHA × vAlpha only, no colour) into its own 96×54
   // target. Counted inside the TERRAIN-sky mask (occBuf): only sky pixels
   // can be cloud-covered. Same camera, same frame, no extra scene.
   // The probe material borrows the LIVE uniform objects (uMap/uAmount/
@@ -1333,7 +1332,18 @@ float wgrain(vec2 lp){
   const cloudPxTarget = new THREE.WebGLRenderTarget(96, 54, { depthBuffer: false });
   const cloudPxBuf = new Uint8Array(96 * 54 * 4);
   const cloudPxMat = new THREE.ShaderMaterial({
-    uniforms: {},
+    uniforms: {
+      uMap: { value: null },
+      uAmtCumulus: { value: 0 },
+      uAmtMist: { value: 0 },
+      uAmtCirrus: { value: 0 },
+      uAmtFar: { value: 0 },
+      uMult: { value: 1 },
+      uZenithFade: { value: 0 },
+      uTime: { value: 0 },
+      uFamFilter: { value: -1 },
+      uCamY: { value: 0 },
+    },
     vertexShader: `
       attribute vec4 aData; // x: tile, y: rot, z: family, w: alpha base
       attribute vec2 aSize; // w,h del billboard en m
@@ -1392,6 +1402,44 @@ float wgrain(vec2 lp){
       }`,
   });
   let cloudPxWired = false;
+  // C2b (G93): la sonda de luma corre bajo lumaOn sobre un downsample
+  // 32×32 del frame presentado, calculado con generateMipmaps del propio
+  // renderer (puertos públicos — el blit crudo default→FBO-propio dejaba
+  // INVALID_OPERATION en el ledger G22: three re-ata sus FBOs por render
+  // y el DRAW atado a mano no sobrevive). readPixels lee 4 KB, no 27 MB.
+  // Todo creado una vez; lumaBuf persiste: cero asignaciones por pasada.
+  // Sin WebGL2: fallback al readPixels de celda central (mismo contrato).
+  const lumaBuf = new Uint8Array(LUMA_GRID * LUMA_GRID * 4);
+  // RT auxiliar g×g con textura de mipmaps: el renderer dibuja el frame
+  // presentado reescalado con un quad propio (escena aparte, un draw) y
+  // los mipmaps promedian cada región; la lectura va por
+  // readRenderTargetPixels (three ata el framebuffer él mismo).
+  // C2b-fix: DataTexture con tamaño REAL del canvas (no 1×1): con 1×1 el
+  // copyFramebufferToTexture vuelca solo 1 px y el quad interpola un
+  // color plano (luma 0,22 fantasma o negro). Se redimensiona por pasada
+  // solo si w/h cambian (resize): newData dég. persistente, cero allocs
+  // en estado estacionario.
+  const lumaCopyTex = new THREE.DataTexture(
+    new Uint8Array(Math.max(4, renderer.domElement.width * renderer.domElement.height * 4)),
+    Math.max(1, renderer.domElement.width),
+    Math.max(1, renderer.domElement.height),
+  );
+  lumaCopyTex.minFilter = THREE.LinearFilter;
+  lumaCopyTex.magFilter = THREE.LinearFilter;
+  lumaCopyTex.generateMipmaps = false;
+  lumaCopyTex.needsUpdate = true;
+  // Escena propia del downsample (REGLA: ningún render a target usa la
+  // escena principal): quad fullscreen + cámara ortográfica, un draw.
+  const lumaScene = new THREE.Scene();
+  const lumaCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const lumaCopyMat = new THREE.MeshBasicMaterial({ map: lumaCopyTex, toneMapped: false });
+  const lumaQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), lumaCopyMat);
+  lumaQuad.frustumCulled = false;
+  lumaScene.add(lumaQuad);
+  const lumaRT = new THREE.WebGLRenderTarget(LUMA_GRID, LUMA_GRID, { depthBuffer: false });
+  lumaRT.texture.minFilter = THREE.LinearFilter;
+  lumaRT.texture.magFilter = THREE.LinearFilter;
+  lumaRT.texture.generateMipmaps = false;
   // G11 probe flag (?luma=1 with ?s=0.10): luminance sampling in the loop.
   // The threshold lives in choreography.ts; the loop exposes window.__luma
   // and the HUD line so the audit reads a number, not an impression.
@@ -1416,6 +1464,9 @@ float wgrain(vec2 lp){
   // se mide sin nubes (G52: ?family=off); el probe pinta cero instancias.
   const famFilter = boot.family === -2 ? -3 : boot.family;
   void G11_LUMA_MIN;
+  // C2b-nota: cloudPxScene (línea ~1327) PRESTA clouds.mesh al medidor de
+  // nubes y lo devuelve a su padre (prevParent.add). La sonda de luma NO
+  // toca clouds.mesh: escena propia + DataTexture propia, cero préstamo.
 
   gate.setProgress(1, 5);
   clearWatchdog();
@@ -1815,6 +1866,10 @@ float wgrain(vec2 lp){
     // feedback loop again.
     // G15 (?trackpx=1 -> window.__trackpx): offscreen ID pass — the solid
     // Line2 alone into 256x144, non-null pixels counted. Threshold: >= 40 px.
+    // C2b: el bloque exterior sigue corriendo para skyfrac/trackpx; la
+    // sonda de LUMA corre solo bajo lumaOn (G93: con ?skyfrac=1 sin
+    // ?luma=1 no corre). El oclusor sigue bajo occNeeded (la sonda de
+    // sombra lo necesita con ?luma=1).
     if ((lumaOn || skyfracOn || trackpxOn) && !boot.trackDist && frames % 30 === 5) {
       // §4b FASE 2: zenith probe joins the 30-frame cadence (DEBUG ONLY —
       // readRenderTargetPixels syncs the GPU: ~3 ms/frame for everyone if
@@ -1840,35 +1895,99 @@ float wgrain(vec2 lp){
         }
       }
       const g = LUMA_GRID;
-      // L1: full drawing-buffer sampling. domElement.width/height ARE
-      // buffer px (CSS px x pixelRatio); halving them read only the
-      // lower-left quarter (a shadowed wall at s=0.18). Exact g×g cell
-      // centres so __lumaGrid always holds 1024 values.
+      // C2b (G93): downsample por DRAW con puertos del renderer (el blit
+      // crudo default→FBO dejaba INVALID_OPERATION en el ledger G22).
+      // copyFramebufferToTexture vuelca el frame presentado a lumaCopyTex
+      // (misma resolución del canvas, creada una vez); el quad la dibuja
+      // reescalada al RT g×g (LINEAR = cada celda es la media filtrada de
+      // su región) y se lee con readRenderTargetPixels (4 KB, no 27 MB).
+      // Todo persiste: cero asignaciones por pasada. Sin WebGL2/copy:
+      // fallback al readPixels de celda central (mismo contrato, GL crudo
+      // de LECTURA — permitido: getError/getShaderSource/readPixels son
+      // lecturas, nunca escriben estado).
+      // Solo bajo lumaOn: con ?skyfrac=1/?trackpx=1 sin ?luma=1 no corre
+      // (G93); la sonda de sombra de abajo SÍ corre con ?luma=1 y necesita
+      // buf+bw+bh+occBuf — ambos caminos los rellenan (bw=bh=g siempre).
       const w = Math.max(1, renderer.domElement.width);
       const h = Math.max(1, renderer.domElement.height);
-      const buf = new Uint8Array(w * h * 4);
-      const gl = renderer.getContext() as WebGL2RenderingContext;
-      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      const buf: Uint8Array = lumaBuf;
+      const bw = g;
+      const bh = g;
+      let lumaMs = 0;
+      let lumaBlit = false;
+      if (lumaOn) {
+        const tL0 = performance.now();
+        const gl = renderer.getContext() as WebGL2RenderingContext;
+        let down = false;
+        try {
+          if (typeof renderer.copyFramebufferToTexture === "function") {
+            if (lumaCopyTex.image.width !== w || lumaCopyTex.image.height !== h) {
+              // Resize real: reasigna el buffer (única alloc, solo en resize).
+              const nd = new Uint8Array(Math.max(4, w * h * 4));
+              (lumaCopyTex.image as { data: Uint8Array; width: number; height: number }).data = nd;
+              lumaCopyTex.image.width = w;
+              lumaCopyTex.image.height = h;
+              lumaCopyTex.needsUpdate = true;
+            }
+            // Vuelca el framebuffer presentado (READ = default) a la
+            // textura propia. Puerto público: three ata lo que necesite.
+            renderer.copyFramebufferToTexture(lumaCopyTex);
+            // Dibuja la textura reescalada al RT g×g (escena propia: ni la
+            // escena principal ni sus targets se tocan).
+            lumaCopyMat.map = lumaCopyTex;
+            lumaCopyMat.needsUpdate = true;
+            const prevTarget = renderer.getRenderTarget();
+            renderer.setRenderTarget(lumaRT);
+            renderer.render(lumaScene, lumaCam);
+            renderer.readRenderTargetPixels(lumaRT, 0, 0, g, g, lumaBuf);
+            renderer.setRenderTarget(prevTarget);
+            down = true;
+          }
+        } catch {
+          down = false;
+        }
+        if (!down) {
+          // Fallback: la celda central de cada región (contrato L1 intacto).
+          const full = new Uint8Array(w * h * 4);
+          gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, full);
+          for (let gy = 0; gy < g; gy++) {
+            for (let gx = 0; gx < g; gx++) {
+              const fx = Math.min(w - 1, Math.floor((gx + 0.5) * (w / g)));
+              const fy = Math.min(h - 1, Math.floor((gy + 0.5) * (h / g)));
+              const si = (fy * w + fx) * 4;
+              const di = (gy * g + gx) * 4;
+              lumaBuf[di] = full[si] as number;
+              lumaBuf[di + 1] = full[si + 1] as number;
+              lumaBuf[di + 2] = full[si + 2] as number;
+              lumaBuf[di + 3] = full[si + 3] as number;
+            }
+          }
+        }
+        lumaBlit = down;
+        lumaMs = performance.now() - tL0;
+      }
       let sum = 0;
-      const lumaGrid: number[] = [];
+      const lumaGrid: number[] = lumaOn ? [] : ((window as unknown as { __lumaGrid?: number[] }).__lumaGrid ?? []);
       const lin = (c: number): number => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
-      for (let gy = 0; gy < g; gy++) {
-        for (let gx = 0; gx < g; gx++) {
-          const fx = Math.min(w - 1, Math.floor((gx + 0.5) * (w / g)));
-          const fy = Math.min(h - 1, Math.floor((gy + 0.5) * (h / g)));
-          const o = (fy * w + fx) * 4;
-          const rr = (buf[o] as number) / 255;
-          const gg = (buf[o + 1] as number) / 255;
-          const bb = (buf[o + 2] as number) / 255;
-          // sRGB -> linear approx + Rec.709 luma
-          const l = 0.2126 * lin(rr) + 0.7152 * lin(gg) + 0.0722 * lin(bb);
-          sum += l;
-          lumaGrid.push(l);
+      if (lumaOn) {
+        for (let gy = 0; gy < g; gy++) {
+          for (let gx = 0; gx < g; gx++) {
+            const o = (gy * bw + gx) * 4;
+            const rr = (buf[o] as number) / 255;
+            const gg = (buf[o + 1] as number) / 255;
+            const bb = (buf[o + 2] as number) / 255;
+            // sRGB -> linear approx + Rec.709 luma
+            const l = 0.2126 * lin(rr) + 0.7152 * lin(gg) + 0.0722 * lin(bb);
+            sum += l;
+            lumaGrid.push(l);
+          }
         }
       }
-      (window as unknown as { __luma?: number }).__luma = lumaGrid.length > 0 ? sum / lumaGrid.length : 0;
+      (window as unknown as { __luma?: number }).__luma = lumaOn && lumaGrid.length > 0 ? sum / lumaGrid.length : ((window as unknown as { __luma?: number }).__luma ?? -1);
       (window as unknown as { __lumaGrid?: number[] }).__lumaGrid = lumaGrid;
       (window as unknown as { __lumaRect?: { x: number; y: number; w: number; h: number } }).__lumaRect = { x: 0, y: 0, w, h };
+      (window as unknown as { __lumaMs?: number }).__lumaMs = lumaOn ? lumaMs : -1;
+      (window as unknown as { __lumaBlit?: boolean }).__lumaBlit = lumaOn ? lumaBlit : false;
       if (boot.debug) metrics.luma = (window as unknown as { __luma?: number }).__luma ?? -1;
       // G12/G17: occluder pass — terrain only, flat white, clear black.
       // Black = sky (nothing occludes). Lower-half black = void (G17).
@@ -1925,15 +2044,17 @@ float wgrain(vec2 lp){
           const gridH = 144;
           // Misma rejilla conceptual que __luma (g×g sobre la imagen):
           // paso en píxeles del canvas -> paso proporcional en la máscara.
+          // C2b: las celdas de __luma son MEDIAS del blit 32×32; la sonda
+          // de sombra lee las MISMAS celdas (buf ya es g×g: bw=bh=g).
           for (let gy = 0; gy < g; gy++) {
             for (let gx = 0; gx < g; gx++) {
-              const fx = Math.min(w - 1, Math.floor((gx + 0.5) * (w / g)));
-              const fy = Math.min(h - 1, Math.floor((gy + 0.5) * (h / g)));
-              const mx = Math.min(gridW - 1, Math.floor((fx / Math.max(1, w)) * gridW));
-              const my = Math.min(gridH - 1, Math.floor((fy / Math.max(1, h)) * gridH));
+              const fx = Math.min(bw - 1, gx);
+              const fy = Math.min(bh - 1, gy);
+              const mx = Math.min(gridW - 1, Math.floor((fx / Math.max(1, bw)) * gridW));
+              const my = Math.min(gridH - 1, Math.floor((fy / Math.max(1, bh)) * gridH));
               const mo = (my * gridW + mx) * 4;
               if ((occBuf[mo] as number) < 8 && (occBuf[mo + 1] as number) < 8 && (occBuf[mo + 2] as number) < 8) continue; // cielo
-              const o = (fy * w + fx) * 4;
+              const o = (fy * bw + fx) * 4;
               const rr = (buf[o] as number) / 255;
               const gg = (buf[o + 1] as number) / 255;
               const bb = (buf[o + 2] as number) / 255;
@@ -1945,9 +2066,9 @@ float wgrain(vec2 lp){
               const mnc = Math.min(lr, lg, lb);
               terrLumas.push(luma);
               terrChromas.push(mxc > 1e-6 ? (mxc - mnc) / mxc : 0);
-              // F1: el píxel está en el tercio superior (fy < h/3 → lejos,
+              // F1: el píxel está en el tercio superior (fy < bh/3 → lejos,
               // banda del horizonte) y es terreno: candidato a fondo de valle.
-              if (fy < h / 3) valleyRGB.push([rr, gg, bb]);
+              if (fy < bh / 3) valleyRGB.push([rr, gg, bb]);
               if (luma >= 0.9) litOver++;
             }
           }
@@ -2176,18 +2297,21 @@ float wgrain(vec2 lp){
                   cloudOnTerr++;
                   // N2b: con filtro fam=1 el RT solo trae bruma → bruma/terreno.
                   // N2-fix: croma de bruma (G49: ≤0,15 gris-azul, no marrón)
-                  // sobre el frame PRESENTADO (buf ya leído, sin re-render).
+                  // sobre el frame PRESENTADO (buf+raster ya leídos C2b, sin
+                  // re-render). Sin ?luma=1 no hay raster: bruma −1.
                   if (famOnly === 1) {
                     mistOnTerr++;
-                    const fx = Math.min(w - 1, Math.floor(((xx + 0.5) / 96) * w));
-                    const fy = Math.min(h - 1, Math.floor(((yy + 0.5) / 54) * h));
-                    const o = (fy * w + fx) * 4;
-                    const mr = (buf[o] as number) / 255;
-                    const mg = (buf[o + 1] as number) / 255;
-                    const mb = (buf[o + 2] as number) / 255;
-                    const mxc = Math.max(mr, mg, mb);
-                    const mnc = Math.min(mr, mg, mb);
-                    mistChromas.push(mxc > 1e-6 ? (mxc - mnc) / mxc : 0);
+                    if (lumaOn) {
+                      const fx = Math.min(bw - 1, Math.floor(((xx + 0.5) / 96) * bw));
+                      const fy = Math.min(bh - 1, Math.floor(((yy + 0.5) / 54) * bh));
+                      const o = (fy * bw + fx) * 4;
+                      const mr = (buf[o] as number) / 255;
+                      const mg = (buf[o + 1] as number) / 255;
+                      const mb = (buf[o + 2] as number) / 255;
+                      const mxc = Math.max(mr, mg, mb);
+                      const mnc = Math.min(mr, mg, mb);
+                      mistChromas.push(mxc > 1e-6 ? (mxc - mnc) / mxc : 0);
+                    }
                   }
                   denseAlphas.push(pxAlpha);
                   if (pxAlpha > maxAlphaSeen) maxAlphaSeen = pxAlpha;
@@ -2235,9 +2359,13 @@ float wgrain(vec2 lp){
           const skyPx = (window as unknown as { __skyFrac?: number }).__skyFrac ?? -1;
           const blue = skyPx >= 0 ? Math.min(1, Math.max(0, skyPx * (1 - coverPx))) : -1;
           (window as unknown as { __blueSky?: number }).__blueSky = blue;
-          // G42 reads the presented frame buf (already read above for
-          // __luma — same buffer, no second readPixels).
-          publishCloudColor(buf, w, h);
+          // C2b: G42 lee el raster del blit (ya leído para __luma — mismo
+          // buffer, sin segundo readPixels). Sin ?luma=1 no hay raster.
+          if (lumaOn) publishCloudColor(buf, bw, bh);
+          else {
+            (window as unknown as { __cloudLuma?: number }).__cloudLuma = -1;
+            (window as unknown as { __cloudChroma?: number }).__cloudChroma = -1;
+          }
           // G41: density decile — 10% densest cloud px alpha (must be ≥0.8:
           // cores, not veil). G43: cloud-on-terrain fraction (≤0.05).
           denseAlphas.sort((a, b) => b - a);
