@@ -140,8 +140,8 @@ export const G_LUMA_LIT_MAX = 0.9; // §4b FASE 5: ningún píxel de terreno ilu
 export const LUMA_GRID = 32; // G11 readPixels grid (audit A6); measured in-browser via ?luma=1, every 30th frame
 
 // --- §4 sky (Preetham starting values, measured with the probe) ---
-export const SKY_TURBIDITY = 1.7; // §4b FASE 3a: 2.2 -> 1.7 (predictor: B/R barely moves — turbidity alone never reaches alpine blue; next: rayleigh)
-export const SKY_RAYLEIGH = 1.6; // flat, no low-sun branch
+export const SKY_TURBIDITY = 1.7; // §4b FASE 3a: 2.2 -> 1.7 (predictor: B/R barely moves — turbidity alone never reaches alpine blue)
+export const SKY_RAYLEIGH = 2.6; // §6: 1.6 -> 2.6 (la palanca física pendiente: Rayleigh hace el azul, turbidez lo emblanquece)
 export const SKY_MIE = 0.004; // (was 0.006)
 export const SKY_G = 0.8; // mieDirectionalG
 // §4 correction: the SKY dims in the DOME (uSkyScale), not with the renderer
@@ -150,7 +150,7 @@ export const SKY_SCALE = 0.22; // §4b FASE 3b: 0.32 -> 0.22 (SAT 2.0 raises lum
 export const SKY_SCALE_LOW = 0.60; // §4b FASE 3c: twilight dome factor — below 2° solar elevation the dome keeps 0.60 (Preetham at 0° is already 5-8× dimmer than noon; ×0.22 turned low sun brown). applyLighting blends LOW→SCALE over 2°→20°.
 export const SKY_SAT = 2.0; // §4b FASE 3b: elevation-weighted saturation — full above 27° elevation, horizon intact (dawns/dusks); same block in dome + capture
 export const SKY_EXPOSURE = 0.55; // DEAD (§4 correction): dimming via exposure dragged the terrain with the sky; exposure is 1.0 again, the dome carries the dimming. Kept so git history explains itself.
-export const HEMI_GRAY_MIX = 0.6; // §4b FASE 5 paso a: 0.4 -> 0.6 (la sombra pierde tinte, no brillo)
+export const HEMI_GRAY_MIX = 0.75; // §6: 0.6 -> 0.75 (solo el tinte: la sombra pierde azul, no brillo — si baja de luma, NO compensar con HEMI_LUMA_FLOOR: reportarlo)
 // --- F1 niebla de valle (amanecer/atardecer): la niebla baja es de hora
 // baja, no de todo el día. uDawnF = 1 − smoothstep(2°, 20°, elevación
 // solar): a las 12:00 vale 0 (mediodía intacto por construcción).

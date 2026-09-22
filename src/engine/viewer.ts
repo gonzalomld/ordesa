@@ -250,7 +250,11 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       s.fragmentShader = s.fragmentShader.replace(
         "gl_FragColor = vec4( retColor, 1.0 );",
         `float skyDirY = normalize( vWorldPosition - cameraPosition ).y;
-        float skyViewF = smoothstep( 0.05, 0.45, skyDirY );
+        // §6: rampa 0.02→0.24 (plena sobre 13,9°): el día se ve de 0° a 14°
+        // de elevación — la franja más pálida de cualquier cielo real. El
+        // alba/ocaso NO dependen de esta rampa: los protege skySunF (5°→25°
+        // de elevación SOLAR), que sigue igual.
+        float skyViewF = smoothstep( 0.02, 0.24, skyDirY );
         float skySunF = smoothstep( 5.0, 25.0, uSunElev );
         float skySat = mix( 1.0, ${(SKY_SAT as number).toFixed(2)}, skyViewF * skySunF );
         float skyL = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );

@@ -191,8 +191,9 @@ const CAPTURE_FRAG = (skySat: string): string => /* glsl */ `
     // (SKY_SAT × view × sun) so haze matches drawn sky. Below 5° sun the
     // zenith never saturates (no chemical brown); at noon identical to
     // phase 3b. Linear out: no tonemapping/colorspace includes — working
-    // data, not display.
-    float skyWE1 = smoothstep( 0.05, 0.45, direction.y );
+    // data, not display. §6: rampa 0.02→0.24 IDÉNTICA a la del dome
+    // (viewer.ts): si divergen, la bruma deja de casar con el cielo dibujado.
+    float skyWE1 = smoothstep( 0.02, 0.24, direction.y );
     float skySunF = smoothstep( 5.0, 25.0, uSunElev );
     float skySat = mix( 1.0, ${skySat}, skyWE1 * skySunF );
     float skyL = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );
