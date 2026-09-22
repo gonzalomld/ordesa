@@ -558,17 +558,28 @@ export const ROUTE_DIVERGE_PCT = 2; // beyond ~360 m the track changed or the re
 // --- §5 PAREDES (roca estratificada triplanar, viewer.ts): solo los planos
 // verticales muestrean la roca (el suelo conserva la ortofoto); los estratos
 // quedan horizontales porque la V de la textura es siempre vWPos2.y.
-// §5b: escalas a la mitad (estratos 3,2 m / 1,7 m: por encima del ruido de
-// muestreo a 1,4 km, por debajo del desenfoque de 4 px de G94) + mezcla
-// 0,85 (corredor ×0,55). Desvanecido 4500→1200 intacto (si G96 hierve, el
-// inicio adelanta a 3500, nunca baja el contraste).
-export const ROCK_SCALE_A = 45; // m por baldosa (escala grande)
-export const ROCK_SCALE_B = 24; // m por baldosa (escala chica, offset 0.5)
-export const ROCK_MIX = 0.85; // mezcla roca sobre ortofoto en pared plena
+// §5b: escalas a la mitad + mezcla 0,85 (corredor ×0,55).
+// §5c (verificado: banda/1400 m·916,7 px/rad — 45 m daba 2,1 px, sub-Nyquist,
+// de ahí el moiré en isolíneas): escalas ×3 para ≥6 px a 1,4 km + buzamiento
+// y alabeo (rompen la isolínea global) + rampa propia 42°→58° + tono
+// desaturado y cap de croma sobre el resultado + contraste que se aplana
+// con la distancia (fade 2800→900: a 3 km el viejo aún dejaba 43 % de peso).
+export const ROCK_SCALE_A = 135; // m por baldosa (banda 9,6 m ≈ 6-7 px a 1,4 km)
+export const ROCK_SCALE_B = 85; // m por baldosa (banda 6,1 m ≈ 4 px)
+export const ROCK_MIX = 0.55; // mezcla roca sobre ortofoto en pared plena
 export const ROCK_CORRIDOR_K = 0.55; // en el corredor (4k con detalle) la mezcla baja ×0.55
 export const ROCK_NORMAL_W = 0.6; // peso de la normal de roca (× steep)
-export const ROCK_FAR_M = 4500; // más allá: la roca se aplana (sin hervor)
-export const ROCK_NEAR_M = 1200; // más acá: detalle pleno
+export const ROCK_FAR_M = 2800; // más allá: la roca se aplana (sin hervor)
+export const ROCK_NEAR_M = 900; // más acá: detalle pleno
 export const ROCK_GRAIN_K = 0.25; // grano heredado, último retoque (era 0.45)
 export const ROCK_MASK_SCALE = 900; // máscara lenta entre escalas (wnoise xz/900)
 export const ROCK_WALL_POW = 4; // exponente triplanar vertical (el grano sigue con 6)
+export const ROCK_WARP_M = 30; // alabeo del lecho ±30 m (≈3 bandas)
+export const ROCK_WARP_SCALE_M = 1700; // longitud de onda del alabeo
+export const ROCK_DIP = 0.02; // buzamiento del lecho 2 %
+export const ROCK_STEEP_LO = 12; // rampa propia de la roca: 30+12=42°…
+export const ROCK_STEEP_HI = 28; // …→30+28=58° (relativa a uWallDeg)
+export const ROCK_TONE_W = 0.45; // tono: brillo de la ortofoto, no su azul
+export const ROCK_CHROMA_CAP = 0.1; // cap de croma sobre el RESULTADO
+export const ROCK_MEAN = 0.62; // la distancia aplana el contraste, no desatura
+export const ROCK_CONTRAST = 0.55; // peso del contraste de roca en primer plano

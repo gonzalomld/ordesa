@@ -30,16 +30,25 @@ import {
   HEMI_NIGHT,
   HEMI_SKY_RGB,
   LUMA_GRID,
+  ROCK_CHROMA_CAP,
+  ROCK_CONTRAST,
   ROCK_CORRIDOR_K,
+  ROCK_DIP,
   ROCK_FAR_M,
   ROCK_GRAIN_K,
   ROCK_MASK_SCALE,
+  ROCK_MEAN,
   ROCK_MIX,
   ROCK_NEAR_M,
   ROCK_NORMAL_W,
   ROCK_SCALE_A,
   ROCK_SCALE_B,
+  ROCK_STEEP_HI,
+  ROCK_STEEP_LO,
+  ROCK_TONE_W,
   ROCK_WALL_POW,
+  ROCK_WARP_M,
+  ROCK_WARP_SCALE_M,
   SHADOW_EPS_DEG,
   SHADOW_EXTENT_M,
   SHADOW_FAR_M,
@@ -644,29 +653,42 @@ float wgrain(vec2 lp){
   vec2 p = vec2(lp.x / 2.5, lp.y);
   return wnoise(p) * 0.5714 + wnoise(p * 2.3) * 0.2857 + wnoise(p * 5.1) * 0.1429;
 }
-// §5: roca estratificada triplanar (solo planos verticales, V = mundo.y).
+// §5c: roca estratificada triplanar (solo planos verticales).
+// V corregida IDÉNTICA en ambos planos y en albedo y normal: el lecho es
+// y + buzamiento·x + buzamiento·z + alabeo = constante (geología correcta:
+// localmente horizontal, globalmente sin isolínea que cruce el circo).
+// ws con suelo 0,05 (no 1e-4): al normalizar por ~0 la pared escupe
+// cortinas verticales estiradas (triplanar degenerado).
 vec3 rockTriplanar(vec3 wp, vec3 wn){
   float wx = pow(abs(wn.x), ${(ROCK_WALL_POW as number).toFixed(1)});
   float wz = pow(abs(wn.z), ${(ROCK_WALL_POW as number).toFixed(1)});
-  float ws = max(wx + wz, 1e-4);
-  vec3 r1 = texture2D(uRock, vec2(wp.z, wp.y) / ${(ROCK_SCALE_A as number).toFixed(1)}).rgb * (wx / ws)
-          + texture2D(uRock, vec2(wp.x, wp.y) / ${(ROCK_SCALE_A as number).toFixed(1)}).rgb * (wz / ws);
-  vec3 r2 = texture2D(uRock, vec2(wp.z, wp.y) / ${(ROCK_SCALE_B as number).toFixed(1)} + 0.5).rgb * (wx / ws)
-          + texture2D(uRock, vec2(wp.x, wp.y) / ${(ROCK_SCALE_B as number).toFixed(1)} + 0.5).rgb * (wz / ws);
+  float ws = max(wx + wz, 0.05);
+  float yAdj = wp.x * ${(ROCK_DIP as number).toFixed(3)} + wp.z * ${(ROCK_DIP as number).toFixed(3)}
+             + (wnoise(wp.xz / ${(ROCK_WARP_SCALE_M as number).toFixed(1)}) - 0.5) * 2.0 * ${(ROCK_WARP_M as number).toFixed(1)};
+  float vy = wp.y + yAdj;
+  vec3 r1 = texture2D(uRock, vec2(wp.z, vy) / ${(ROCK_SCALE_A as number).toFixed(1)}).rgb * (wx / ws)
+          + texture2D(uRock, vec2(wp.x, vy) / ${(ROCK_SCALE_A as number).toFixed(1)}).rgb * (wz / ws);
+  vec3 r2 = texture2D(uRock, vec2(wp.z, vy) / ${(ROCK_SCALE_B as number).toFixed(1)} + 0.5).rgb * (wx / ws)
+          + texture2D(uRock, vec2(wp.x, vy) / ${(ROCK_SCALE_B as number).toFixed(1)} + 0.5).rgb * (wz / ws);
   float rmx = smoothstep(0.35, 0.65, wnoise(wp.xz / ${(ROCK_MASK_SCALE as number).toFixed(1)}));
   vec3 rock = mix(r1, r2, rmx);
+  // §5c: la distancia aplana el CONTRASTE hacia ROCK_MEAN (no desatura:
+  // la textura ya es neutra; lo que raya el fondo es el contraste).
   float dfa = smoothstep(${(ROCK_FAR_M as number).toFixed(1)}, ${(ROCK_NEAR_M as number).toFixed(1)}, length(wp - cameraPosition));
-  rock = mix(vec3(gluma(rock)), rock, 0.25 + 0.75 * dfa);
+  rock = mix(vec3(${(ROCK_MEAN as number).toFixed(2)}), rock, ${(ROCK_CONTRAST as number).toFixed(2)} * (0.15 + 0.85 * dfa));
   return rock;
 }
 vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
   float wx = pow(abs(wn.x), ${(ROCK_WALL_POW as number).toFixed(1)});
   float wz = pow(abs(wn.z), ${(ROCK_WALL_POW as number).toFixed(1)});
-  float ws = max(wx + wz, 1e-4);
-  vec3 n1 = texture2D(uRockNormal, vec2(wp.z, wp.y) / ${(ROCK_SCALE_A as number).toFixed(1)}).rgb * (wx / ws)
-          + texture2D(uRockNormal, vec2(wp.x, wp.y) / ${(ROCK_SCALE_A as number).toFixed(1)}).rgb * (wz / ws);
-  vec3 n2 = texture2D(uRockNormal, vec2(wp.z, wp.y) / ${(ROCK_SCALE_B as number).toFixed(1)} + 0.5).rgb * (wx / ws)
-          + texture2D(uRockNormal, vec2(wp.x, wp.y) / ${(ROCK_SCALE_B as number).toFixed(1)} + 0.5).rgb * (wz / ws);
+  float ws = max(wx + wz, 0.05);
+  float yAdj = wp.x * ${(ROCK_DIP as number).toFixed(3)} + wp.z * ${(ROCK_DIP as number).toFixed(3)}
+             + (wnoise(wp.xz / ${(ROCK_WARP_SCALE_M as number).toFixed(1)}) - 0.5) * 2.0 * ${(ROCK_WARP_M as number).toFixed(1)};
+  float vy = wp.y + yAdj;
+  vec3 n1 = texture2D(uRockNormal, vec2(wp.z, vy) / ${(ROCK_SCALE_A as number).toFixed(1)}).rgb * (wx / ws)
+          + texture2D(uRockNormal, vec2(wp.x, vy) / ${(ROCK_SCALE_A as number).toFixed(1)}).rgb * (wz / ws);
+  vec3 n2 = texture2D(uRockNormal, vec2(wp.z, vy) / ${(ROCK_SCALE_B as number).toFixed(1)} + 0.5).rgb * (wx / ws)
+          + texture2D(uRockNormal, vec2(wp.x, vy) / ${(ROCK_SCALE_B as number).toFixed(1)} + 0.5).rgb * (wz / ws);
   float rmx = smoothstep(0.35, 0.65, wnoise(wp.xz / ${(ROCK_MASK_SCALE as number).toFixed(1)}));
   // Espacio tangente (x, y, z≈1), como nt2: el bloque de normales la suma
   // en el mismo espacio que el grano existente (vec3(x, y, 0)).
@@ -686,9 +708,12 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
   gRaw = rawSteep;
   float steep = rawSteep * uRockWeight;
   gSteep = steep;
-  // §5: roca triplanar sobre la ortofoto (solo pared; el suelo conserva
-  // la cenital). Tono = color medio local (luma 1): la pared no se despega.
-  float rockK = steep * uRockMix * uHasRock * mix(1.0, ${(ROCK_CORRIDOR_K as number).toFixed(2)}, wcorr);
+  // §5c: roca triplanar sobre la ortofoto (solo pared de verdad: rampa
+  // propia 42°→58° relativa a uWallDeg; rawSteep sigue gobernando grano y
+  // normales tal cual). Tono desaturado (brillo de la ortofoto, no su azul)
+  // + cap de croma sobre el RESULTADO ponderado por k (k=0: suelo intacto).
+  float rockSteep = smoothstep(uWallDeg + ${(ROCK_STEEP_LO as number).toFixed(1)}, uWallDeg + ${(ROCK_STEEP_HI as number).toFixed(1)}, slopeDeg);
+  float rockK = rockSteep * uRockWeight * uRockMix * uHasRock * mix(1.0, ${(ROCK_CORRIDOR_K as number).toFixed(2)}, wcorr);
   grockMix = rockK;
   if (rockK > 0.001) {
     vec3 rock = rockTriplanar(vWPos2, wn2);
@@ -699,7 +724,14 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
       alb = rock;
     } else {
       vec3 tono = alb / max(gluma(alb), 1e-3);
-      alb = mix(alb, rock * tono, clamp(rockK, 0.0, 1.0));
+      tono = mix(vec3(1.0), tono, ${(ROCK_TONE_W as number).toFixed(2)});
+      float kk = clamp(rockK, 0.0, 1.0);
+      vec3 mixed = mix(alb, rock * tono, kk);
+      float Lm = gluma(mixed);
+      vec3 dev = mixed - vec3(Lm);
+      float cro = length(dev) / max(Lm, 1e-3);
+      float scl = min(1.0, ${(ROCK_CHROMA_CAP as number).toFixed(2)} / max(cro, 1e-4));
+      alb = vec3(Lm) + dev * mix(1.0, scl, kk);
     }
   }
   if (steep > 0.001) {
@@ -811,6 +843,13 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
   function armRockTex(t: THREE.Texture): void {
     t.wrapS = THREE.RepeatWrapping;
     t.wrapT = THREE.RepeatWrapping;
+    // §5c: en pared rasante, con anisotropía 1 el mip se elige por la
+    // derivada mayor: emborrona en un eje y sigue aliaseando en el otro.
+    try {
+      t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    } catch {
+      /* sin anisotropía: la roca sigue funcionando */
+    }
   }
 
   rebuildTerrain();

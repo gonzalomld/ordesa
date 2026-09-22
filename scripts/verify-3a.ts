@@ -436,33 +436,46 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
     hasProbe ? `probe in viewer (?luma=1 -> window.__luma), threshold ${G11_LUMA_MIN}, grid ${LUMA_GRID}x${LUMA_GRID} — measure at s=0.18/0.80, ?t=12:00` : "no __luma probe in viewer.ts");
 }
 
-// --- G94/G95/G96/G97/G101 (§5b PAREDES: roca estratificada triplanar).
+// --- G94/G95/G96/G97/G101/G102 (§5c PAREDES: de curvas de nivel a roca).
 // Node checks the CONTRACT (constantes + sonda + textura + GLSL); the
 // NUMBERS come from prod (?debug=1&skyfrac=1&luma=1&t=12:00, mismo encuadre
-// antes/después — "antes" = deslizador mezcla→0 + grano→0.45):
+// antes/después — "antes" = deslizador MEZCLA ROCA a 0):
 // G94: HF con desenfoque de 4 px en parches 128² de pared (s=0,80 y s=0,29
 //   a las 12:00): ratio después/antes ≥ 1,8 + meanAbsDiff del parche ≥ 0,04.
-// G95: autocorrelación de luma a los periodos de baldosa (45/24 m → px) ≤ 0,25.
-// G96: parche a > 4,5 km: ratio HF ≤ 1,3 (sin hervido a lo lejos).
-// G97: croma medio de pared ≤ 0,12, luma media ±15 % de la de antes.
+//   (El radio 4 px ahora es el correcto: el rasgo mide ~6 px; con 45 m medía
+//   2 px y el radio no medía lo que creía medir.)
+// G95: autocorrelación de luma a los periodos de baldosa (135/85 m → px) ≤ 0,25.
+//   NO cambia: el hash de rock-albedo/rock-normal no debe moverse (§5c es
+//   solo código — si cambia, se regeneraron texturas que no tocaba).
+// G96: parche a > 4,5 km (s=0,18): ratio HF ≤ 1,15 (era 1,3).
+// G97: croma medio ≤ 0,10 sobre los PÍXELES RENDERIZADOS (no la textura),
+//   luma media ±15 % de antes.
 // G101: __rockGLSL.hasRockLive() == __hasRock == 1 sin recompilar
-//   (renderer.info.programs no crece al mover "MEZCLA ROCA").
+//   (renderer.info.programs no crece al mover "MEZCLA ROCA"). NO cambia.
+// G102 (nueva, la que define la fase): dos parches 128² de pared a la MISMA
+//   altura de pantalla y separados ≥500 px en horizontal (s=0,80, 12:00);
+//   el perfil vertical de luma de cada uno (media por fila → vector de 128)
+//   correlaciona ≤ 0,35. Hoy ≈1,0: una sola banda cruza todo el circo.
 {
   const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
   const has = (k: string): boolean => viewerSrc.includes(k);
   const checks: [string, boolean][] = [
     ["uHasRock declarado en GLSL (G40)", has("uniform float uHasRock")],
-    ["rockK = steep·uRockMix·uHasRock·corredor", has("steep * uRockMix * uHasRock")],
-    ["escalas 45/24 desde choreography (ToFixed)", has("ROCK_SCALE_A") && has("ROCK_SCALE_B")],
-    ["desvanecido 4500→1200 intacto", has("ROCK_FAR_M") && has("ROCK_NEAR_M")],
+    ["rockK = rockSteep·uRockWeight·uRockMix·uHasRock·corredor", has("uRockWeight * uRockMix * uHasRock")],
+    ["rampa propia 42→58 relativa a uWallDeg", has("uWallDeg +") && has("ROCK_STEEP_LO") && has("ROCK_STEEP_HI")],
+    ["V corregida idéntica albedo+normal (yAdj/vy)", has("float yAdj") && has("vec2(wp.z, vy)") && has("vec2(wp.x, vy)") && has("ROCK_DIP") && has("ROCK_WARP_M") && has("ROCK_WARP_SCALE_M")],
+    ["triplanar no degenerado (ws suelo 0,05)", has("max(wx + wz, 0.05)")],
+    ["tono desaturado + cap ponderado por k", has("ROCK_TONE_W") && has("ROCK_CHROMA_CAP") && has("mix(1.0, scl, kk)")],
+    ["contraste que se aplana (ROCK_MEAN/CONTRAST)", has("ROCK_MEAN") && has("ROCK_CONTRAST") && has("0.15 + 0.85 * dfa")],
+    ["anisotropía en armRockTex", has("getMaxAnisotropy")],
     ["sonda live hasRockLive (no valor capturado)", has("hasRockLive")],
     ["?debug=rock (uRockDebug)", has("uRockDebug")],
     ["deslizador MEZCLA ROCA", has("mezcla roca")],
   ];
   const valsOk =
-    ROCK_SCALE_A === 45 && ROCK_SCALE_B === 24 &&
-    ROCK_MIX === 0.85 && ROCK_CORRIDOR_K === 0.55 &&
-    ROCK_FAR_M === 4500 && ROCK_NEAR_M === 1200;
+    ROCK_SCALE_A === 135 && ROCK_SCALE_B === 85 &&
+    ROCK_MIX === 0.55 && ROCK_CORRIDOR_K === 0.55 &&
+    ROCK_FAR_M === 2800 && ROCK_NEAR_M === 900;
   const metaRock = JSON.parse(readFileSync("data/build/meta.json", "utf8")) as {
     assets?: Record<string, string>;
     sizesBytes?: Record<string, number>;
@@ -477,17 +490,19 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
   gate("G94-rock-contract", bad.length === 0 && valsOk,
     bad.length || !valsOk
       ? `falta: ${[...bad, ...(valsOk ? [] : [`vals A=${ROCK_SCALE_A} B=${ROCK_SCALE_B} MIX=${ROCK_MIX} CORR=${ROCK_CORRIDOR_K} FAR=${ROCK_FAR_M} NEAR=${ROCK_NEAR_M}`])].join(", ")}`
-      : `triplanar 45/24 m, MIX 0.85 (corredor ×0.55), fade 4500→1200 — measure HF ratio ≥1.8 + meanAbsDiff ≥0.04 @s=0.80/0.29, ?t=12:00`);
+      : `triplanar 135/85 m, MIX 0.55 (corredor ×0.55), fade 2800→900, rampa 42→58, yAdj+warp, cap ponderado — measure HF ratio ≥1.8 + meanAbsDiff ≥0.04 @s=0.80/0.29, ?t=12:00`);
   gate("G95-rock-timeless", rockOk,
     rockOk
       ? `rock-albedo/normal con hash en meta (${metaRock.assets?.["rock-albedo"]}, ${metaRock.assets?.["rock-normal"]}) — measure autocorr ≤0.25 a los periodos de baldosa`
       : `rock assets missing/mismatched in meta.json (need rock-albedo + rock-normal hashed)`);
   gate("G96-rock-far", has("ROCK_FAR_M") && has("smoothstep("),
-    `fade 4500→1200 (si hierve: inicio a 3500, nunca bajar contraste) — measure HF ratio ≤1.3 @>4.5 km (s=0.18)`);
-  gate("G97-rock-colour", has("tono = alb / max(gluma(alb)"),
-    `tono = luma 1 (la pared no se despega) + textura croma ≤0.12 — measure croma ≤0.12, luma ±15 %`);
+    `fade 2800→900 (aplana contraste, no desatura) — measure HF ratio ≤1.15 @>4.5 km (s=0.18)`);
+  gate("G97-rock-colour", has("tono = alb / max(gluma(alb)") && has("mix(vec3(1.0), tono"),
+    `tono desaturado (brillo, no azul) + cap ponderado por k — measure croma ≤0.10 sobre píxeles renderizados, luma ±15 %`);
   gate("G101-rock-uniform", has("hasRockLive") && !viewerSrc.includes("hasRockVal:"),
     `uHasRock es uniforme vivo (hasRockLive), sin valor capturado en compile — measure __rockGLSL.hasRockLive()==__hasRock==1 + programs sin crecer al mover el deslizador`);
+  gate("G102-rock-nocontour", has("float yAdj") && has("ROCK_WARP_M") && has("ROCK_DIP"),
+    `lecho = y + buzamiento + alabeo (una banda ya no cruza el circo) — measure correlación de perfiles verticales ≤0.35 @s=0.80, 12:00`);
 }
 
 // --- G93 luma probe cost (C2b): downsample 32×32 + readPixels de 4 KB,
