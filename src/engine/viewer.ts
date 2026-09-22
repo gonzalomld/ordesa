@@ -758,6 +758,8 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
           );
         // §5 sonda (informa, no gobierna): ¿entró el GLSL de roca al programa?
         // Solo tras bandera (debug/rock/steep); producción no la lee.
+        // hasRockVal lee el UNIFORME VIVO (no el valor capturado en compile:
+        // ese es siempre el de arranque). G101 lo compara con __hasRock.
         if (boot.debug || boot.rock || boot.steep) {
           (window as unknown as { __rockGLSL?: unknown }).__rockGLSL = {
             hasRockFn: s.fragmentShader.includes("rockTriplanar(vec3"),
@@ -765,7 +767,7 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
             hasDebug: s.fragmentShader.includes("uRockDebug"),
             hasSteepMap: s.fragmentShader.includes("dithering_fragment") && s.fragmentShader.includes("gRaw"),
             rockMixVal: (rockMix as { value: number }).value,
-            hasRockVal: (hasRock as { value: number }).value,
+            hasRockLive: () => (hasRock as { value: number }).value,
             grainVal: (grainK as { value: number }).value,
             wallDegVal: (wallDeg as { value: number }).value,
           };
@@ -1909,7 +1911,7 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
       metrics.cloudCoverage = clouds.getCoverage();
     }
     line.setDim(routeDim);
-    metrics.hasRock = 1;
+    metrics.hasRock = (window as unknown as { __hasRock?: number }).__hasRock ?? 0;
     metrics.rockWeightShown = rockWeight.value;
     // §3b: haces Everest — cada frame: uTime + pulsos (única CPU) +
     // caminante sobre P(d) del rastro real. Cada 6 frames: estado por

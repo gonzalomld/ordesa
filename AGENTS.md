@@ -34,6 +34,7 @@
 - Anulaciones explícitas de la pieza (orden: `?cam=` > rig para la pose, `?t=` > scroll para la hora, `?s=`/`?act=` > scroll para `s`, `?orbit=1` excluye el rig). Si está `?cam=`, el rig no compone; si está `?t=`, la hora queda congelada.
 - El contexto GL crudo solo se lee (`getError`, `getShaderSource`, `readPixels`, timer queries); nunca se escribe. Todo estado pasa por el renderer.
 - Todo uniforme añadido a un ShaderMaterial o a un onBeforeCompile se DECLARA en el GLSL (`uniform float X;`). three sube material.uniforms, no los declara. Comprobación obligatoria antes de subir: window.__programs sin ningún ok=false.
+- Un valor que cambia en runtime es un uniforme; inyectarlo como constante obliga a recompilar y el programa se queda con el valor viejo (§5b: uHasRock con needsUpdate recreaba el programa con 0 aunque el flag ya fuese 1).
 - Ningún render a target usa la escena principal. Cada pase fuera de pantalla tiene su escena propia con solo lo que necesita.
 - Una fase, un despliegue. Cuando el brief da un orden con una comprobación entre fases, el orden es parte del brief. Juntar fases para ahorrar un despliegue no ahorra nada: cuesta la localización del fallo.
 - Ningún parámetro de dibujo se retroalimenta de una sonda que lo mide; las sondas informan, no gobiernan.

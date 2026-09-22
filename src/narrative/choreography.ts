@@ -558,10 +558,14 @@ export const ROUTE_DIVERGE_PCT = 2; // beyond ~360 m the track changed or the re
 // --- §5 PAREDES (roca estratificada triplanar, viewer.ts): solo los planos
 // verticales muestrean la roca (el suelo conserva la ortofoto); los estratos
 // quedan horizontales porque la V de la textura es siempre vWPos2.y.
-export const ROCK_SCALE_A = 90; // m por baldosa (escala grande)
-export const ROCK_SCALE_B = 47; // m por baldosa (escala chica, offset 0.5)
-export const ROCK_MIX = 0.75; // mezcla roca sobre ortofoto en pared
-export const ROCK_CORRIDOR_K = 0.45; // en el corredor (4k con detalle) la mezcla baja ×0.45
+// §5b: escalas a la mitad (estratos 3,2 m / 1,7 m: por encima del ruido de
+// muestreo a 1,4 km, por debajo del desenfoque de 4 px de G94) + mezcla
+// 0,85 (corredor ×0,55). Desvanecido 4500→1200 intacto (si G96 hierve, el
+// inicio adelanta a 3500, nunca baja el contraste).
+export const ROCK_SCALE_A = 45; // m por baldosa (escala grande)
+export const ROCK_SCALE_B = 24; // m por baldosa (escala chica, offset 0.5)
+export const ROCK_MIX = 0.85; // mezcla roca sobre ortofoto en pared plena
+export const ROCK_CORRIDOR_K = 0.55; // en el corredor (4k con detalle) la mezcla baja ×0.55
 export const ROCK_NORMAL_W = 0.6; // peso de la normal de roca (× steep)
 export const ROCK_FAR_M = 4500; // más allá: la roca se aplana (sin hervor)
 export const ROCK_NEAR_M = 1200; // más acá: detalle pleno

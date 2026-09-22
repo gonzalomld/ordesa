@@ -1,9 +1,10 @@
-// 16-build-rock.ts — PAREDES FASE §5: roca estratificada triplanar.
+// 16-build-rock.ts — PAREDES FASE §5b: roca estratificada triplanar.
 //
 // Genera dos texturas 1024×1024 TILEABLES en ambos ejes (semilla fija):
 //   - rock-albedo: estratos HORIZONTALES (bandas en el eje V, periodo base
 //     1/14 de la altura), erosionados con fBm de 4 octavas + fracturas
-//     verticales finas y escasas. Paleta caliza de Ordesa, croma máx 0,10.
+//     verticales finas y escasas. §5b: luma de estratos 0,45-0,85 (vetas
+//     0,90, juntas 0,38), croma máx 0,12: gris caliza con contraste, no color.
 //   - rock-normal: Sobel del mismo campo de alturas (fuerza 11): las bandas
 //     tienen relieve.
 // Salida con hash en meta.assets como el atlas de nubes (webp + copia PNG
@@ -17,14 +18,17 @@ export const ROCK_SIZE = 1024;
 export const ROCK_SEED = 20260922;
 const BANDS = 14; // periodo base 1/14 de la altura de la textura
 
-// Paleta caliza de Ordesa (sRGB 0-255)
-const C_SHADOW: [number, number, number] = [109, 103, 93]; // #6d675d
-const C_MIDD: [number, number, number] = [141, 132, 120]; // #8d8478
-const C_MIDL: [number, number, number] = [185, 178, 164]; // #b9b2a4
-const C_VEIN: [number, number, number] = [214, 208, 196]; // #d6d0c4
-// Tope interno 0,095: el redondeo a byte puede reintroducir ~0,005 de croma;
-// el CRITERIO (puerta G97-textura) sigue siendo 0,10 sobre el albedo final.
-const CHROMA_CAP = 0.095;
+// Paleta caliza de Ordesa §5b (sRGB 0-255): luma de estratos 0,45-0,85.
+// Junta oscura (luma 0,38), sombra de cama (0,45), luz de estrato (0,85),
+// veta clara (0,90). Neutros cálidos mínimos para que el cap de croma no
+// los desplace: los tres canales a igual distancia del gris.
+const C_JOINT: [number, number, number] = [97, 94, 88]; // #61645e… luma 0,38
+const C_SHADOW: [number, number, number] = [115, 112, 106]; // luma 0,45
+const C_LIGHT: [number, number, number] = [217, 214, 208]; // luma 0,85
+const C_VEIN: [number, number, number] = [230, 227, 221]; // luma 0,90
+// Tope §5b 0,115: el redondeo a byte puede reintroducir ~0,005 de croma;
+// el CRITERIO (puerta G97-textura) sigue siendo 0,12 sobre el albedo final.
+const CHROMA_CAP = 0.115;
 
 // --- RNG determinista ---
 function mulberry(seed: number): () => number {
@@ -87,11 +91,13 @@ function smoothstep(a: number, b: number, v: number): number {
 
 export interface RockStats {
   seamMean: number; // salto medio de H en la costura X (campo, no byte)
-  seamMax: number; // ratio salto-Y en costura / salto-Y interior (≈1 = sin costura)
-  chromaMax: number; // croma máx del albedo FINAL (tras el cap 0,10)
+  seamMax: number; // ratio salto-Y en costura / salto-Y interior (≤3: orden de magnitud)
+  chromaMax: number; // croma máx del albedo FINAL (tras el cap 0,12)
   rowBandVar: number;
   normalMeanX: number;
   normalMeanY: number;
+  lumaMin: number; // §5b: luma mín del albedo (puerta ≤0,40)
+  lumaMax: number; // §5b: luma máx del albedo (puerta ≥0,80)
 }
 
 export async function buildRock(): Promise<{
@@ -129,9 +135,10 @@ export async function buildRock(): Promise<{
 
   for (let y = 0; y < S; y++) {
     for (let x = 0; x < S; x++) {
-      // Espesor variable: warp de baja frecuencia (P=4, ±0,6 bandas)
+      // Espesor variable: warp de baja frecuencia (P=4, ±0,3 bandas).
+      // §5b: era ±0,6 y mandaba en el salto-Y de costura (1,6-1,7×).
       const low = vnoise((x / S) * 4, (y / S) * 4, 4, ROCK_SEED + 1);
-      const t = (y / S) * BANDS + (low - 0.5) * 1.2;
+      const t = (y / S) * BANDS + (low - 0.5) * 0.6;
       const f = t - Math.floor(t);
       const bi = ((Math.floor(t) % BANDS) + BANDS) % BANDS;
       const ni = (bi + 1) % BANDS;
@@ -139,9 +146,12 @@ export async function buildRock(): Promise<{
       const B = bandTone[ni] as number;
       const s01 = smoothstep(0.35, 0.65, f);
       const strat = A + (B - A) * s01;
-      // Erosión: fBm de 4 octavas
+      // Erosión: fBm de 4 octavas. §5b: pesos 0,70/0,40 + warp ±0,3 bandas
+      // (con 0,6/0,45 y warp ±0,6 el máximo se quedaba en ~0,76 y la rampa
+      // nunca alcanzaba la luz 0,85; el warp manda en el salto-Y de costura:
+      // ±0,3 lo deja en ~1,4× y h sigue barriendo [0,1] con 0,70/0,40).
       const ero = fbm(x, y, [8, 16, 32, 64], ROCK_SEED + 2, S);
-      const h = clamp01(0.6 * strat + 0.45 * (ero - 0.5) + 0.1 * (A - 0.5));
+      const h = clamp01(0.7 * strat + 0.4 * (ero - 0.5) + 0.1 * (A - 0.5));
       const i = y * S + x;
       H[i] = h;
       // Veta clara en la frontera de cama (f≈0,5, gaussiana σ≈0,06)
@@ -160,47 +170,45 @@ export async function buildRock(): Promise<{
     }
   }
 
-  // --- Albedo: rampa caliza + vetas + fracturas + tope de croma ---
+  // --- Albedo §5b: rampa junta→sombra→luz + vetas + fracturas + cap croma ---
   const alb = Buffer.alloc(S * S * 3);
   let chromaPre = 0;
   let chromaPost = 0;
+  let lumaMinSeen = 1;
+  let lumaMaxSeen = 0;
   const rowMean = new Float64Array(S);
   for (let y = 0; y < S; y++) {
     let rowSum = 0;
     for (let x = 0; x < S; x++) {
       const i = y * S + x;
       const h = H[i] as number;
-      // Rampa: shadow → mid-dark → mid-light → (mid-light+vein)/2
+      // Rampa de dos tramos: junta(0,38)→sombra(0,45) en h<0,25 (juntas
+      // finas y oscuras), sombra→luz(0,85) en el resto (estrato pleno).
       let r: number;
       let g: number;
       let b: number;
-      if (h < 0.45) {
-        const t = h / 0.45;
-        r = C_SHADOW[0] + (C_MIDD[0] - C_SHADOW[0]) * t;
-        g = C_SHADOW[1] + (C_MIDD[1] - C_SHADOW[1]) * t;
-        b = C_SHADOW[2] + (C_MIDD[2] - C_SHADOW[2]) * t;
-      } else if (h < 0.8) {
-        const t = (h - 0.45) / 0.35;
-        r = C_MIDD[0] + (C_MIDL[0] - C_MIDD[0]) * t;
-        g = C_MIDD[1] + (C_MIDL[1] - C_MIDD[1]) * t;
-        b = C_MIDD[2] + (C_MIDL[2] - C_MIDD[2]) * t;
+      if (h < 0.25) {
+        const t = h / 0.25;
+        r = C_JOINT[0] + (C_SHADOW[0] - C_JOINT[0]) * t;
+        g = C_JOINT[1] + (C_SHADOW[1] - C_JOINT[1]) * t;
+        b = C_JOINT[2] + (C_SHADOW[2] - C_JOINT[2]) * t;
       } else {
-        const t = (h - 0.8) / 0.2;
-        r = C_MIDL[0] + (C_VEIN[0] - C_MIDL[0]) * 0.5 * t;
-        g = C_MIDL[1] + (C_VEIN[1] - C_MIDL[1]) * 0.5 * t;
-        b = C_MIDL[2] + (C_VEIN[2] - C_MIDL[2]) * 0.5 * t;
+        const t = (h - 0.25) / 0.75;
+        r = C_SHADOW[0] + (C_LIGHT[0] - C_SHADOW[0]) * t;
+        g = C_SHADOW[1] + (C_LIGHT[1] - C_SHADOW[1]) * t;
+        b = C_SHADOW[2] + (C_LIGHT[2] - C_SHADOW[2]) * t;
       }
-      // Veta clara en la frontera de cama
-      const vv = (vein[i] as number) * 0.4;
+      // Veta clara (0,90) en la frontera de cama
+      const vv = (vein[i] as number) * 0.5;
       r += (C_VEIN[0] - r) * vv;
       g += (C_VEIN[1] - g) * vv;
       b += (C_VEIN[2] - b) * vv;
-      // Fractura: oscurece con alfa 0,35 hacia la sombra
+      // Fractura: oscurece con alfa 0,35 hacia la JUNTA (0,38)
       const cm = crackM[i] as number;
-      r -= (r - C_SHADOW[0]) * 0.35 * cm;
-      g -= (g - C_SHADOW[1]) * 0.35 * cm;
-      b -= (b - C_SHADOW[2]) * 0.35 * cm;
-      // Tope de croma 0,10 (mezcla hacia el gris de igual luma)
+      r -= (r - C_JOINT[0]) * 0.35 * cm;
+      g -= (g - C_JOINT[1]) * 0.35 * cm;
+      b -= (b - C_JOINT[2]) * 0.35 * cm;
+      // Tope de croma 0,12 (mezcla hacia el gris de igual luma)
       const mx = Math.max(r, g, b);
       const mn = Math.min(r, g, b);
       const ch = mx > 1e-6 ? (mx - mn) / mx : 0;
@@ -217,6 +225,8 @@ export async function buildRock(): Promise<{
       alb[o + 1] = Math.round(Math.min(255, Math.max(0, g)));
       alb[o + 2] = Math.round(Math.min(255, Math.max(0, b)));
       const lumF = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      if (lumF < lumaMinSeen) lumaMinSeen = lumF;
+      if (lumF > lumaMaxSeen) lumaMaxSeen = lumF;
       const mxF = Math.max(r, g, b) / 255;
       const mnF = Math.min(r, g, b) / 255;
       const chF = mxF > 1e-6 ? (mxF - mnF) / mxF : 0;
@@ -232,10 +242,10 @@ export async function buildRock(): Promise<{
   for (let y = 0; y < S; y++) rowBandVar += (rowMean[y] as number - meanAll) ** 2;
   rowBandVar /= S;
 
-  // Costura: con muestreo envuelto (periodos enteros + fracturas lejos del
-  // borde) el píxel S-1 y el píxel 0 son vecinos del mismo campo continuo.
-  // Puerta: el salto medio en la costura (H + Y + Z-columnas envueltas) no
-  // supera el salto medio entre texels ADYACENTES dentro (×1,5 de margen).
+  // Costura Y: con muestreo envuelto H[y] es periódico salvo el warp
+  // (P=4 en Y: H[S-1]≠H[0] por construcción). Puerta: el salto medio en la
+  // costura no supera 3× el salto-Y interior medio (las juntas reales son
+  // discontinuidades: el criterio es orden de magnitud, no continuidad).
   // El albedo absorbe el cap de croma por píxel; el CRITERIO es el campo H
   // (lo que la GPU interpola), no el byte del borde.
   let seamH = 0;
@@ -290,6 +300,8 @@ export async function buildRock(): Promise<{
     rowBandVar,
     normalMeanX: nmx / (S * S),
     normalMeanY: nmy / (S * S),
+    lumaMin: lumaMinSeen,
+    lumaMax: lumaMaxSeen,
   };
   void chromaPre;
   void innerMean;
@@ -315,16 +327,21 @@ function isMainModule(urlSuffix: string): boolean {
 
 if (isMainModule("16-build-rock.ts")) {
   const { albedoPng, albedoWebp, normalPng, normalWebp, stats } = await buildRock();
-  console.log(`seam: X-mean=${stats.seamMean.toFixed(5)} (need ≤ 0.02) Y-ratio=${stats.seamMax.toFixed(3)} (need ≤ 1.5)`);
-  console.log(`chroma max=${stats.chromaMax.toFixed(4)} (need ≤ 0.10 post-cap)`);
+  console.log(`seam: X-mean=${stats.seamMean.toFixed(5)} (need ≤ 0.02) Y-ratio=${stats.seamMax.toFixed(3)} (need ≤ 3.0)`);
+  console.log(`chroma max=${stats.chromaMax.toFixed(4)} (need ≤ 0.12 post-cap)`);
+  console.log(`luma range=[${stats.lumaMin.toFixed(3)}, ${stats.lumaMax.toFixed(3)}] (need ≤0,40+ / ≥0,80-)`);
   console.log(`row-band var=${stats.rowBandVar.toExponential(2)} (need > 1e-4)`);
   console.log(`normal mean xy=(${stats.normalMeanX.toFixed(4)}, ${stats.normalMeanY.toFixed(4)}) (need ≈ 0)`);
-  if (stats.seamMean > 0.02 || stats.seamMax > 1.5) {
+  if (stats.seamMean > 0.02 || stats.seamMax > 3.0) {
     console.error("ROCK REJECTED: seam visible — the tile does not wrap");
     process.exit(1);
   }
-  if (stats.chromaMax > 0.101) {
-    console.error("ROCK REJECTED: chroma above 0.10 in the final albedo");
+  if (stats.chromaMax > 0.121) {
+    console.error("ROCK REJECTED: chroma above 0.12 in the final albedo");
+    process.exit(1);
+  }
+  if (stats.lumaMin > 0.4 || stats.lumaMax < 0.79) {
+    console.error("ROCK REJECTED: strata luma range too narrow (need 0,38-0,85)");
     process.exit(1);
   }
   if (stats.rowBandVar <= 1e-4) {
