@@ -52,6 +52,12 @@ export interface RouteLine {
   redrape(meshZ: (x: number, y: number) => number, step?: number): void;
   /** The terrain LOD step the line was draped on (HUD audit: lod vs lineLod). */
   lineLod(): number;
+  /** §8 ?debug=gaps: viewer hook — the magenta overlay copies the line's
+   * positions, so a LOD redrape must rebuild it. Null in production. */
+  onRedrape(cb: (() => void) | null): void;
+  /** Copy of the draped world positions (§8 ?debug=gaps overlay reads
+   * them — same lattice, same drape, zero recompute). Length = route.n*3. */
+  linePositions(): number[];
   /** HUD audit: uStepM + instance count (no attribute left to sample). */
   debugIds(): { stepM: number; count: number; lengthM: number };
   /** G15: offscreen ID pass WITH the cut — render ONLY the solid Line2
@@ -266,6 +272,9 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
   const idBuf = new Uint8Array(256 * 144 * 4);
   let ghostProbe = false;
   let drapedStep = meshStep;
+  /** §8 ?debug=gaps: viewer hook — the magenta overlay copies the line's
+   * positions, so a LOD redrape must rebuild it. Null in production. */
+  let onRedrapeCb: (() => void) | null = null;
   // §2 halo continuo: siempre visible (base 0,10, hito 0,18);
   // setDim solo escala opacidades, nunca re-apaga el dibujo.
   let lastGlow = 0;
@@ -297,9 +306,16 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
     redrape(meshZ: (x: number, y: number) => number, step?: number): void {
       geo.setPositions(drape(meshZ));
       if (step !== undefined) drapedStep = step;
+      onRedrapeCb?.();
     },
     lineLod() {
       return drapedStep;
+    },
+    linePositions() {
+      return pos.slice();
+    },
+    onRedrape(cb: (() => void) | null) {
+      onRedrapeCb = cb;
     },
     debugIds() {
       return { stepM: uStepM.value, count: nSeg, lengthM: uLengthM.value };

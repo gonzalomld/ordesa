@@ -1537,6 +1537,67 @@ if (uWallProbe > 0.5) {
     void trackTick;
   }
 
+  // §8 ?debug=gaps: invented-trace overlay (magenta over the normal line).
+  // Lazy chunk — never in the production bundle. Draws the whole invented
+  // stretch regardless of progress (it measures the trace, not the walk).
+  // EARLY (before the gate opens): swiftshader needs ~60 s for first paint
+  // and the watchdog fails at 45 s — the overlay must already be mounted
+  // when the capture probe runs, never after a late second paint.
+  let gapsOverlay:
+    | { group: THREE.Group; inventedM: number; inventedRuns: number }
+    | null = null;
+  // gapsRanges kept for the LOD-redrape rebuild (same closure inputs).
+  let gapsRanges: Array<readonly [number, number]> = [];
+  let gapsBuild: {
+    buildGapsOverlay: typeof import("./gaps-overlay.ts").buildGapsOverlay;
+  } | null = null;
+  const rebuildGapsOverlay = (): void => {
+    if (!gapsOverlay || gapsRanges.length === 0 || !gapsBuild) return;
+    for (const o of [...gapsOverlay.group.children]) {
+      const l = o as unknown as {
+        geometry?: { dispose(): void };
+        material?: { dispose(): void };
+      };
+      l.geometry?.dispose();
+      l.material?.dispose();
+      gapsOverlay.group.remove(o);
+    }
+    const { buildGapsOverlay } = gapsBuild;
+    const fresh = buildGapsOverlay(line.linePositions(), route, gapsRanges, res2);
+    for (const o of [...fresh.group.children]) gapsOverlay.group.add(o);
+    gapsOverlay.inventedM = fresh.inventedM;
+    gapsOverlay.inventedRuns = fresh.inventedRuns;
+  };
+  if (boot.gaps) {
+    try {
+      const [{ buildGapsOverlay }, { GAP_RANGES, GAP_META }] = await Promise.all([
+        import("./gaps-overlay.ts"),
+        import("../generated/gaps.ts"),
+      ]);
+      gapsBuild = { buildGapsOverlay };
+      gapsRanges = GAP_RANGES as unknown as Array<readonly [number, number]>;
+      gapsOverlay = buildGapsOverlay(line.linePositions(), route, gapsRanges, res2);
+      group.add(gapsOverlay.group);
+      // §8: the overlay copies the line's positions — LOD redrape rebuilds it.
+      line.onRedrape(rebuildGapsOverlay);
+      line.setProgressDist(route.lengthM);
+      (window as unknown as { __gaps?: unknown }).__gaps = {
+        runs: gapsOverlay.inventedRuns,
+        inventedM: Math.round(gapsOverlay.inventedM),
+        audit: GAP_META,
+      };
+      window.addEventListener("resize", () => {
+        renderer.getDrawingBufferSize(res2);
+        if (!gapsOverlay) return;
+        for (const o of gapsOverlay.group.children) {
+          const lm = (o as unknown as { material: { resolution: THREE.Vector2 } }).material;
+          lm.resolution.copy(res2);
+        }
+      });
+    } catch {
+      /* overlay is an instrument: never block first paint */
+    }
+  }
   // ?debug=path instrument (3-panel overlay, lazy import keeps it out of the
   // entry chunk graph unless requested)
   if (boot.path) {
@@ -1901,9 +1962,11 @@ if (uWallProbe > 0.5) {
     // E2: progressive cut at the walker (epilogue draws the whole loop).
     // BLOQUEANTE ?track=all: isolation probe — uProgressDist = lengthM,
     // nothing else touched. Answers geometry-vs-cut in a single load.
+    // §8 ?debug=gaps owns the cut (whole invented trace always visible);
+    // every other mode keeps the walking cut.
     {
       const e = route.lengthM;
-      if (boot.trackAll) line.setProgressDist(e);
+      if (boot.trackAll || boot.gaps) line.setProgressDist(e);
       else line.setProgressDist(st.s >= EPILOGUE_S ? e : Math.min(st.d, e));
     }
     // E3: line width from plan camera->aim distance; halo glow at the
