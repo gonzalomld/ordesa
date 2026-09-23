@@ -596,6 +596,14 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     }
     // E4: corridor around the track snaps to full res (route loaded after
     // the first build — rebuild once it arrives; no-op before that).
+    // §5d-ter: customProgramCacheKey incluye la bandera de sonda (+wallprobe):
+    // three decide "mismo programa, no recompilo" SOLO por la clave. Con
+    // clave única, el programa se compilaba una vez y el parche de sonda
+    // posterior NUNCA entraba al GL (GLSL compilado: decl SÍ, ramas NO —
+    // medido con probeGLSL). Con la bandera en la clave, ?debug=walls nace
+    // CON sonda y el GLSL trae las tres ramas. Sigue sin recompilar en
+    // runtime (la clave no cambia 0→1→2→3: uWallProbe es uniforme).
+    const probeKey = boot.steep || boot.walls || boot.walls2 ? "+wallprobe" : "";
     const corridor = routeReady ? { x: routeReady.x, y: routeReady.y, halfM: CORRIDOR_HALF_M } : undefined;
     const geo = buildTerrainGeometry(elev, meta, world, step, corridor);
     if (!terrainMat) {
@@ -648,7 +656,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
 uniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNormalStrength; varying vec3 vUv2c;
 uniform float uWallDeg; uniform float uRockWeight; uniform float uRockMix; uniform float uRockDebug; uniform float uGrainK;
 uniform float uHasCorr; uniform float uHasNormal;
-uniform float uWallProbe; // §5d-bis: wall probe (0=off · 1=slope/rockK/b−r(albedo) · 2=b−r(final)/luma(final)), declared (G40)
+uniform float uWallProbe; // §5d-ter: wall probe (0=off · 1=slope/rockK/b−r(albedo) · 2=b−r(final)/luma(final) · 3=round-trip camino real), declared (G40)
 uniform sampler2D uRock; uniform sampler2D uRockNormal; uniform float uHasRock;
 varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv;
 float gSteep = 0.0;
@@ -836,19 +844,22 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
             vertexShader: string;
           }) => {
             prevDither(s2);
-            // §5d: la sonda de pared vive DESPUÉS de dithering (se salta
-            // tonemapping + colorspace: lo que lee readPixels es el valor
-            // escrito). uWallProbe es UNIFORME (0=off · 1=pendiente/rockK/
-            // b−r(ALBEDO, centrado 0,5) · 2=b−r(final)/luma(final)), canal G
-            // CENTRADO en 0,5 (b−r −1..1 → 0..1; en JS: br = G*2−1).
+            // §5d-ter: MODO 3 = round-trip por el CAMINO REAL — en el MISMO
+            // sitio del shader del terreno donde escribe la sonda (después
+            // de dithering: se salta tonemapping + colorspace, como los
+            // modos 1/2). Tres valores distintos a propósito: un solo 0,5
+            // no distingue una codificación sRGB de un escalado.
+            //   [128, 64, 191] ± 1  → el canvas guarda en CRUDO.
+            //   [188, 137, 224] ± 2 → el canvas CODIFICA a sRGB (entonces
+            //     TODOS los histogramas de §5d están mal leídos: linealizar
+            //     cada canal antes de binarlo, v=((c/255+.055)/1.055)^2.4).
+            //   otra cosa → parar y reportar, no interpretar nada.
             // gLumaF/gBRF se asignan SIEMPRE aquí (el chunk de niebla nunca
             // corre: ?debug=steep no parchea fog; walls se salta
             // tonemapping+colorspace pero NO la niebla — la niebla YA está
             // sumada en gl_FragColor a esta altura del chunk final).
             // El cociente se fue: sobre albedo oscuro se infla igual que
             // infló G104 (dos veces).
-            // BAJO BANDERA walls/walls2: la pasada la hace renderWallProbe
-            // (visible=false, una pasada, restaurado después).
             s2.fragmentShader = s2.fragmentShader
               .replace(
                 "#include <dithering_fragment>",
@@ -859,8 +870,10 @@ if (uWallProbe > 0.5) {
   float wsm = 0.05 + 0.9 * clamp(gSlope / 90.0, 0.0, 1.0);
   if (uWallProbe < 1.5)
     gl_FragColor = vec4(wsm, clamp(grockMix, 0.0, 1.0), clamp(gBR * 0.5 + 0.5, 0.0, 1.0), 1.0);
-  else
+  else if (uWallProbe < 2.5)
     gl_FragColor = vec4(wsm, clamp(gBRF * 0.5 + 0.5, 0.0, 1.0), clamp(gLumaF, 0.0, 1.0), 1.0);
+  else if (uWallProbe < 3.5)
+    gl_FragColor = vec4(0.5, 0.25, 0.75, 1.0);
 }`,
               )
               .replace(
@@ -871,8 +884,10 @@ if (uWallProbe > 0.5) {
   float wsm2 = 0.05 + 0.9 * clamp(gSlope / 90.0, 0.0, 1.0);
   if (uWallProbe < 1.5)
     gl_FragColor = vec4(wsm2, clamp(grockMix, 0.0, 1.0), clamp(gBR * 0.5 + 0.5, 0.0, 1.0), 1.0);
-  else
+  else if (uWallProbe < 2.5)
     gl_FragColor = vec4(wsm2, clamp(gBRF * 0.5 + 0.5, 0.0, 1.0), clamp(gLumaF, 0.0, 1.0), 1.0);
+  else if (uWallProbe < 3.5)
+    gl_FragColor = vec4(0.5, 0.25, 0.75, 1.0);
 } else {
   gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), clamp(grain + 0.5, 0.0, 1.0), 1.0);
 }`,
@@ -880,7 +895,7 @@ if (uWallProbe > 0.5) {
           };
         }
       };
-      terrainMat.customProgramCacheKey = () => "ordesa-base+corridor+n2c";
+      terrainMat.customProgramCacheKey = () => `ordesa-base+corridor+n2c${probeKey}`;
     }
     terrain = new THREE.Mesh(geo, terrainMat);
     terrain.receiveShadow = true;
@@ -895,9 +910,11 @@ if (uWallProbe > 0.5) {
   const grainK = { value: ROCK_GRAIN_K };
   const rockMix = { value: ROCK_MIX };
   const rockDebug = { value: boot.rock ? 1 : 0 };
-  // §5d: wall probe (UNIFORME — NO constante de compilación: 0→1→2 no
+  // §5d: wall probe (UNIFORME — NO constante de compilación: 0→3 no
   // recompila). El modo lo pone renderWallProbe durante su pasada; aquí
   // arranca en 0 (off) para no secuestrar ?debug=steep (?debug=rock intacto).
+  // Modos: 1=slope/rockK/b−r(albedo) · 2=b−r(final)/luma(final) ·
+  // 3=round-trip camino real (0.5, 0.25, 0.75).
   const wallProbe = { value: 0.0 };
   const hasCorr = { value: 0 };
   const hasNormal = { value: 0 };
@@ -1256,10 +1273,19 @@ if (uWallProbe > 0.5) {
   // producción no lo carga ni lo llama); el cableado vive aquí porque la
   // pieza es dueña de sky, line, clouds, beams, labelLayer y wallProbe.
   // Va DESPUÉS de haces/etiquetas (beams y labelRts ya existen).
-  let renderWallProbe: (() => { roundTrip: [number, number, number] } | null) | null = null;
-  let readWallHist: ((mode: 1 | 2) => unknown) | null = null;
+  let renderWallProbe: (() => unknown) | null = null;
+  let readWallHist: ((mode: 1 | 2 | 3) => unknown) | null = null;
+  let probeWallGLSL: (() => unknown) | null = null;
   if (boot.walls || boot.walls2) {
     const mod = await import("./wall-probe.ts");
+    // §5d-ter: la cadena que monta el programa es terrainMat.onBeforeCompile
+    // (aquí arriba, ~línea 617); el bloque de abajo la ENVUELVE vía .bind
+    // (NO se reasigna — reasignar mataría el parche de niebla de
+    // patchTerrainMaterial). prevDither = cadena completa (niebla+roca+…);
+    // la sonda se añade DESPUÉS de dithering, MISMO programa, MISMA pasada.
+    // Y terrainMat nace en el PRIMER rebuildTerrain y NUNCA se recrea (los
+    // rebuilds solo cambian la geometría): el onBeforeCompile envuelto
+    // sigue vivo en todos los re-drapes.
     const wired = mod.mountWallProbe({
       renderer, scene, camera, sky, lineGroup: line.group, cloudsGroup: clouds.group,
       beamsGroup: beams?.group ?? null, labelLayer, uWallProbe: wallProbe,
@@ -1275,6 +1301,7 @@ if (uWallProbe > 0.5) {
     });
     renderWallProbe = wired.render;
     readWallHist = wired.readHist;
+    probeWallGLSL = wired.probeGLSL;
     // §5d-bis (3): el harness escribe uniformes directamente y los LEE
     // después para confirmar (nada de deslizadores). __rockCtl publica
     // escritores que devuelven el valor LEÍDO tras escribir + lectores.
@@ -1304,6 +1331,8 @@ if (uWallProbe > 0.5) {
     (window as unknown as { __wallProbe?: unknown }).__wallProbe = {
       roundTrip: () => renderWallProbe?.() ?? null,
       hist: (mode?: number) => readWallHist?.(mode === 2 ? 2 : 1) ?? null,
+      hist3: () => readWallHist?.(3) ?? null,
+      glsl: () => probeWallGLSL?.() ?? null,
     };
     (window as unknown as { __rockCtl?: unknown }).__rockCtl = rockCtl;
     (window as unknown as { __rockUniforms?: unknown }).__rockUniforms = {
@@ -1470,8 +1499,8 @@ if (uWallProbe > 0.5) {
     }
     if (boot.walls || boot.walls2) {
       hud.append(el("div", "hud-label", boot.walls2
-        ? "sonda: R = pendiente · G = b−r final (0,5) · B = luma final"
-        : "sonda: R = pendiente · G = rockK · B = croma(albedo)"));
+        ? "sonda: R = pendiente · G = b−r final (0,5) · B = luma final sRGB"
+        : "sonda: R = pendiente · G = rockK · B = b−r albedo (0,5)"));
     }
     document.body.appendChild(hud);
     // hour readout follows the journey (write-if-changed in the loop)

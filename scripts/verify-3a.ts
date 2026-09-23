@@ -454,12 +454,25 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
 //   §5d añade: uWallProbe tampoco recompila (uni.programs constante 1→2).
 // G102: DIFERENCIAL: corr(P1on−P1off, P2on−P2off) ≤ 0,35. §5d ANULADO
 //   (correlacionar dos vectores de ceros da ~0): re-medir tras G94(4e).
-// G105 (sonda, §5d-bis): gLumaF/gBRF asignados ANTES de la escritura;
-//   modo 1 B = b−r(ALBEDO, centrado) — el cociente se fue (se infla sobre
-//   albedo oscuro, G104 dos veces); cada histograma publica uni.* LEÍDOS
-//   (uWallProbe/uRockMix/uRockWeight/uWallDeg/uHasRock/programs);
-//   __rockCtl escribe uniformes directos + lee (nada de deslizadores).
-// Medida: ?debug=walls/walls2&t=12:00 (__rockCtl para on/off).
+// G105 (sonda, §5d-ter — QUE EL INSTRUMENTO DIGA LA VERDAD):
+//   (1) MODO 3 = round-trip por el CAMINO REAL (mismo sitio del shader del
+//     terreno, uWallProbe=3, mismo readPixels): (0.5,0.25,0.75) → [128,64,191]
+//     crudo | [188,137,224] sRGB | otra cosa = parar. El quad propio falso
+//     (flatRoundTrip) está BORRADO. Tres valores distintos: un solo 0,5 no
+//     distingue codificación de escalado.
+//   (2) cada pasada publica uni.* LEÍDOS (uWallProbe/uRockMix/uRockWeight/
+//     uWallDeg/uHasRock/programs); si uRockMix ≠ 0,55 en pasada normal, ESE
+//     es el hallazgo (explicaría rockK ≥ 0,787 con MIX 0,55).
+//   (3) modo 1 B = b−r(ALBEDO, centrado) → brAbyS; gCroma fuera (cociente
+//     que engañó en G94 y G104); etiqueta HUD "B = b−r albedo".
+//   (4) ESPACIO DE COLOR DECLARADO: gBRF/gLumaF se capturan en el chunk
+//     final DESPUÉS de tonemapping+colorspace (three r170: opaque →
+//     tonemapping → colorspace → fog → dithering; la niebla va en fog,
+//     después de colorspace) y DESPUÉS de la niebla → SON sRGB DE PANTALLA
+//     (post-ACES): brFbyS_srgb / lumaFbyS_srgb. La pregunta "¿se ve azul?"
+//     es de pantalla.
+// Medida: ?debug=walls/walls2&t=12:00 (__rockCtl para on/off, hist3() para
+// el modo 3).
 {
   const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
   const has = (k: string): boolean => viewerSrc.includes(k);
@@ -496,8 +509,15 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
   const wallProbeModes = has("uWallProbe > 0.5") && has("uWallProbe < 1.5");
   const wallsFlags = readFileSync("src/engine/debug.ts", "utf8").includes('q.get("debug") === "walls"');
   const wallsLazy = has('await import("./wall-probe.ts")');
-  // §5d-bis: la sonda publica uni.* LEÍDOS + b−r de albedo en modo 1.
+  // §5d-ter: modo 3 camino real + veredicto + sRGB declarado con sufijo.
   const hasUni = (s: string, k: string): boolean => s.includes(k);
+  const wallsTer = hasUni(probeSrc105, "vec4(0.5, 0.25, 0.75, 1.0)")
+    && hasUni(probeSrc105, "roundTripVerdict")
+    && !hasUni(probeSrc105, "flatRoundTrip")
+    && hasUni(probeSrc105, "brFbyS_srgb") && hasUni(probeSrc105, "lumaFbyS_srgb")
+    && hasUni(probeSrc105, "SON sRGB DE PANTALLA")
+    && hasUni(viewerSrc, "else if (uWallProbe < 3.5)")
+    && hasUni(viewerSrc, "hist3:");
   const wallsBis = hasUni(probeSrc105, "uWallProbe: uWallProbe.value") && hasUni(probeSrc105, "brAbyS")
     && hasUni(viewerSrc, "__rockCtl") && hasUni(viewerSrc, "gBR * 0.5 + 0.5")
     && hasUni(viewerSrc, "gLumaF = gluma(gl_FragColor.rgb)")
@@ -508,7 +528,8 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
     !wallProbeModes && "modos 1/2 no implementados",
     !wallsFlags && "banderas ?debug=walls/walls2 ausentes",
     !wallsLazy && "wall-probe.ts no es carga diferida",
-    !wallsBis && "§5d-bis ausente (uni.* leídos / brAbyS / gLumaF-gBRF antes de sonda / sin cociente)"];
+    !wallsBis && "§5d-bis ausente (uni.* leídos / brAbyS / gLumaF-gBRF antes de sonda / sin cociente)",
+    !wallsTer && "§5d-ter ausente (modo 3 camino real + veredicto + sRGB con sufijo, sin flatRoundTrip)"];
   gate("G94-rock-contract", bad.length === 0 && valsOk,
     bad.length || !valsOk
       ? `falta: ${[...bad, ...(valsOk ? [] : [`vals A=${ROCK_SCALE_A} B=${ROCK_SCALE_B} MIX=${ROCK_MIX} CORR=${ROCK_CORRIDOR_K} FAR=${ROCK_FAR_M} NEAR=${ROCK_NEAR_M}`])].join(", ")}`
@@ -528,7 +549,7 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
   gate("G105-wall-probe", (wallsBad.filter(Boolean) as string[]).length === 0,
     (wallsBad.filter(Boolean) as string[]).length > 0
       ? `sonda rota: ${(wallsBad.filter(Boolean) as string[]).join(", ")}`
-      : `sonda §5d-bis: gLumaF/gBRF antes de sonda + modo1 B=b−r(albedo) + uni.* LEÍDOS (modo/mix/peso/deg/hasRock/programs) + __rockCtl directo — measure uni.uWallProbe==mode en cada pasada + round-trip 0.5→127/128`);
+      : `sonda §5d-ter: modo 3 camino real [128,64,191]crudo/[188,137,224]sRGB + uni.* LEÍDOS + brAbyS + brFbyS_srgb/lumaFbyS_srgb (pantalla, post-ACES) — measure hist3() + uni.uWallProbe==mode`);
 }
 
 // --- G93 luma probe cost (C2b): downsample 32×32 + readPixels de 4 KB,

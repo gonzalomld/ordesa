@@ -133,7 +133,7 @@ export function buildRouteLine(
       const base = mz ? mz(gx, gy) + 4 : sampleGrid(elev, meta, gx, gy);
       const gz = base - 4 + ny * off;
       void nz;
-      const [wx, wy, wz] = epsgToWorld(gx, y, gz, world);
+      const [wx, wy, wz] = epsgToWorld(gx, gy, gz, world);
       pos.push(wx, wy, wz);
     }
     return pos;

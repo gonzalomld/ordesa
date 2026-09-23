@@ -99,9 +99,10 @@ export interface BootQuery {
   cloudshadow: boolean;
   /** §5: ?debug=rock — solo la roca triplanar, sin ortofoto ni luz (verla). */
   rock: boolean;
-  /** §5d: ?debug=walls — sonda de pared: R=pendiente G=rockK B=croma(albedo).
-   * ?debug=walls2 — R=pendiente G=b−r(final, centrado 0,5) B=luma(final).
-   * Una pasada bajo demanda (readWallHist), producción no lo carga ni llama. */
+  /** §5d-ter: ?debug=walls — sonda de pared: R=pendiente G=rockK B=b−r(albedo, 0,5).
+   * ?debug=walls2 — R=pendiente G=b−r(final sRGB, 0,5) B=luma(final sRGB).
+   * Modo 3 (round-trip camino real) vía hist3(). Una pasada bajo demanda
+   * (readWallHist), producción no lo carga ni lo llama. */
   walls: boolean;
   walls2: boolean;
   /** N2c: ?cloudshadow=0 — sombras desactivadas (G55: niebla intacta). */
