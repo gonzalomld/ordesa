@@ -648,18 +648,18 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
 uniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNormalStrength; varying vec3 vUv2c;
 uniform float uWallDeg; uniform float uRockWeight; uniform float uRockMix; uniform float uRockDebug; uniform float uGrainK;
 uniform float uHasCorr; uniform float uHasNormal;
-uniform float uWallProbe; // §5d: wall probe (0=off · 1=slope/rockK/croma(alb) · 2=b−r(final)/luma(final)), declared (G40)
+uniform float uWallProbe; // §5d-bis: wall probe (0=off · 1=slope/rockK/b−r(albedo) · 2=b−r(final)/luma(final)), declared (G40)
 uniform sampler2D uRock; uniform sampler2D uRockNormal; uniform float uHasRock;
 varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv;
 float gSteep = 0.0;
 float gRaw = 0.0;
-float gGrain = 0.0;
 float grockMix = 0.0;
 float gSlope = 0.0;
-float gCroma = 0.0;
+// §5d-bis: gCroma/gCromaF/gGrain retirados (muertos: los cocientes se inflan
+// sobre albedo oscuro — G104 dos veces). La sonda publica b−r (gBR/gBRF)
+// + luma (gLumaF). ?debug=steep sigue pintando su propio B (+0,5 inline).
 float gBR = 0.0;
 float gLumaF = 0.0;
-float gCromaF = 0.0;
 float gBRF = 0.0;
 float gluma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 float whash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
@@ -764,7 +764,6 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
       float gz = wgrain(vec2(vWPos2.x / rep, vWPos2.y / rep));
       grain = (gx * (wx / wsum) + gz * (wz / wsum)) - 0.5;
     }
-    gGrain = grain;
     float grano = grain * uGrainK * steep;
     if (uRockDebug > 0.5) {
       alb = alb * 1.0;
@@ -773,10 +772,9 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
     }
   }
   diffuseColor.rgb = alb;
-  // §5d: métricas de pared sobre el albedo YA mezclado (al final del bloque)
-  // + color iluminado ANTES de sobrescribir (chunk final: niebla/luces ya
-  // sumadas, tonemapping+dithering todavía no — la sonda lo pinta después).
-  gCroma = length(alb - vec3(gluma(alb))) / max(gluma(alb), 1e-3);
+  // §5d: métricas de pared sobre el albedo YA mezclado (al final del bloque).
+  // gBR = b−r del ALBEDO (acotado, estable); el cociente gCroma se fue en
+  // §5d-bis (sobre albedo oscuro se infla igual que infló G104 — dos veces).
   gBR = alb.b - alb.r;
 #endif`,
           )
@@ -841,32 +839,42 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
             // §5d: la sonda de pared vive DESPUÉS de dithering (se salta
             // tonemapping + colorspace: lo que lee readPixels es el valor
             // escrito). uWallProbe es UNIFORME (0=off · 1=pendiente/rockK/
-            // croma(albedo) · 2=b−r(final)/luma(final)), canal G de walls2
+            // b−r(ALBEDO, centrado 0,5) · 2=b−r(final)/luma(final)), canal G
             // CENTRADO en 0,5 (b−r −1..1 → 0..1; en JS: br = G*2−1).
+            // gLumaF/gBRF se asignan SIEMPRE aquí (el chunk de niebla nunca
+            // corre: ?debug=steep no parchea fog; walls se salta
+            // tonemapping+colorspace pero NO la niebla — la niebla YA está
+            // sumada en gl_FragColor a esta altura del chunk final).
+            // El cociente se fue: sobre albedo oscuro se infla igual que
+            // infló G104 (dos veces).
             // BAJO BANDERA walls/walls2: la pasada la hace renderWallProbe
             // (visible=false, una pasada, restaurado después).
             s2.fragmentShader = s2.fragmentShader
               .replace(
                 "#include <dithering_fragment>",
                 `#include <dithering_fragment>
+gLumaF = gluma(gl_FragColor.rgb);
+gBRF = gl_FragColor.b - gl_FragColor.r;
 if (uWallProbe > 0.5) {
   float wsm = 0.05 + 0.9 * clamp(gSlope / 90.0, 0.0, 1.0);
   if (uWallProbe < 1.5)
-    gl_FragColor = vec4(wsm, clamp(grockMix, 0.0, 1.0), clamp(gCroma, 0.0, 1.0), 1.0);
+    gl_FragColor = vec4(wsm, clamp(grockMix, 0.0, 1.0), clamp(gBR * 0.5 + 0.5, 0.0, 1.0), 1.0);
   else
     gl_FragColor = vec4(wsm, clamp(gBRF * 0.5 + 0.5, 0.0, 1.0), clamp(gLumaF, 0.0, 1.0), 1.0);
 }`,
               )
               .replace(
-                "gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), clamp(gGrain + 0.5, 0.0, 1.0), 1.0);",
-                `if (uWallProbe > 0.5) {
+                "gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), clamp(grain + 0.5, 0.0, 1.0), 1.0);",
+                `gLumaF = gluma(gl_FragColor.rgb);
+gBRF = gl_FragColor.b - gl_FragColor.r;
+if (uWallProbe > 0.5) {
   float wsm2 = 0.05 + 0.9 * clamp(gSlope / 90.0, 0.0, 1.0);
   if (uWallProbe < 1.5)
-    gl_FragColor = vec4(wsm2, clamp(grockMix, 0.0, 1.0), clamp(gCroma, 0.0, 1.0), 1.0);
+    gl_FragColor = vec4(wsm2, clamp(grockMix, 0.0, 1.0), clamp(gBR * 0.5 + 0.5, 0.0, 1.0), 1.0);
   else
     gl_FragColor = vec4(wsm2, clamp(gBRF * 0.5 + 0.5, 0.0, 1.0), clamp(gLumaF, 0.0, 1.0), 1.0);
 } else {
-  gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), clamp(gGrain + 0.5, 0.0, 1.0), 1.0);
+  gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), clamp(grain + 0.5, 0.0, 1.0), 1.0);
 }`,
               );
           };
@@ -1255,13 +1263,55 @@ if (uWallProbe > 0.5) {
     const wired = mod.mountWallProbe({
       renderer, scene, camera, sky, lineGroup: line.group, cloudsGroup: clouds.group,
       beamsGroup: beams?.group ?? null, labelLayer, uWallProbe: wallProbe,
+      // §5d-bis (2/3): snapshot de uniformes LEÍDOS en la pasada + programs.
+      getLive: () => ({
+        uWallProbe: wallProbe.value,
+        uRockMix: rockMix.value,
+        uRockWeight: rockWeight.value,
+        uWallDeg: wallDeg.value,
+        uHasRock: hasRock.value,
+        programs: renderer.info.programs.length,
+      }),
     });
     renderWallProbe = wired.render;
     readWallHist = wired.readHist;
+    // §5d-bis (3): el harness escribe uniformes directamente y los LEE
+    // después para confirmar (nada de deslizadores). __rockCtl publica
+    // escritores que devuelven el valor LEÍDO tras escribir + lectores.
+    // uRockMix puede escribirse también vía __rockUniforms (mismo objeto
+    // vivo que la GPU lee cada draw — sin recompilar, sin needsUpdate).
+    const rockCtl = {
+      setRockMix: (v: number): number => { rockMix.value = v; return rockMix.value; },
+      getRockMix: (): number => rockMix.value,
+      setRockWeight: (v: number): number => { rockWeight.value = v; return rockWeight.value; },
+      getRockWeight: (): number => rockWeight.value,
+      getWallDeg: (): number => wallDeg.value,
+      getHasRock: (): number => hasRock.value,
+      getWallProbe: (): number => wallProbe.value,
+      setWallProbe: (v: number): number => { wallProbe.value = v; return wallProbe.value; },
+      rockMixConst: ROCK_MIX,
+    };
+    // §5d-bis: getLive también público (el harness lo usa para ASERTAR
+    // valores sin depender del histograma).
+    const rockLive = (): unknown => ({
+      uWallProbe: wallProbe.value,
+      uRockMix: rockMix.value,
+      uRockWeight: rockWeight.value,
+      uWallDeg: wallDeg.value,
+      uHasRock: hasRock.value,
+      programs: renderer.info.programs.length,
+    });
     (window as unknown as { __wallProbe?: unknown }).__wallProbe = {
       roundTrip: () => renderWallProbe?.() ?? null,
       hist: (mode?: number) => readWallHist?.(mode === 2 ? 2 : 1) ?? null,
     };
+    (window as unknown as { __rockCtl?: unknown }).__rockCtl = rockCtl;
+    (window as unknown as { __rockUniforms?: unknown }).__rockUniforms = {
+      uRockMix: rockMix,
+      uRockWeight: rockWeight,
+      uHasRock: hasRock,
+    };
+    (window as unknown as { __rockLive?: unknown }).__rockLive = rockLive;
   }
 
   // --- telemetry bar (7 cols, reads progress.getState()) ---

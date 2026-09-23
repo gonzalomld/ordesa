@@ -229,11 +229,9 @@ float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.-2.*f);
   float dfW = df * (0.45 + 0.55 * uFogDensity + uDawnF * ${FOG_DAWN_DF_ADD.toFixed(2)});
   haze = (lowCol * (hf * 0.85) + haze * dfW) / max(f, 1e-4);
   gl_FragColor.rgb = mix(gl_FragColor.rgb, haze, f);
-  // §5d: color iluminado ANTES de sobrescribir (niebla ya sumada,
-  // tonemapping+dithering todavía no — la sonda lo pinta después).
-  gLumaF = gluma(gl_FragColor.rgb);
-  gCromaF = length(gl_FragColor.rgb - vec3(gLumaF)) / max(gLumaF, 1e-3);
-  gBRF = gl_FragColor.b - gl_FragColor.r;
+  // §5d-bis: la asignación de gLumaF/gBRF vive en viewer (chunk final,
+  // ANTES de la escritura de sonda — el parche de niebla ya sumó aquí).
+  // Este bloque solo mezcla niebla; no publica nada de la sonda.
 }`,
       );
   };

@@ -436,25 +436,30 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
     hasProbe ? `probe in viewer (?luma=1 -> window.__luma), threshold ${G11_LUMA_MIN}, grid ${LUMA_GRID}x${LUMA_GRID} — measure at s=0.18/0.80, ?t=12:00` : "no __luma probe in viewer.ts");
 }
 
-// --- G94/G95/G96/G97/G101/G102 (§5d PAREDES: puertas redefinidas — medían
-// lo que no era). Node checks the CONTRACT; the NUMBERS come from prod:
-// G94: HF DE BANDA (no total): banda = desenfoque2px − desenfoque6px (aísla
-//   rasgos de ~4-12 px; el estrato mide ~5,9 px, el grano de ortofoto 1-2 px).
-//   RMS de banda después/antes ≥ 1,8 + meanAbsDiff ≥ 0,04, parches 128².
-//   Si falla: pared lisa, ortofoto pura, sin relieve de estratos.
-// G95: parches 256² (no 128²: el lag de baldosa ~145 px no cabe en 128²).
-//   Autocorrelación a los DOS lags (135 m y 85 m → px) — reportar.
-//   NO cambia: el hash de rock-albedo/rock-normal no debe moverse.
-// G96: parche a > 4,5 km (s=0,18): ratio HF ≤ 1,15 (era 1,3). NO cambia.
-// G101: __rockGLSL.hasRockLive() == __hasRock == 1 sin recompilar
-//   (renderer.info.programs no crece al mover "MEZCLA ROCA"). NO cambia.
-//   §5d añade: uWallProbe tampoco recompila (programs constante 0→1→2).
-// G102: DIFERENCIAL (no perfil total): perfil de cada parche DOS veces
-//   (MEZCLA a 0 y MEZCLA actual), corr(P1on−P1off, P2on−P2off) ≤ 0,35.
-//   El perfil total lo manda la ortofoto, idéntica en ambos parches.
-//   Si falla: se puede seguir una raya de un borde del circo al otro.
-// Medida: ?debug=1&skyfrac=1&luma=1&t=12:00, mismo encuadre antes/después
-// ("antes" = deslizador MEZCLA ROCA a 0).
+// --- G94/G95/G96/G97/G101/G102 (§5d-bis ARREGLAR LA SONDA — reparación de
+// instrumento, cero ajuste visual). Node checks the CONTRACT; the NUMBERS
+// come from prod. Cambios §5d-bis:
+// G94: procedimiento con CINCO ASERCIONES (nada de deslizadores):
+//   a. escribe uRockMix=0, lee, ASERTA == 0 · b. captura OFF ·
+//   c. escribe uRockMix=ROCK_MIX, lee, ASERTA == ROCK_MIX · d. captura ON ·
+//   e. ASERTA meanAbsDiff(ON,OFF) > 0,001 ANTES de ningún ratio.
+//   Si (e) falla: la medida no se pudo hacer (NO reportar ratio).
+//   RMS de banda (blur2−blur6) después/antes ≥ 1,8 + meanAbsDiff ≥ 0,04,
+//   parches 128². Si falla: pared lisa, ortofoto pura, sin relieve.
+// G95: parches 256², autocorr a los DOS lags (135 m y 85 m → px) — reportar.
+//   §5d ANULADO hasta que G94(4e) pase (autocorr baja sin roca solo dice
+//   "no hay patrón"). Hash de rock-albedo/rock-normal intacto.
+// G96: parche a > 4,5 km (s=0,18): ratio HF ≤ 1,15. NO cambia.
+// G101: __rockGLSL.hasRockLive() == __hasRock == 1 sin recompilar. NO cambia.
+//   §5d añade: uWallProbe tampoco recompila (uni.programs constante 1→2).
+// G102: DIFERENCIAL: corr(P1on−P1off, P2on−P2off) ≤ 0,35. §5d ANULADO
+//   (correlacionar dos vectores de ceros da ~0): re-medir tras G94(4e).
+// G105 (sonda, §5d-bis): gLumaF/gBRF asignados ANTES de la escritura;
+//   modo 1 B = b−r(ALBEDO, centrado) — el cociente se fue (se infla sobre
+//   albedo oscuro, G104 dos veces); cada histograma publica uni.* LEÍDOS
+//   (uWallProbe/uRockMix/uRockWeight/uWallDeg/uHasRock/programs);
+//   __rockCtl escribe uniformes directos + lee (nada de deslizadores).
+// Medida: ?debug=walls/walls2&t=12:00 (__rockCtl para on/off).
 {
   const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
   const has = (k: string): boolean => viewerSrc.includes(k);
@@ -485,17 +490,25 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
     return !!rel && existsSync(`public/${rel}`) &&
       metaRock.sizesBytes?.[k] === (existsSync(`public/${rel}`) ? readFileSync(`public/${rel}`).length : -1);
   });
+  const probeSrc105 = readFileSync("src/engine/wall-probe.ts", "utf8");
   const wallProbeDecl = has("uniform float uWallProbe");
   const wallProbeUniform = has('s.uniforms["uWallProbe"] = wallProbe');
   const wallProbeModes = has("uWallProbe > 0.5") && has("uWallProbe < 1.5");
   const wallsFlags = readFileSync("src/engine/debug.ts", "utf8").includes('q.get("debug") === "walls"');
   const wallsLazy = has('await import("./wall-probe.ts")');
+  // §5d-bis: la sonda publica uni.* LEÍDOS + b−r de albedo en modo 1.
+  const hasUni = (s: string, k: string): boolean => s.includes(k);
+  const wallsBis = hasUni(probeSrc105, "uWallProbe: uWallProbe.value") && hasUni(probeSrc105, "brAbyS")
+    && hasUni(viewerSrc, "__rockCtl") && hasUni(viewerSrc, "gBR * 0.5 + 0.5")
+    && hasUni(viewerSrc, "gLumaF = gluma(gl_FragColor.rgb)")
+    && !hasUni(viewerSrc, "clamp(gCroma, 0.0, 1.0)");
   const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
   const wallsBad = [!wallProbeDecl && "uWallProbe no declarado (G40)",
     !wallProbeUniform && "uWallProbe no viaja como uniforme",
     !wallProbeModes && "modos 1/2 no implementados",
     !wallsFlags && "banderas ?debug=walls/walls2 ausentes",
-    !wallsLazy && "wall-probe.ts no es carga diferida"];
+    !wallsLazy && "wall-probe.ts no es carga diferida",
+    !wallsBis && "§5d-bis ausente (uni.* leídos / brAbyS / gLumaF-gBRF antes de sonda / sin cociente)"];
   gate("G94-rock-contract", bad.length === 0 && valsOk,
     bad.length || !valsOk
       ? `falta: ${[...bad, ...(valsOk ? [] : [`vals A=${ROCK_SCALE_A} B=${ROCK_SCALE_B} MIX=${ROCK_MIX} CORR=${ROCK_CORRIDOR_K} FAR=${ROCK_FAR_M} NEAR=${ROCK_NEAR_M}`])].join(", ")}`
@@ -515,7 +528,7 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
   gate("G105-wall-probe", (wallsBad.filter(Boolean) as string[]).length === 0,
     (wallsBad.filter(Boolean) as string[]).length > 0
       ? `sonda rota: ${(wallsBad.filter(Boolean) as string[]).join(", ")}`
-      : `sonda de pared: uWallProbe uniforme 0/1/2 tras dithering + ?debug=walls/walls2 + readHist perezoso tras bandera — measure programs constante 0→1→2 + round-trip 0.5→127/128`);
+      : `sonda §5d-bis: gLumaF/gBRF antes de sonda + modo1 B=b−r(albedo) + uni.* LEÍDOS (modo/mix/peso/deg/hasRock/programs) + __rockCtl directo — measure uni.uWallProbe==mode en cada pasada + round-trip 0.5→127/128`);
 }
 
 // --- G93 luma probe cost (C2b): downsample 32×32 + readPixels de 4 KB,
@@ -2043,16 +2056,12 @@ function elevFull36(): Float32Array {
     bad.length ? `falta: ${bad.join(", ")}` : `dome ≡ capture (rampa 13,9°, sol 5°→25°, SKY_SCALE 0.17) — measure sat 5°/15°/30°/60°/90° + luma ±0.06 en el mapa de cielo @t=12:00`);
 }
 
-// --- G104-shadow-chroma (§5d REESCRITA — la versión anterior no era
-// falsable: no fijaba espacio de color, no fijaba fórmula, y normalizaba
-// por una luma de 0,05). Nueva definición:
-//   · Se mide sobre PÍXELES sRGB DE PANTALLA (los del framebuffer
-//     presentado), no sobre valores lineales.
-//   · La métrica es b − r, acotada y estable. Nada de cocientes por luma.
-//   · SIN UMBRAL en esta fase: solo reportar. Base conocida: la pared en
-//     sombra de la captura de Gonzalo daba b−r = +0,200 con el cielo a
-//     +0,149. El umbral lo fija §5e con los histogramas (cuánto azul pone
-//     la ortofoto y cuánto la luz).
+// --- G104-shadow-chroma (§5d-bis REGLA DE MUESTREO FIJA — la de §5d no era
+// comparable con la base). Parche de 128×128 sobre pared en sombra; de ese
+// parche: descarta el 25 % más oscuro y el 25 % más claro por luma; reporta
+// b−r y luma de la MEDIANA del 50 % central + histograma de luma del parche
+// (10 cubos). Así cualquier comparación futura es del mismo sitio.
+// Sigue SIN UMBRAL: solo reportar, en s=0,29, s=0,80 y Acto V.
 // Node: contrato (sonda walls2 — b−r final centrado + luma final —
 // disponible tras bandera; HEMI_LIGHT_GRAY 0.4 SOLO en hemi.color, no en
 // uHemiSky; brillo intacto); los NÚMEROS en prod.
@@ -2060,13 +2069,12 @@ function elevFull36(): Float32Array {
   const choreoSrc104 = readFileSync("src/narrative/choreography.ts", "utf8");
   const viewerSrc104 = readFileSync("src/engine/viewer.ts", "utf8");
   const probeSrc104 = readFileSync("src/engine/wall-probe.ts", "utf8");
-  const fogSrc104 = readFileSync("src/engine/height-fog.ts", "utf8");
   const has = (s: string, k: string): boolean => s.includes(k);
   const checks: [string, boolean][] = [
-    // gBRF se guarda en el parche de niebla (height-fog: color iluminado
-    // con niebla ya sumada), la sonda lo pinta en viewer (tras dithering)
-    // y wall-probe.ts deshace el centrado en JS (br = G*2−1).
-    ["sonda walls2 (b−r final + luma final)", has(viewerSrc104, "gBRF * 0.5 + 0.5") && has(viewerSrc104, "boot.walls || boot.walls2") && has(fogSrc104, "gBRF = gl_FragColor.b - gl_FragColor.r") && has(probeSrc104, "gg * 2 - 1")],
+    // gBRF se asigna en el chunk final de viewer (ANTES de la escritura de
+    // sonda: niebla ya sumada), la sonda lo pinta tras dithering y
+    // wall-probe deshace el centrado en JS (br = G*2−1).
+    ["sonda walls2 (b−r final + luma final)", has(viewerSrc104, "gBRF * 0.5 + 0.5") && has(viewerSrc104, "boot.walls || boot.walls2") && has(viewerSrc104, "gBRF = gl_FragColor.b - gl_FragColor.r") && has(probeSrc104, "gg * 2 - 1")],
     ["HEMI_LIGHT_GRAY 0.4 (luz hemisférica)", has(choreoSrc104, "HEMI_LIGHT_GRAY = 0.4")],
     ["mezcla aplicada en viewer", has(viewerSrc104, "(lumaSky - zr) * HEMI_LIGHT_GRAY")],
     ["uHemiSky sin HEMI_LIGHT_GRAY (no doble gris)", has(viewerSrc104, "uHemiSky.value as [number, number, number])[0] = zr * 0.5 * lift")],
@@ -2076,7 +2084,7 @@ function elevFull36(): Float32Array {
   ];
   const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
   gate("G104-shadow-chroma", bad.length === 0,
-    bad.length ? `falta: ${bad.join(", ")}` : `sRGB de pantalla, métrica b−r (sin umbral) — measure b−r + luma de pared en sombra @s=0.80/0.29/ActoV, t=12:00 (base: b−r +0,200 con cielo +0,149)`);
+    bad.length ? `falta: ${bad.join(", ")}` : `sRGB de pantalla, métrica b−r (sin umbral), parche 128² en sombra: mediana del 50 % central + histo luma 10 cubos — measure @s=0.80/0.29/ActoV, t=12:00 (base Gonzalo: b−r +0,200 a luma 0,306)`);
 }
 
 if (failures > 0) {
