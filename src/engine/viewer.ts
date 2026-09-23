@@ -2658,6 +2658,9 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
       // production never pays it. Must ≈ the capture's lower-centre pixel
       // (horizon), never #000000, never terrain colour.
       if (boot.skymap && skyCap && boot.skycap) {
+        // §6: sun azimuth (deg) driving the last capture — the band meter
+        // needs it to exclude the sun column (disk + mie halo) per row.
+        (window as unknown as { __skySunAz?: number }).__skySunAz = skyCap.sunAzimuthDeg();
         try {
           const gl = renderer.getContext() as WebGL2RenderingContext;
           const pxBuf = new Uint8Array(4);

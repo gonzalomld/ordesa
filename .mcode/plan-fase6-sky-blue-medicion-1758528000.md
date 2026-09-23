@@ -1,5 +1,9 @@
 # Fase §6 — Cielo radiante: medición G103/G104 e informe
 
+> **ESTADO: COMPLETADO (3 runs de medición; informe entregado en conversación).**
+> Veredicto: G103 en banda (30/60/90 PASS, 5°/15° marginales por ruido de ventana) → Rayleigh se queda en 2.6 · G104 FALLA (croma 0.45-0.64 > 0.28) → solo reporte · cenit #65a6cb FUERA de la banda G24 vieja por pálido (riesgo anticipado) · alba/ocaso seguros · G19/G9/G31/G88 intactos · criterio visual: el cuerpo azul existe en el mapa pero la cámara enseña la franja 0-14° → siguiente palanca = encuadre.
+> Bugs de instrumento hallados (no de esta fase): `__skymapPx` lee 16 px desde arriba (readPixels origin abajo → G26 mide el HUD, no el blit); las bandas G103 debían medirse con DOM oculto (el panel de ficha cubre la región 384×192) y fila del cenit fijada a [608..799].
+
 ## Contexto — qué YA está hecho (sesión anterior, sin commit)
 
 | Cambio del brief | Estado | Dónde |
