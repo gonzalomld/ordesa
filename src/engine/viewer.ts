@@ -631,9 +631,10 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uGrainK"] = grainK;
         s.uniforms["uHasCorr"] = hasCorr;
         s.uniforms["uHasNormal"] = hasNormal;
-        s.uniforms["uRock"] = rockUniform;
-        s.uniforms["uRockNormal"] = rockNormalUniform;
-        s.uniforms["uHasRock"] = hasRock;
+  s.uniforms["uRock"] = rockUniform;
+  s.uniforms["uRockNormal"] = rockNormalUniform;
+  s.uniforms["uHasRock"] = hasRock;
+  s.uniforms["uWallProbe"] = wallProbe;
         s.vertexShader = s.vertexShader
           // P0: own varying (vTerrainUv = uv) — never vMapUv, which three
           // only declares under USE_MAP and vanishes mapless.
@@ -647,12 +648,19 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
 uniform sampler2D uCorridor; uniform sampler2D uNormalMap2; uniform float uNormalStrength; varying vec3 vUv2c;
 uniform float uWallDeg; uniform float uRockWeight; uniform float uRockMix; uniform float uRockDebug; uniform float uGrainK;
 uniform float uHasCorr; uniform float uHasNormal;
+uniform float uWallProbe; // §5d: wall probe (0=off · 1=slope/rockK/croma(alb) · 2=b−r(final)/luma(final)), declared (G40)
 uniform sampler2D uRock; uniform sampler2D uRockNormal; uniform float uHasRock;
 varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv;
 float gSteep = 0.0;
 float gRaw = 0.0;
 float gGrain = 0.0;
 float grockMix = 0.0;
+float gSlope = 0.0;
+float gCroma = 0.0;
+float gBR = 0.0;
+float gLumaF = 0.0;
+float gCromaF = 0.0;
+float gBRF = 0.0;
 float gluma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 float whash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
 float wnoise(vec2 p){
@@ -715,6 +723,7 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
   vec3 alb = mix(diffuseColor.rgb, corr.rgb, wcorr);
   vec3 wn2 = normalize(vWNormal2);
   float slopeDeg = degrees(acos(clamp(wn2.y, 0.0, 1.0)));
+  gSlope = slopeDeg;
   float rawSteep = smoothstep(uWallDeg, uWallDeg + 15.0, slopeDeg);
   gRaw = rawSteep;
   float steep = rawSteep * uRockWeight;
@@ -729,10 +738,9 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
   if (rockK > 0.001) {
     vec3 rock = rockTriplanar(vWPos2, wn2);
     if (uRockDebug > 0.5) {
-      // §5 ?debug=rock: la roca tal cual sobre la geometría — sin tono de
-      // ortofoto ni grano posterior (la luz/tonemapping siguen: el contrato
-      // de color no cambia, solo se ve la textura).
-      alb = rock;
+      // §5d ?debug=rock: la CONTRIBUCIÓN real — el mix ponderado por k
+      // (antes: roca a plena intensidad con k=0,01, mintiendo dos fases).
+      alb = mix(vec3(0.5), rock * (alb / max(gluma(alb), 1e-3)), clamp(rockK, 0.0, 1.0));
     } else {
       vec3 tono = alb / max(gluma(alb), 1e-3);
       tono = mix(vec3(1.0), tono, ${(ROCK_TONE_W as number).toFixed(2)});
@@ -765,6 +773,11 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
     }
   }
   diffuseColor.rgb = alb;
+  // §5d: métricas de pared sobre el albedo YA mezclado (al final del bloque)
+  // + color iluminado ANTES de sobrescribir (chunk final: niebla/luces ya
+  // sumadas, tonemapping+dithering todavía no — la sonda lo pinta después).
+  gCroma = length(alb - vec3(gluma(alb))) / max(gluma(alb), 1e-3);
+  gBR = alb.b - alb.r;
 #endif`,
           )
           .replace(
@@ -803,11 +816,13 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
         // Solo tras bandera (debug/rock/steep); producción no la lee.
         // hasRockVal lee el UNIFORME VIVO (no el valor capturado en compile:
         // ese es siempre el de arranque). G101 lo compara con __hasRock.
-        if (boot.debug || boot.rock || boot.steep) {
+        if (boot.debug || boot.rock || boot.steep || boot.walls || boot.walls2) {
           (window as unknown as { __rockGLSL?: unknown }).__rockGLSL = {
             hasRockFn: s.fragmentShader.includes("rockTriplanar(vec3"),
             hasRockCall: s.fragmentShader.includes("rockTriplanar(vWPos2"),
             hasDebug: s.fragmentShader.includes("uRockDebug"),
+            hasWallProbe: s.fragmentShader.includes("uniform float uWallProbe"),
+            wallProbeLive: () => (wallProbe as { value: number }).value,
             hasSteepMap: s.fragmentShader.includes("dithering_fragment") && s.fragmentShader.includes("gRaw"),
             rockMixVal: (rockMix as { value: number }).value,
             hasRockLive: () => (hasRock as { value: number }).value,
@@ -815,19 +830,45 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
             wallDegVal: (wallDeg as { value: number }).value,
           };
         }
-        if (boot.steep && !boot.rock) {
-          const prevSteep = terrainMat.onBeforeCompile.bind(terrainMat);
+        if ((boot.steep || boot.walls || boot.walls2) && !boot.rock) {
+          const prevDither = terrainMat.onBeforeCompile.bind(terrainMat);
           terrainMat.onBeforeCompile = (s2: {
             uniforms: Record<string, unknown>;
             fragmentShader: string;
             vertexShader: string;
           }) => {
-            prevSteep(s2);
-            s2.fragmentShader = s2.fragmentShader.replace(
-              "#include <dithering_fragment>",
-              `gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), clamp(gGrain + 0.5, 0.0, 1.0), 1.0);
-#include <dithering_fragment>`,
-            );
+            prevDither(s2);
+            // §5d: la sonda de pared vive DESPUÉS de dithering (se salta
+            // tonemapping + colorspace: lo que lee readPixels es el valor
+            // escrito). uWallProbe es UNIFORME (0=off · 1=pendiente/rockK/
+            // croma(albedo) · 2=b−r(final)/luma(final)), canal G de walls2
+            // CENTRADO en 0,5 (b−r −1..1 → 0..1; en JS: br = G*2−1).
+            // BAJO BANDERA walls/walls2: la pasada la hace renderWallProbe
+            // (visible=false, una pasada, restaurado después).
+            s2.fragmentShader = s2.fragmentShader
+              .replace(
+                "#include <dithering_fragment>",
+                `#include <dithering_fragment>
+if (uWallProbe > 0.5) {
+  float wsm = 0.05 + 0.9 * clamp(gSlope / 90.0, 0.0, 1.0);
+  if (uWallProbe < 1.5)
+    gl_FragColor = vec4(wsm, clamp(grockMix, 0.0, 1.0), clamp(gCroma, 0.0, 1.0), 1.0);
+  else
+    gl_FragColor = vec4(wsm, clamp(gBRF * 0.5 + 0.5, 0.0, 1.0), clamp(gLumaF, 0.0, 1.0), 1.0);
+}`,
+              )
+              .replace(
+                "gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), clamp(gGrain + 0.5, 0.0, 1.0), 1.0);",
+                `if (uWallProbe > 0.5) {
+  float wsm2 = 0.05 + 0.9 * clamp(gSlope / 90.0, 0.0, 1.0);
+  if (uWallProbe < 1.5)
+    gl_FragColor = vec4(wsm2, clamp(grockMix, 0.0, 1.0), clamp(gCroma, 0.0, 1.0), 1.0);
+  else
+    gl_FragColor = vec4(wsm2, clamp(gBRF * 0.5 + 0.5, 0.0, 1.0), clamp(gLumaF, 0.0, 1.0), 1.0);
+} else {
+  gl_FragColor = vec4(clamp(gRaw, 0.0, 1.0), clamp(gSteep, 0.0, 1.0), clamp(gGrain + 0.5, 0.0, 1.0), 1.0);
+}`,
+              );
           };
         }
       };
@@ -846,6 +887,10 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
   const grainK = { value: ROCK_GRAIN_K };
   const rockMix = { value: ROCK_MIX };
   const rockDebug = { value: boot.rock ? 1 : 0 };
+  // §5d: wall probe (UNIFORME — NO constante de compilación: 0→1→2 no
+  // recompila). El modo lo pone renderWallProbe durante su pasada; aquí
+  // arranca en 0 (off) para no secuestrar ?debug=steep (?debug=rock intacto).
+  const wallProbe = { value: 0.0 };
   const hasCorr = { value: 0 };
   const hasNormal = { value: 0 };
   const rockUniform = { value: null as THREE.Texture | null };
@@ -1148,8 +1193,6 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
   // labels
   const labelLayer = el("div", "labels");
   document.body.appendChild(labelLayer);
-  // T1: user cloud multiplier 0..1 (default 1) — instrument, behind ?debug=1
-  let cloudUser = boot.clouds;
   if (boot.steep) {
     clouds.group.visible = false;
     line.group.visible = false;
@@ -1201,6 +1244,25 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
     // Apagados: etiquetas al suelo (mismo anclaje que antes de §3).
     for (const rt of labelRts) releaseBeam(rt);
   }
+  // §5d: la sonda de pared vive en su propio módulo (carga diferida —
+  // producción no lo carga ni lo llama); el cableado vive aquí porque la
+  // pieza es dueña de sky, line, clouds, beams, labelLayer y wallProbe.
+  // Va DESPUÉS de haces/etiquetas (beams y labelRts ya existen).
+  let renderWallProbe: (() => { roundTrip: [number, number, number] } | null) | null = null;
+  let readWallHist: ((mode: 1 | 2) => unknown) | null = null;
+  if (boot.walls || boot.walls2) {
+    const mod = await import("./wall-probe.ts");
+    const wired = mod.mountWallProbe({
+      renderer, scene, camera, sky, lineGroup: line.group, cloudsGroup: clouds.group,
+      beamsGroup: beams?.group ?? null, labelLayer, uWallProbe: wallProbe,
+    });
+    renderWallProbe = wired.render;
+    readWallHist = wired.readHist;
+    (window as unknown as { __wallProbe?: unknown }).__wallProbe = {
+      roundTrip: () => renderWallProbe?.() ?? null,
+      hist: (mode?: number) => readWallHist?.(mode === 2 ? 2 : 1) ?? null,
+    };
+  }
 
   // --- telemetry bar (7 cols, reads progress.getState()) ---
   const tele = el("div", "tele");
@@ -1242,6 +1304,9 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
   // the HUD label reports them with the pass name.
   const glProbe = renderer.getContext() as WebGL2RenderingContext;
   const glPassErr = { capture: 0, main: 0, probe: 0, label: "" };
+  // T1: user cloud multiplier 0..1 (default 1) — instrument, behind ?debug=1.
+  // (Vive aquí, antes del HUD: el panel lo lee al montar.)
+  let cloudUser = boot.clouds;
   // G14: the slider panel's HORA is a READOUT of st.hourDec (same source as
   // the bar). There is no hour control: with scroll driving time, a slider
   // that sets the hour would be a second source by definition.
@@ -1352,6 +1417,11 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
     hud.append(timeLab, cloudLab, cloudIn, nLab, nIn, tLab, tIn, wLab, wIn, gLab, gIn, rLab, rIn, lodRow);
     if (boot.steep) {
       hud.append(el("div", "hud-label", "mapa: R = peso geo · G = efectivo · B = grano"));
+    }
+    if (boot.walls || boot.walls2) {
+      hud.append(el("div", "hud-label", boot.walls2
+        ? "sonda: R = pendiente · G = b−r final (0,5) · B = luma final"
+        : "sonda: R = pendiente · G = rockK · B = croma(albedo)"));
     }
     document.body.appendChild(hud);
     // hour readout follows the journey (write-if-changed in the loop)
@@ -2114,6 +2184,11 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
           // §4b FASE 3c: sun-side + anti-sun horizon rows → __hzSunHex /
           // __hzAntiHex (the dusk has a direction: warm west, cool east).
           metrics.zenithHex = toHex(disp.zen);
+          // §5d: __zenithHex salía null — la sonda solo escribía
+          // metrics.zenithHex (vía __metrics) pero nunca publicaba la
+          // global directa que lee el instrumento. Mismo escritor, mismo
+          // valor (G28: single writer intacto).
+          (window as unknown as { __zenithHex?: string }).__zenithHex = metrics.zenithHex;
           const luma = (c: [number, number, number]): number => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
           (window as unknown as { __skyHzRatio?: number }).__skyHzRatio = luma(disp.hor) / Math.max(1e-6, luma(disp.zen));
           (window as unknown as { __zenithLinear?: string }).__zenithLinear = toHex(raw.zen);

@@ -99,6 +99,11 @@ export interface BootQuery {
   cloudshadow: boolean;
   /** §5: ?debug=rock — solo la roca triplanar, sin ortofoto ni luz (verla). */
   rock: boolean;
+  /** §5d: ?debug=walls — sonda de pared: R=pendiente G=rockK B=croma(albedo).
+   * ?debug=walls2 — R=pendiente G=b−r(final, centrado 0,5) B=luma(final).
+   * Una pasada bajo demanda (readWallHist), producción no lo carga ni llama. */
+  walls: boolean;
+  walls2: boolean;
   /** N2c: ?cloudshadow=0 — sombras desactivadas (G55: niebla intacta). */
   cloudshadowOff: boolean;
 }
@@ -150,6 +155,8 @@ export function parseBootQuery(): BootQuery {
     family,
     cloudshadow: q.get("debug") === "cloudshadow",
     rock: q.get("debug") === "rock",
+    walls: q.get("debug") === "walls",
+    walls2: q.get("debug") === "walls2",
     cloudshadowOff: q.get("cloudshadow") === "0",
     lod: lodN !== null && Number.isFinite(lodN) && [1, 2, 3].includes(lodN) ? lodN : null,
     beams: q.get("beams") !== "0",
