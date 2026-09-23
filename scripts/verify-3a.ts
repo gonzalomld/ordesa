@@ -562,11 +562,11 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
       ? `js etiq wraps updateLabels only (tl -> metrics.jsLabels), threshold ${G33_JS_LABELS_MAX_MS} ms x10, no flags — measure 10 consecutive reads in prod`
       : "jsLabels chrono still spans the render (needs tl around updateLabels only)");
   // FASE 5 pasos a-d (una variable por paso, valores publicados):
-  // HEMI_GRAY_MIX 0.75 (§6: era 0.6 — solo tinte, la sombra pierde azul) ·
+  // HEMI_GRAY_MIX 0.6 (§6b: 0.75 revertido — solo niebla baja, no paredes) ·
   // HEMI_LUMA_FLOOR 0.20 (nivel) · HEMI_DAY 1.08 (+20 %, paso c) ·
   // SHADOW_INTENSITY 0.55 (paso d).
   const hemiOk =
-    HEMI_GRAY_MIX === 0.75 && HEMI_LUMA_FLOOR === 0.2 &&
+    HEMI_GRAY_MIX === 0.6 && HEMI_LUMA_FLOOR === 0.2 &&
     HEMI_DAY === 1.08 && SHADOW_INTENSITY === 0.55 &&
     viewerSrcG31.includes("sun.shadow.intensity = SHADOW_INTENSITY");
   gate("fase5-hemi", hemiOk,
@@ -1097,8 +1097,8 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
   const { CLOUD_COUNT, CLOUD_ATLAS_TILES, CLOUD_TOTAL } = await import("../src/engine/clouds.ts");
   const { CLOUD_MAX_INSTANCES } = await import("../src/narrative/choreography.ts");
   const constsOk =
-    SKY_TURBIDITY === 1.7 && SKY_RAYLEIGH === 2.6 && SKY_MIE === 0.004 && SKY_G === 0.8 &&
-    SKY_SCALE === 0.22 && SKY_SAT === 2.0 && HEMI_GRAY_MIX === 0.75 && CLOUD_COUNT === 148 &&
+    SKY_TURBIDITY === 1.7 && SKY_RAYLEIGH === 1.6 && SKY_MIE === 0.004 && SKY_G === 0.8 &&
+    SKY_SCALE === 0.17 && SKY_SAT === 2.0 && HEMI_GRAY_MIX === 0.6 && CLOUD_COUNT === 148 &&
     CLOUD_ATLAS_TILES.length === 6 && CLOUD_TOTAL === CLOUD_MAX_INSTANCES &&
     CLOUD_MAX_INSTANCES === 192 + 40 + 6 + 60 &&
     G24_HZ_RATIO === 2.2 && G24_ZEN_MIN === "#2a68b8" && G24_ZEN_MAX === "#3e86d2";
@@ -2039,18 +2039,18 @@ function elevFull36(): Float32Array {
     bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — seguro 2,5s (opacidad 1 a los 3s en prod ?debug=1)`);
 }
 
-// --- G103 cielo azul (§6 CIELO RADIANTE): sobre el MAPA DE CIELO
-// (equirect 64×32 tras bandera — independiente de la cámara, no lo tapa el
-// terreno, reproducible), con sol a 61° (t=12:00), sat = saturación HSV:
-//   5°: 0,10-0,20 (el horizonte DEBE seguir pálido) · 15°: 0,28-0,40 ·
-//   30°: 0,42-0,55 · 60°: 0,52-0,68 · 90°: 0,55-0,72 con b−r +0,35…+0,50.
-// El NIVEL mide Rayleigh; la RELACIÓN 15°/60° mide la rampa (separadas
-// aunque se muevan en la misma fase). Node: contrato estático (rampa
-// 0.02→0.24 idéntica en dome + capture, Rayleigh 2.6, turbidez 1.7, SKY_SAT
-// 2.0 intacto); los NÚMEROS en prod (?skymap=1 + readback del blit).
+// --- G103 cielo azul (§6b CIELO RADIANTE): sobre el MAPA DE CIELO
+// (equirect 384×192 tras bandera — independiente de la cámara, no lo tapa el
+// terreno, reproducible), con sol 61°, azimut relativo ~90° al sol, sat HSV.
+// Bandas §6b (modelo validado contra captura): 5°: 0,10-0,20 · 15°: 0,40-0,52
+// · 30°: 0,53-0,66 · 60°: 0,60-0,73 · 90°: 0,58-0,71, luma ±0,06 por banda.
+// El NIVEL lo mueve SKY_SCALE (ACES); Rayleigh NO (desatura). Node: contrato
+// estático (rampa 0.02→0.24 idéntica en dome + capture, Rayleigh 1.6, SKY_SCALE
+// 0.17, SKY_SAT 2.0 intacto); los NÚMEROS en prod (?skymap=1 + readback).
 {
   const capSrc = readFileSync("src/engine/sky-capture.ts", "utf8");
   const viewerSrc103 = readFileSync("src/engine/viewer.ts", "utf8");
+  const choreoSrc103 = readFileSync("src/narrative/choreography.ts", "utf8");
   const has = (s: string, k: string): boolean => s.includes(k);
   const checks: [string, boolean][] = [
     ["rampa 0.02→0.24 en el dome", has(viewerSrc103, "smoothstep( 0.02, 0.24, skyDirY )")],
@@ -2058,30 +2058,35 @@ function elevFull36(): Float32Array {
     ["skySunF 5°→25° intacto (dome)", has(viewerSrc103, "skySunF = smoothstep( 5.0, 25.0")],
     ["skySunF 5°→25° intacto (capture)", has(capSrc, "smoothstep( 5.0, 25.0")],
     ["SKY_SAT 2.0 intacto", has(viewerSrc103, "SKY_SAT")],
+    ["SKY_SCALE 0.17 (mando ACES)", has(choreoSrc103, "SKY_SCALE = 0.17")],
+    ["SKY_RAYLEIGH 1.6 (revertido §6)", has(choreoSrc103, "SKY_RAYLEIGH = 1.6")],
   ];
   const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
-  // Import estático arriba del fichero; aquí solo el valor ya importado.
   gate("G103-sky-blue", bad.length === 0,
-    bad.length ? `falta: ${bad.join(", ")}` : `dome ≡ capture (rampa 13,9°, sol 5°→25°) — measure sat 5°/15°/30°/60°/90° + b−r + luma en el mapa de cielo @t=12:00`);
+    bad.length ? `falta: ${bad.join(", ")}` : `dome ≡ capture (rampa 13,9°, sol 5°→25°, SKY_SCALE 0.17) — measure sat 5°/15°/30°/60°/90° + luma ±0.06 en el mapa de cielo @t=12:00`);
 }
 
-// --- G104 sombra menos azul (§6): parche de pared en sombra, s=0,80 y
-// s=0,29 a las 12:00: croma ≤ 0,28 (hoy 0,473), luma ±12 % de la actual.
+// --- G104 sombra menos azul (§6b): parche de pared en sombra, s=0,80 y
+// s=0,29 a las 12:00: croma ≤ 0,28 (baseline 0,473), luma ±12 %.
 // Coherencia (la que importa): croma(pared en sombra) ≤ croma(cielo a 30°)
 // × 1,1 — una sombra no puede estar más saturada que la luz que la crea.
-// Node: contrato (HEMI_GRAY_MIX 0.75, solo tinte — HEMI_LUMA_FLOOR y
-// SHADOW_INTENSITY intactos); los NÚMEROS en prod.
+// Node: contrato (HEMI_LIGHT_GRAY 0.4 aplicado SOLO a hemi.color, no a
+// uHemiSky; HEMI_GRAY_MIX 0.6 revertido; brillo intacto); los NÚMEROS en prod.
 {
   const choreoSrc104 = readFileSync("src/narrative/choreography.ts", "utf8");
+  const viewerSrc104 = readFileSync("src/engine/viewer.ts", "utf8");
   const has = (s: string, k: string): boolean => s.includes(k);
   const checks: [string, boolean][] = [
-    ["HEMI_GRAY_MIX 0.75 (solo tinte)", has(choreoSrc104, "HEMI_GRAY_MIX = 0.75")],
+    ["HEMI_LIGHT_GRAY 0.4 (luz hemisférica)", has(choreoSrc104, "HEMI_LIGHT_GRAY = 0.4")],
+    ["mezcla aplicada en viewer", has(viewerSrc104, "(lumaSky - zr) * HEMI_LIGHT_GRAY")],
+    ["uHemiSky sin HEMI_LIGHT_GRAY (no doble gris)", has(viewerSrc104, "uHemiSky.value as [number, number, number])[0] = zr * 0.5 * lift")],
+    ["HEMI_GRAY_MIX 0.6 (solo niebla baja)", has(choreoSrc104, "HEMI_GRAY_MIX = 0.6")],
     ["HEMI_LUMA_FLOOR intacto", has(choreoSrc104, "HEMI_LUMA_FLOOR = 0.2")],
     ["SHADOW_INTENSITY intacto", has(choreoSrc104, "SHADOW_INTENSITY = 0.55")],
   ];
   const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
   gate("G104-shadow-chroma", bad.length === 0,
-    bad.length ? `falta: ${bad.join(", ")}` : `tinte 0.75 sin tocar brillo — measure croma ≤0.28 + luma ±12 % @s=0.80/0.29 + croma(sombra) ≤ croma(cielo 30°)×1,1`);
+    bad.length ? `falta: ${bad.join(", ")}` : `HEMI_LIGHT_GRAY 0.4 solo en hemi.color — measure croma ≤0.28 + luma ±12 % @s=0.80/0.29 + croma(sombra) ≤ croma(cielo 30°)×1,1`);
 }
 
 if (failures > 0) {

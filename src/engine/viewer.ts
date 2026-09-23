@@ -26,6 +26,7 @@ import {
   GLOW_S_WINDOW,
   HEMI_DAY,
   HEMI_GROUND_RGB,
+  HEMI_LIGHT_GRAY,
   HEMI_LUMA_FLOOR,
   HEMI_NIGHT,
   HEMI_SKY_RGB,
@@ -344,8 +345,14 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       const zg = Math.min(1, Math.max(0, 0.32 + 0.22 * elevF)) * (HEMI_SKY_RGB[1] as number) * 2;
       const zb = Math.min(1, Math.max(0, 0.62 + 0.2 * elevF - 0.08 * ray)) * (HEMI_SKY_RGB[2] as number) * 2;
       const lumaSky = 0.2126 * zr + 0.7152 * zg + 0.0722 * zb;
+      // §6b HEMI_LIGHT_GRAY: la LUZ hemisférica se acerca a gris preservando
+      // luma — el azul de las paredes en sombra, en su sitio. SOLO hemi.color:
+      // uHemiSky no (ahí ya actúa HEMI_GRAY_MIX → se grisaría dos veces).
+      const zrH = zr + (lumaSky - zr) * HEMI_LIGHT_GRAY;
+      const zgH = zg + (lumaSky - zg) * HEMI_LIGHT_GRAY;
+      const zbH = zb + (lumaSky - zb) * HEMI_LIGHT_GRAY;
       const lift = Math.max(1, HEMI_LUMA_FLOOR / Math.max(1e-6, lumaSky));
-      hemiSky.setRGB(zr * lift, zg * lift, zb * lift);
+      hemiSky.setRGB(zrH * lift, zgH * lift, zbH * lift);
       hemi.color.copy(hemiSky);
       hemi.groundColor.copy(hemiGround);
       const dayF = sp.elevationDeg > SUNSET_ELEV_DEG ? 1 : 0;

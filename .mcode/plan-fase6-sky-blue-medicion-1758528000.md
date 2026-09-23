@@ -1,3 +1,16 @@
+# Fase §6b — Corrección de §6: el mando es SKY_SCALE
+
+> **ESTADO: COMPLETADO (1 batería de medición; informe en conversación).**
+> §6 falló en su diagnóstico: Rayleigh DESATURA (betaR se cancela en el cociente de fases) y HEMI_GRAY_MIX solo actúa en la niebla baja, no en las paredes. El mando de saturación es SKY_SCALE (ACES: el cielo estaba demasiado claro y vivía en el hombro).
+> Cambios: `SKY_RAYLEIGH` 2.6→1.6, `SKY_SCALE` 0.22→0.17, `HEMI_GRAY_MIX` 0.75→0.6, nueva `HEMI_LIGHT_GRAY` 0.40 (luz hemisférica, SOLO `hemi.color`), rampa 0.02→0.24 intacta.
+> Veredicto: G103 **sat en banda en las 5** (0,162/0,510/0,590/0,616/0,627), luma con fleco sistemático ≤0,017 por debajo del modelo (3/5, 2,8 %) — no se toca (la regla de SKY_SCALE aplica a sat; un paso, una medida) · G104 FALLA (croma 0,679/0,471/0,669; la coherencia pasa en s=0,80) → reporte, siguiente es §5d instrumento de pared · alba/ocaso seguros (hue 21°/349°→21°, sin marrón/magenta) · G88 fría y coherente · G11 __luma 0,29/0,30/0,18 ≥0,15 · G24 numérico fuera de banda vieja (blit 90° #3c74a0, oscuro) · G19/G9/G31 intactos. Criterio visual: no verificable por el asistente (sin entrada de imagen); capturas para el usuario.
+> - [x] Ediciones en choreography.ts / viewer.ts / verify-3a.ts / sky-gates6.tmp.mjs
+> - [x] Batería de medición (bandas G103 §6b + G104 + alba/ocaso + G88)
+> - [x] verify-3a (all gates passed) + oxlint (0 errores)
+> - [x] Informe y capturas
+
+---
+
 # Fase §6 — Cielo radiante: medición G103/G104 e informe
 
 > **ESTADO: COMPLETADO (3 runs de medición; informe entregado en conversación).**

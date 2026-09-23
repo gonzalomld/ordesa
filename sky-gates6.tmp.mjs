@@ -1,7 +1,8 @@
-// sky-gates6.tmp.mjs — §6: mapa de cielo a elevaciones fijas + pared en sombra
-// + alba/ocaso + G88. Lee el blit ?skymap=1 (equirect 64×32 tras bandera).
-// Scratch de medición (raíz, no versionado). Los cambios reales del proyecto:
-// SKY_RAYLEIGH 2.6, HEMI_GRAY_MIX 0.75, rampa 0.02→0.24 (dome ≡ capture).
+// sky-gates6.tmp.mjs — §6b: mapa de cielo a elevaciones fijas + pared en sombra
+// + alba/ocaso + G88. Lee el blit ?skymap=1 (equirect 384×192 tras bandera).
+// Scratch de medición (raíz, no versionado). Cambios reales del proyecto §6b:
+// SKY_RAYLEIGH 2.6→1.6 (desatura), SKY_SCALE 0.22→0.17 (ACES), HEMI_GRAY_MIX
+// 0.75→0.6 (niebla baja), HEMI_LIGHT_GRAY 0.40 (luz hemisférica), rampa intacta.
 import sharp from 'sharp';
 import { chromium } from 'playwright-core';
 
@@ -156,8 +157,12 @@ async function bandMetrics(p, t, els) {
   return out;
 }
 
-// bandas G103 @12:00 (cinco elevaciones) + alba/ocaso (5° y 20°)
-const ranges = { 5: [0.10, 0.20], 15: [0.28, 0.40], 30: [0.42, 0.55], 60: [0.52, 0.68], 90: [0.55, 0.72] };
+// bandas G103 §6b @12:00 (cinco elevaciones) + alba/ocaso (5° y 20°).
+// sat = banda §6b; luma = objetivo ±0,06. El NIVEL lo mueve SKY_SCALE (ACES);
+// Rayleigh NO (desatura). Si falla por abajo → SKY_SCALE 0.15; por arriba 0.19.
+const ranges = { 5: [0.10, 0.20], 15: [0.40, 0.52], 30: [0.53, 0.66], 60: [0.60, 0.73], 90: [0.58, 0.71] };
+const lumaTarget = { 5: 0.70, 15: 0.61, 30: 0.53, 60: 0.48, 90: 0.49 };
+const LUMA_TOL = 0.06;
 let sat30 = null, sat15 = null, sat60 = null;
 for (const t of ['12:00', '07:00', '20:00']) {
   const els = t === '12:00' ? [5, 15, 30, 60, 90] : [5, 20];
@@ -169,8 +174,8 @@ for (const t of ['12:00', '07:00', '20:00']) {
     if (t === '12:00' && ranges[el]) {
       const [lo, hi] = ranges[el];
       const okS = m.sat >= lo && m.sat <= hi;
-      const okB = el !== 90 || (m.bmr >= 0.35 && m.bmr <= 0.50);
-      verdict = ` ${okS && okB ? 'PASS' : 'FAIL'} (banda ${lo}–${hi}${el === 90 ? `, b−r +0.35…+0.50` : ''})`;
+      const okL = Math.abs(m.luma - lumaTarget[el]) <= LUMA_TOL;
+      verdict = ` ${okS && okL ? 'PASS' : 'FAIL'} (sat ${lo}–${hi}, luma ${lumaTarget[el].toFixed(2)}±${LUMA_TOL})`;
     }
     console.log(`  ${String(el).padStart(2)}°  fila ${m.row}  RGB(${m.rgb.join(',')})  sat ${m.sat.toFixed(3)}  b−r ${m.bmr >= 0 ? '+' : ''}${m.bmr.toFixed(3)}  luma ${m.luma.toFixed(3)}  hue ${m.hue.toFixed(0)}°  (n=${m.n})${verdict}`);
     if (m.sun) console.log(`      sol RGB(${m.sun.join(',')})  anti RGB(${m.anti ? m.anti.join(',') : 'n/d'})`);
@@ -182,7 +187,7 @@ for (const t of ['12:00', '07:00', '20:00']) {
   }
 }
 if (sat15 != null && sat60 != null) {
-  console.log(`\nRAMPA: sat15/sat60 = ${(sat15 / sat60).toFixed(3)} (relación mide la rampa; el nivel absoluto mide Rayleigh)`);
+  console.log(`\nRAMPA: sat15/sat60 = ${(sat15 / sat60).toFixed(3)} (relación mide la rampa; el nivel absoluto lo mide SKY_SCALE — Rayleigh desatura)`);
 }
 
 // --- 4) G104: croma/luma de la pared en sombra + coherencia con el cielo ---
