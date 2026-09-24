@@ -50,6 +50,10 @@ export interface RouteLine {
   /** Redrape the line on a new meshZ lattice (LOD change). The geometry
    * positions are rewritten in place — one line, one LOD, always the same. */
   redrape(meshZ: (x: number, y: number) => number, step?: number): void;
+  /** §8c ?debug=retrace: drape an ARBITRARY plan polyline (candidate EPSG
+   * points) with the SAME normal-offset drape as the route line. Returns
+   * world positions (flat array) for the overlay — pure, no scene write. */
+  drapePoints(pts: Array<{ x: number; y: number }>): number[];
   /** The terrain LOD step the line was draped on (HUD audit: lod vs lineLod). */
   lineLod(): number;
   /** §8 ?debug=gaps: viewer hook — the magenta overlay copies the line's
@@ -119,27 +123,36 @@ export function buildRouteLine(
   // full grid (stable normals); only the height is lattice-quantised.
   // Redrape (LOD change): same drape, new lattice, positions rewritten in
   // place on the shared LineGeometry so ghost/solid/halo/ID stay in sync.
+  // §8c: single-point drape shared by the route loop above (mz captured)
+  // and by drapePoints below (meshZ lattice — the overlay draws on the
+  // SAME ground the line draws on, not on full-res MDT).
+  const drapeOne = (
+    mz: ((x: number, y: number) => number) | undefined,
+    x: number,
+    y: number,
+  ): [number, number, number] => {
+    const e = 5;
+    const dzdx = (sampleGrid(elev, meta, x + e, y) - sampleGrid(elev, meta, x - e, y)) / (2 * e);
+    const dzdy = (sampleGrid(elev, meta, x, y + e) - sampleGrid(elev, meta, x, y - e)) / (2 * e);
+    const inv = 1 / Math.hypot(dzdx, dzdy, 1);
+    const nx = -dzdx * inv;
+    const ny = inv;
+    const nz = dzdy * inv; // north component
+    const off = 4 / Math.max(0.45, ny); // more clearance on steep walls
+    const gx = x + nx * off;
+    const gy = y + nz * off;
+    // §8c: both branches return bare terrain height; the normal offset
+    // applies once below. (The old +4/−4 dance made the no-meshZ branch
+    // read 4 m low; in the flat ny=1 gives gz = base + off = terrain + 4,
+    // identical to the old with-meshZ result.)
+    const base = mz ? mz(gx, gy) : sampleGrid(elev, meta, gx, gy);
+    const gz = base + ny * off;
+    return epsgToWorld(gx, gy, gz, world);
+  };
   const drape = (mz: ((x: number, y: number) => number) | undefined): number[] => {
     const pos: number[] = [];
     for (let i = 0; i < route.n; i++) {
-      const x = route.x[i] as number;
-      const y = route.y[i] as number;
-      const e = 5;
-      const dzdx = (sampleGrid(elev, meta, x + e, y) - sampleGrid(elev, meta, x - e, y)) / (2 * e);
-      const dzdy = (sampleGrid(elev, meta, x, y + e) - sampleGrid(elev, meta, x, y - e)) / (2 * e);
-      const inv = 1 / Math.hypot(dzdx, dzdy, 1);
-      const nx = -dzdx * inv;
-      const ny = inv;
-      const nz = dzdy * inv; // north component
-      const off = 4 / Math.max(0.45, ny); // more clearance on steep walls
-      const gx = x + nx * off;
-      const gy = y + nz * off;
-      // E4: mesh-lattice height (+4 drape含む source parity with route.z when
-      // no meshZ) then the normal offset along Y.
-      const base = mz ? mz(gx, gy) + 4 : sampleGrid(elev, meta, gx, gy);
-      const gz = base - 4 + ny * off;
-      void nz;
-      const [wx, wy, wz] = epsgToWorld(gx, gy, gz, world);
+      const [wx, wy, wz] = drapeOne(mz, route.x[i] as number, route.y[i] as number);
       pos.push(wx, wy, wz);
     }
     return pos;
@@ -307,6 +320,14 @@ if ( uTrackDist > 0.5 ) { diffuseColor.rgb = vec3( vDist / uLengthM, 0.0, 1.0 - 
       geo.setPositions(drape(meshZ));
       if (step !== undefined) drapedStep = step;
       onRedrapeCb?.();
+    },
+    drapePoints(pts: Array<{ x: number; y: number }>): number[] {
+      const pos: number[] = [];
+      for (const p of pts) {
+        const [wx, wy, wz] = drapeOne(meshZ, p.x, p.y);
+        pos.push(wx, wy, wz);
+      }
+      return pos;
     },
     lineLod() {
       return drapedStep;

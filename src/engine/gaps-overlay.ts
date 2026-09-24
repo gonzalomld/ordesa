@@ -156,18 +156,22 @@ export function straightRuns(
   return runs;
 }
 
-/** Build one Line2 per straight run (Line2 has no per-segment colour).
- * Positions are COPIES of the line's draped positions — same lattice,
- * same drape, same frame. Returns the group + audit counts. */
-export function buildGapsOverlay(
-  linePositions: number[],
-  route: RouteData,
+/** One Line2 per polyline run (Line2 has no per-segment colour).
+ * worldPos is a flat [x,y,z,…] array ALREADY in world frame (route-line
+ * drapePoints or a copy of the line positions — same lattice, same drape).
+ * distM parallels it (along-track metres, for range membership). A segment
+ * paints iff BOTH endpoints sit inside a run range. renderOrder/depthTest
+ * are the caller's choice via opts. Returns the group + painted metres. */
+export function buildRunsOverlay(
+  worldPos: number[],
+  distM: ArrayLike<number>,
   ranges: Array<readonly [number, number]>,
   resolution: THREE.Vector2,
-): { group: THREE.Group; inventedM: number; inventedRuns: number } {
+  opts: { color: number; linewidth?: number; opacity?: number; renderOrder?: number },
+): { group: THREE.Group; paintedM: number; paintedRuns: number } {
   const group = new THREE.Group();
-  let inventedM = 0;
-  let inventedRuns = 0;
+  let paintedM = 0;
+  let paintedRuns = 0;
   const inside = (d: number): boolean => {
     for (const [lo, hi] of ranges) {
       if (d >= (lo as number) && d <= (hi as number)) return true;
@@ -180,55 +184,68 @@ export function buildGapsOverlay(
       run = [];
       return;
     }
-    inventedRuns++;
+    paintedRuns++;
     const geo = new LineGeometry();
     geo.setPositions(run);
     const mat = new LineMaterial({
-      color: MAGENTA,
-      linewidth: 4.5,
+      color: opts.color,
+      linewidth: opts.linewidth ?? 4.5,
       worldUnits: false,
       alphaToCoverage: false,
       transparent: true,
-      opacity: 0.95,
+      opacity: opts.opacity ?? 0.95,
       depthTest: true,
       depthWrite: false,
     });
     mat.resolution.copy(resolution);
     const l = new Line2(geo, mat);
     l.frustumCulled = false;
-    l.renderOrder = 7;
+    l.renderOrder = opts.renderOrder ?? 7;
     group.add(l);
     run = [];
   };
-  // Point i is straight iff its along-track distance sits in a run range.
-  // A segment paints iff BOTH endpoints are straight (never bleed magenta
-  // past the run edge onto genuine trace).
-  // Returns a rebuild(positions) closure: the line redrapes on LOD change
-  // (positions move), so the overlay re-copies them. Callers dispose the
-  // old group children (geometry + material) before rebuilding.
-  const n = route.n;
-  const stepM = route.stepM > 0 ? route.stepM : 5;
-  for (let i = 0; i < n - 1; i++) {
-    const a = inside(route.d[i] as number);
-    const b = inside(route.d[i + 1] as number);
+  // A segment paints iff BOTH endpoints sit inside a run range (never bleed
+  // past the run edge onto the other trace).
+  const nSeg = Math.floor(worldPos.length / 3) - 1;
+  const stepM =
+    nSeg > 0 && distM.length > 1
+      ? ((distM[distM.length - 1] as number) - (distM[0] as number)) / nSeg
+      : 5;
+  for (let i = 0; i < nSeg; i++) {
+    const a = inside(distM[i] as number);
+    const b = inside(distM[i + 1] as number);
     if (a && b) {
       if (run.length === 0) {
         run.push(
-          linePositions[i * 3] as number,
-          linePositions[i * 3 + 1] as number,
-          linePositions[i * 3 + 2] as number,
+          worldPos[i * 3] as number,
+          worldPos[i * 3 + 1] as number,
+          worldPos[i * 3 + 2] as number,
         );
       }
       run.push(
-        linePositions[(i + 1) * 3] as number,
-        linePositions[(i + 1) * 3 + 1] as number,
-        linePositions[(i + 1) * 3 + 2] as number,
+        worldPos[(i + 1) * 3] as number,
+        worldPos[(i + 1) * 3 + 1] as number,
+        worldPos[(i + 1) * 3 + 2] as number,
       );
-      inventedM += stepM;
+      paintedM += stepM;
     } else {
       flush();
     }
   }
   flush();
-  return { group, inventedM, inventedRuns };
+  return { group, paintedM, paintedRuns };
+}
+
+/** §8b ?debug=gaps: straight-run overlay over the CURRENT line. Thin
+ * wrapper: copies of the line's draped positions + route.d membership. */
+export function buildGapsOverlay(
+  linePositions: number[],
+  route: RouteData,
+  ranges: Array<readonly [number, number]>,
+  resolution: THREE.Vector2,
+): { group: THREE.Group; inventedM: number; inventedRuns: number } {
+  const r = buildRunsOverlay(linePositions, route.d, ranges, resolution, {
+    color: MAGENTA,
+  });
+  return { group: r.group, inventedM: r.paintedM, inventedRuns: r.paintedRuns };
 }

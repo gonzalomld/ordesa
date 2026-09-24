@@ -1633,6 +1633,77 @@ if (uWallProbe > 0.5) {
   }
   // ?debug=path instrument (3-panel overlay, lazy import keeps it out of the
   // entry chunk graph unless requested)
+  // §8c ?debug=retrace: current route (white over the normal line) +
+  // OSM candidate (orange), side by side, nothing replaced. Lazy chunk —
+  // never in the production bundle. Draws both whole regardless of
+  // progress (it compares traces, not the walk). Rebuilt on LOD redrape
+  // via line.onRedrape (same hook as ?debug=gaps).
+  if (boot.retrace) {
+    try {
+      const retraceMod = await import("./gaps-overlay.ts");
+      const candMod = await import("../generated/retrace.ts");
+      const cx = candMod.RETRACE_X as number[];
+      const cy = candMod.RETRACE_Y as number[];
+      const cd = candMod.RETRACE_D as number[];
+      const candPts = cx.map((x, i) => ({ x, y: cy[i] as number }));
+      const rebuildRetrace = (): void => {
+        const cur = retraceMod.buildRunsOverlay(line.linePositions(), route.d, [[0, route.lengthM]], res2, {
+          color: 0xffffff,
+          linewidth: 4.5,
+          opacity: 0.95,
+          renderOrder: 7,
+        });
+        const cand = retraceMod.buildRunsOverlay(
+          line.drapePoints(candPts),
+          cd,
+          [[0, cd[cd.length - 1] as number]],
+          res2,
+          { color: 0xff7f1a, linewidth: 4.5, opacity: 0.95, renderOrder: 8 },
+        );
+        for (const o of [...retraceGroup.children]) {
+          const l = o as unknown as {
+            geometry?: { dispose(): void };
+            material?: { dispose(): void };
+          };
+          l.geometry?.dispose();
+          l.material?.dispose();
+          retraceGroup.remove(o);
+        }
+        for (const o of [...cur.group.children]) retraceGroup.add(o);
+        for (const o of [...cand.group.children]) retraceGroup.add(o);
+        (window as unknown as { __retrace?: unknown }).__retrace = {
+          curM: Math.round(cur.paintedM),
+          candM: Math.round(cand.paintedM),
+          candN: cx.length,
+          meta: candMod.RETRACE_META,
+        };
+      };
+      const retraceGroup = new THREE.Group();
+      group.add(retraceGroup);
+      // Reuse the gaps rebuild slot when both flags coincide; otherwise own hook.
+      if (boot.gaps) {
+        const prev = rebuildGapsOverlay;
+        line.onRedrape(() => {
+          prev();
+          rebuildRetrace();
+        });
+      } else {
+        line.onRedrape(rebuildRetrace);
+      }
+      rebuildRetrace();
+      line.setProgressDist(route.lengthM);
+      window.addEventListener("resize", () => {
+        renderer.getDrawingBufferSize(res2);
+        for (const o of retraceGroup.children) {
+          const lm = (o as unknown as { material: { resolution: THREE.Vector2 } }).material;
+          lm.resolution.copy(res2);
+        }
+      });
+    } catch (e) {
+      (window as unknown as { __retraceError?: unknown }).__retraceError = String(e).slice(0, 300);
+    }
+  }
+  // entry chunk graph unless requested)
   if (boot.path) {
     const { mountPathOverlay } = await import("../narrative/debug-path.ts");
     mountPathOverlay({ route, world, elev, meta, progress, rig });

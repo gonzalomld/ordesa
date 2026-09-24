@@ -80,6 +80,9 @@ export interface BootQuery {
    * inside a raw-GPX gap (>25 m) draw magenta over the normal line.
    * Lazy chunk (gaps-overlay.ts), zero trace in production bundles. */
   gaps: boolean;
+  /** §8c: ?debug=retrace — current route (white) + OSM candidate (orange)
+   * side by side, nothing replaced. Lazy chunk (in gaps-overlay.ts). */
+  retrace: boolean;
   /** Rastro enterrado: ghost pass to magenta at opacity 1 (?ghost=1).
    * The ghost draws exactly what lies behind the terrain. */
   ghost: boolean;
@@ -152,8 +155,11 @@ export function parseBootQuery(): BootQuery {
     act: q.get("act"),
     orbit: q.has("orbit"),
     trackAll: q.get("track") === "all",
-    trackDist: q.get("debug") === "trackdist",
-    gaps: q.get("debug") === "gaps",
+  trackDist: q.get("debug") === "trackdist",
+  gaps: q.get("debug") === "gaps",
+  /** §8c: ?debug=retrace — current route (white) + OSM candidate (orange)
+   * side by side, nothing replaced. Lazy chunk (retrace-overlay.ts). */
+  retrace: q.get("debug") === "retrace",
     ghost: q.has("ghost"),
     skymap: q.get("skymap") === "1",
     skycap: q.get("skycap") !== "0",
