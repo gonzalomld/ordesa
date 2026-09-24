@@ -673,6 +673,12 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uGrainK"] = grainK;
         s.uniforms["uHasCorr"] = hasCorr;
         s.uniforms["uHasNormal"] = hasNormal;
+        s.uniforms["uTilesAtlas"] = tilesAtlasUniform;
+        s.uniforms["uTilesIndex"] = tilesIndexUniform;
+        s.uniforms["uTilesCorr"] = tilesCorr;
+        s.uniforms["uTilesOrg"] = tilesOrg;
+        s.uniforms["uHasTiles"] = hasTiles;
+        s.uniforms["uTilesDebug"] = tilesDebug;
   s.uniforms["uRock"] = rockUniform;
   s.uniforms["uRockNormal"] = rockNormalUniform;
   s.uniforms["uHasRock"] = hasRock;
@@ -680,8 +686,8 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.vertexShader = s.vertexShader
           // P0: own varying (vTerrainUv = uv) — never vMapUv, which three
           // only declares under USE_MAP and vanishes mapless.
-          .replace("#include <common>", "#include <common>\nattribute vec3 uv2c; varying vec3 vUv2c; varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv;")
-          .replace("#include <uv_vertex>", "#include <uv_vertex>\nvUv2c = uv2c;\nvTerrainUv = uv;")
+          .replace("#include <common>", "#include <common>\nattribute vec3 uv2c; varying vec3 vUv2c; varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv; varying vec2 vTilesEpsg; uniform vec4 uTilesCorr; uniform vec4 uTilesOrg;")
+          .replace("#include <uv_vertex>", "#include <uv_vertex>\nvUv2c = uv2c;\nvTerrainUv = uv;\nvTilesEpsg = (uTilesCorr.xy + uv2c.xy * uTilesCorr.zw) - uTilesOrg.xy;")
           .replace("#include <fog_vertex>", "#include <fog_vertex>\nvWPos2 = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvWNormal2 = normalize(mat3(modelMatrix) * objectNormal);");
         s.fragmentShader = s.fragmentShader
           .replace(
@@ -692,6 +698,25 @@ uniform float uWallDeg; uniform float uRockWeight; uniform float uRockMix; unifo
 uniform float uHasCorr; uniform float uHasNormal;
 uniform float uWallProbe; // §5d-ter: wall probe (0=off · 1=slope/rockK/b−r(albedo) · 2=b−r(final)/luma(final) · 3=round-trip camino real), declared (G40)
 uniform sampler2D uRock; uniform sampler2D uRockNormal; uniform float uHasRock;
+// T1 teselas: atlas 4096² con indirección (rejilla regular en EPSG:25830
+// sobre el bbox del corredor; 126 m útiles + borde 1 m/lado → 512 px).
+// Donde uTilesIndex dice "no residente", cae al corredor de hoy: el resto
+// del recorrido sigue idéntico y solo cambia el cuadrado de prueba.
+// DOS trampas documentadas aquí porque duelen si se olvidan:
+// a) el atlas va con minFilter LINEAR y SIN mipmaps, muestreado a LOD 0
+//    por construcción (un solo nivel: no hay nada que elegir y texture2D
+//    basta — texture2DLodEXT sampleaba en negro en este programa). Cuando
+//    lleguen niveles de detalle, el nivel lo elige el gestor de
+//    residencia cambiando de textura o de hueco, NUNCA el muestreador.
+// b) fract() sobre la coordenada de tesela tiene discontinuidad de derivada
+//    en cada junta: con LOD forzado no molesta; si alguien activa mips o
+//    anisotropía después, aparecerán líneas en las juntas.
+// vTilesEpsg se calcula en el vértice invirtiendo uv2c (exacto: uv2c ya es
+// (epsg-min)/size) para no amplificar el error de cuanto en el fragmento.
+uniform sampler2D uTilesAtlas; uniform sampler2D uTilesIndex;
+uniform vec4 uTilesCorr; uniform vec4 uTilesOrg;
+uniform float uHasTiles; uniform float uTilesDebug;
+varying vec2 vTilesEpsg;
 varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv;
 float gSteep = 0.0;
 float gRaw = 0.0;
@@ -760,9 +785,49 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
             "#include <map_fragment>",
             `#include <map_fragment>
 #ifdef USE_MAP
+  // T1: tesela residente = atlas 25 cm (LOD 0 forzado, borde saltado);
+  // no residente = corredor de hoy (wcorr intacto). La indirección lee el
+  // hueco de atlas desde uTilesIndex (NEAREST, slot+1; 0 = ausente).
+  // vTilesEpsg viene del vértice (uv2c invertido): coords de rejilla en m.
+  vec3 albT = diffuseColor.rgb;
+  float wtiles = 0.0;
+  if (uHasTiles > 0.5) {
+    // vTilesEpsg = EPSG − origen de rejilla en m (calculado en el vértice
+    // invirtiendo uv2c): tileF en teselas, inTileM en m dentro de la tesela.
+    vec2 tileF = vTilesEpsg / 126.0;
+    vec2 tileId = floor(tileF);
+    vec2 inTileM = (tileF - tileId) * 126.0;
+    vec2 gridUv = (tileId + vec2(0.5)) * uTilesOrg.zw;
+    float idx = texture2D(uTilesIndex, gridUv).r * 255.0;
+    if (idx > 0.5 && inTileM.x >= 0.0 && inTileM.y >= 0.0
+        && inTileM.x <= 126.0 && inTileM.y <= 126.0) {
+      float slot = idx - 1.0;
+      // Slot→hueco: sharp compone top-down (slots 0-7 en ty 0-511 = filas
+      // SUPERIORES de la imagen) y el atlas sube con flipY=true como el
+      // corredor: la fila superior de la imagen es v≈1. Slots 0-7 → fila 7,
+      // 8-15 → fila 6 (7-floor). Sin esto se muestrean las filas negras
+      // inferiores (bloque negro en vez de foto: medido). Dentro de la
+      // tesela inPx.y va directo (sur = v baja de su banda).
+      vec2 slotCol = vec2(mod(slot, 8.0), 7.0 - floor(slot / 8.0));
+      // borde 4 px de 512: el contenido útil vive en [4,508]/512.
+      // Con flipY=true el layout texel-a-texel NO cambia (solo el orden de
+      // subida): la foto se ve derecha con UV directo — medido: la tesela
+      // individual con UV directo salía derecha. inPx.y directo.
+      // LOD 0 forzado POR CONSTRUCCIÓN (atlas sin mipmaps + LINEAR): con
+      // un solo nivel no hay nada que elegir, así que texture2D basta y se
+      // evita texture2DLodEXT (en la práctica sampleaba en negro en este
+      // programa). Cuando T2 traiga niveles, el nivel lo elige el gestor
+      // de residencia cambiando de textura, NUNCA el muestreador.
+      vec2 inPx = vec2((inTileM.x + 1.0) * 4.0, (inTileM.y + 1.0) * 4.0);
+      vec2 atlasUv = (slotCol * 512.0 + clamp(inPx, vec2(4.0), vec2(508.0))) / 4096.0;
+      vec3 tileRgb = texture2D(uTilesAtlas, atlasUv).rgb;
+      albT = tileRgb;
+      wtiles = vUv2c.z * uHasTiles;
+    }
+  }
   vec4 corr = texture2D(uCorridor, vUv2c.xy);
   float wcorr = vUv2c.z * uHasCorr;
-  vec3 alb = mix(diffuseColor.rgb, corr.rgb, wcorr);
+  vec3 alb = mix(mix(diffuseColor.rgb, corr.rgb, wcorr), albT, wtiles);
   vec3 wn2 = normalize(vWNormal2);
   float slopeDeg = degrees(acos(clamp(wn2.y, 0.0, 1.0)));
   gSlope = slopeDeg;
@@ -775,7 +840,7 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
   // normales tal cual). Tono desaturado (brillo de la ortofoto, no su azul)
   // + cap de croma sobre el RESULTADO ponderado por k (k=0: suelo intacto).
   float rockSteep = smoothstep(uWallDeg + ${(ROCK_STEEP_LO as number).toFixed(1)}, uWallDeg + ${(ROCK_STEEP_HI as number).toFixed(1)}, slopeDeg);
-  float rockK = rockSteep * uRockWeight * uRockMix * uHasRock * mix(1.0, ${(ROCK_CORRIDOR_K as number).toFixed(2)}, wcorr);
+  float rockK = rockSteep * uRockWeight * uRockMix * uHasRock * mix(1.0, ${(ROCK_CORRIDOR_K as number).toFixed(2)}, max(wcorr, wtiles));
   grockMix = rockK;
   if (rockK > 0.001) {
     vec3 rock = rockTriplanar(vWPos2, wn2);
@@ -952,6 +1017,45 @@ if (uWallProbe > 0.5) {
   const wallProbe = { value: 0.0 };
   const hasCorr = { value: 0 };
   const hasNormal = { value: 0 };
+  // T1: atlas de teselas 25 cm con indirección (rejilla → hueco de atlas).
+  // uTilesCorr = [minx, miny, sizeX, sizeY] del corredor (invierte uv2c a
+  // EPSG en el vértice); uTilesOrg = [originX, originY, 1/cols, 1/rows]
+  // (EPSG→texel de índice en el fragmento). Solo viven cuando el atlas
+  // está subido; si no, el corredor de hoy manda (fallback exacto).
+  const tilesAtlasUniform = { value: null as THREE.Texture | null };
+  const tilesIndexUniform = { value: null as THREE.Texture | null };
+  const tilesCorr = { value: new THREE.Vector4(0, 0, 1, 1) };
+  const tilesOrg = { value: new THREE.Vector4(0, 0, 1, 1) };
+  const hasTiles = { value: 0 };
+  const tilesDebug = { value: boot.tiles ? 1 : 0 };
+  /** T1: índice rejilla→hueco como DataTexture R (slot+1, 0 = ausente).
+   * NEAREST obligatorio: LINEAR mezclaría huecos vecinos en las juntas.
+   * Sin flip norte/sur: la fila 0 de la DataTexture es v=0 = borde sur
+   * (r=0), igual que gridUv.y = (r+0,5)/rows. (Un rowFlip aquí desplazó
+   * todo el bloque y el atlas no aparecía: fallback silencioso.) */
+  function buildTilesIndex(
+    cols: number,
+    rows: number,
+    slots: Array<{ c: number; r: number; slot: number }>,
+  ): THREE.Texture {
+    const data = new Uint8Array(cols * rows * 4);
+    for (const s of slots) {
+      if (s.c < 0 || s.c >= cols || s.r < 0 || s.r >= rows) continue;
+      const i = (s.r * cols + s.c) * 4;
+      data[i] = s.slot + 1;
+      data[i + 1] = 0;
+      data[i + 2] = 0;
+      data[i + 3] = 255;
+    }
+    const tex = new THREE.DataTexture(data, cols, rows, THREE.RGBAFormat);
+    tex.minFilter = THREE.NearestFilter;
+    tex.magFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.needsUpdate = true;
+    return tex;
+  }
   const rockUniform = { value: null as THREE.Texture | null };
   const rockNormalUniform = { value: null as THREE.Texture | null };
   const hasRock = { value: 0 };
@@ -1130,10 +1234,16 @@ if (uWallProbe > 0.5) {
     asset: string | undefined,
     srgb: boolean,
     apply: (t: THREE.Texture) => void,
+    texOpts?: (t: THREE.Texture) => void,
   ): Promise<void> {
     if (!asset) return;
     try {
       const t = await loadTex(`/${asset}`, srgb);
+      texOpts?.(t);
+      // needsUpdate DESPUÉS de fijar filtros/wrap: la subida a VRAM lee la
+      // textura UNA vez y congela minFilter/mipmaps de ese momento (T1:
+      // el atlas llegaba vacío a la GPU por fijarlos después del upload).
+      t.needsUpdate = true;
       armRockTex(t);
       apply(t);
       // El flag es valor de uniforme: la GPU lo lee en el próximo draw.
@@ -1150,6 +1260,86 @@ if (uWallProbe > 0.5) {
       corridorUniform.value = t;
       hasCorr.value = 1;
     });
+  }
+  // T1: atlas 25 cm + índice de rejilla (detrás del primer pintado, como el
+  // resto). Atlas con minFilter LINEAR y SIN mipmaps: LOD 0 por
+  // construcción (el nivel lo elegirá el gestor de residencia T2, no el
+  // muestreador). Índice NEAREST (un texel por tesela): LINEAR mezclaría
+  // huecos vecinos en las juntas. NOTA: subida con flipY=true como el
+  // corredor (Image directa + needsUpdate tras fijar filtros: el
+  // TextureLoader reusaba el upload y el atlas llegaba vacío a la GPU).
+  {
+    const atlasAsset = meta.assets?.["tiles-atlas"];
+    const gridInfo = (meta as unknown as {
+      corridorBbox?: { minx: number; miny: number; maxx: number; maxy: number };
+      tiles?: { cols: number; rows: number; originX: number; originY: number };
+    }).tiles;
+    const cbx = meta.corridorBbox;
+    if (atlasAsset && gridInfo && cbx) {
+      tilesCorr.value.set(cbx.minx, cbx.miny, cbx.maxx - cbx.minx, cbx.maxy - cbx.miny);
+      tilesOrg.value.set(gridInfo.originX, gridInfo.originY, 1 / gridInfo.cols, 1 / gridInfo.rows);
+      // índice de rejilla desde el bundle: R = slot+1 (/255), 0 = no
+      // residente. NEAREST siempre (LINEAR mezclaría huecos en las juntas).
+      const { TILE_SLOTS } = await import("../generated/tiles.ts");
+      try {
+        const img = new Image();
+        img.decoding = "sync";
+        await new Promise<void>((resolve, reject) => {
+          const to = window.setTimeout(() => reject(new Error("tiles atlas img timeout")), 60000);
+          img.onload = () => {
+            window.clearTimeout(to);
+            resolve();
+          };
+          img.onerror = () => {
+            window.clearTimeout(to);
+            reject(new Error("tiles atlas img decode failed"));
+          };
+          img.src = `/${atlasAsset}`;
+        });
+        const t = new THREE.Texture(img);
+        t.colorSpace = THREE.SRGBColorSpace;
+        t.minFilter = THREE.LinearFilter;
+        t.magFilter = THREE.LinearFilter;
+        t.generateMipmaps = false;
+        t.wrapS = THREE.ClampToEdgeWrapping;
+        t.wrapT = THREE.ClampToEdgeWrapping;
+        // flipY=true como el corredor (probado): norte de imagen ↔ v≈1.
+        // El shader ya cuenta con ello (7-floor + inPx.y directo).
+        t.flipY = true;
+        t.needsUpdate = true;
+        tilesAtlasUniform.value = t;
+        tilesIndexUniform.value = buildTilesIndex(
+          gridInfo.cols,
+          gridInfo.rows,
+          TILE_SLOTS as Array<{ c: number; r: number; slot: number }>,
+        );
+        hasTiles.value = 1;
+        // T1 sonda (informa, no gobierna): handles vivos para introspección
+        // (properties.get(tex).__webglTexture, muestreo aislado).
+        (window as unknown as { __tilesLive?: unknown }).__tilesLive = {
+          atlas: t,
+          index: tilesIndexUniform.value,
+        };
+        // T1: el programa del terreno ya existe (compilado con el corredor)
+        // y three congela uniformsList en el primer uso: si el atlas llega
+        // DESPUÉS, sus samplers nunca se suben (bloque negro con todo lo
+        // demás correcto). Forzar re-subida completa del programa vivo.
+        try {
+          const props = renderer.properties.get(terrainMat as THREE.Material);
+          props.uniformsList = null;
+          (terrainMat as THREE.Material).needsUpdate = true;
+        } catch {
+          /* el próximo draw lo intentará igual */
+        }
+        (window as unknown as { __tilesAtlas?: unknown }).__tilesAtlas = {
+          asset: atlasAsset,
+          resident: 16,
+          vramMB: (img.naturalWidth * img.naturalHeight * 4) / 1048576,
+        };
+      } catch {
+        /* sin atlas: el corredor de hoy manda (fallback intacto) */
+      }
+    }
   }
   if (meta.assets?.["terrain-normal"] && texLevel !== "lite") {
     void armTex(meta.assets["terrain-normal"], false, (t) => {
@@ -1629,6 +1819,25 @@ if (uWallProbe > 0.5) {
       // Instrument, never silent: publish the failure so the capture
       // reports it instead of a clean frame with no magenta.
       (window as unknown as { __gapsError?: unknown }).__gapsError = String(e).slice(0, 300);
+    }
+  }
+  // T1 ?debug=tiles: resident-tile grid (coloured edges + slot numbers).
+  // Lazy chunk — never in the production bundle. Draws the tile edges
+  // regardless of progress (it shows the grid, not the walk).
+  if (boot.tiles) {
+    try {
+      const tilesMod = await import("./tiles-overlay.ts");
+      const mounted = tilesMod.mountTilesOverlay(meta, elev, world, camera, res2);
+      group.add(mounted.group);
+      window.addEventListener("resize", () => {
+        renderer.getDrawingBufferSize(res2);
+        for (const o of mounted.group.children) {
+          const lm = (o as unknown as { material: { resolution: THREE.Vector2 } }).material;
+          lm.resolution.copy(res2);
+        }
+      });
+    } catch (e) {
+      (window as unknown as { __tilesError?: unknown }).__tilesError = String(e).slice(0, 300);
     }
   }
   // ?debug=path instrument (3-panel overlay, lazy import keeps it out of the

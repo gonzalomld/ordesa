@@ -83,6 +83,10 @@ export interface BootQuery {
   /** §8c: ?debug=retrace — current route (white) + OSM candidate (orange)
    * side by side, nothing replaced. Lazy chunk (in gaps-overlay.ts). */
   retrace: boolean;
+  /** T1: ?debug=tiles — 25 cm tile grid over the corridor (indirection
+   * atlas), resident tiles get a coloured edge + atlas-slot number.
+   * Lazy chunk (tiles-overlay.ts), zero trace in production bundles. */
+  tiles: boolean;
   /** Rastro enterrado: ghost pass to magenta at opacity 1 (?ghost=1).
    * The ghost draws exactly what lies behind the terrain. */
   ghost: boolean;
@@ -145,7 +149,7 @@ export function parseBootQuery(): BootQuery {
     }
   }
   return {
-    debug: mode === "1" || mode === "steep" || mode === "gaps",
+    debug: mode === "1" || mode === "steep" || mode === "gaps" || mode === "tiles",
     steep: mode === "steep",
     path: mode === "path",
     t: q.get("t"),
@@ -160,6 +164,7 @@ export function parseBootQuery(): BootQuery {
   /** §8c: ?debug=retrace — current route (white) + OSM candidate (orange)
    * side by side, nothing replaced. Lazy chunk (retrace-overlay.ts). */
   retrace: q.get("debug") === "retrace",
+  tiles: q.get("debug") === "tiles",
     ghost: q.has("ghost"),
     skymap: q.get("skymap") === "1",
     skycap: q.get("skycap") !== "0",
