@@ -93,8 +93,9 @@ function actBody(a: ActJson): string {
       )
       .join("");
     const cierre = a.epiCierre ? `<p class="epi-cierre">${a.epiCierre.html}</p>` : "";
-    const pie = a.pieFuentes ? `<ul class="chips"><li>${h(a.pieFuentes.replace(/`/g, ""))}</li></ul>` : "";
-    return `<div class="pstage act"><div class="eyebrow">EPÍLOGO · <b>EL INVENTARIO</b></div><h2>${a.titulo.html}</h2><div class="tiles"><div class="tile"><div class="k">RECORRIDO</div><div class="v">18,1<small>km</small></div><div class="d">CIRCULAR</div></div><div class="tile"><div class="k">DESNIVEL</div><div class="v">+815<small>m</small></div><div class="d">ACUMULADO</div></div></div>${blocks}${cierre}${pie}</div>`;
+    // Pie de fuentes (a.pieFuentes) fuera a petición del autor (sep-2026):
+    // vive en el JSON/md para trazabilidad pero no se pinta.
+    return `<div class="pstage act"><div class="eyebrow">EPÍLOGO · <b>EL INVENTARIO</b></div><h2>${a.titulo.html}</h2><div class="tiles"><div class="tile"><div class="k">RECORRIDO</div><div class="v">18,1<small>km</small></div><div class="d">CIRCULAR</div></div><div class="tile"><div class="k">DESNIVEL</div><div class="v">+815<small>m</small></div><div class="d">ACUMULADO</div></div></div>${blocks}${cierre}</div>`;
   }
   const chips = a.fichas.length > 0 ? `<ul class="chips">${a.fichas.map((f) => `<li>${h(f)}</li>`).join("")}</ul>` : "";
   const pend = a.pendienteRaw ? `<p><span class="pend" title="pendiente de verificar">${h(a.pendienteRaw)}</span></p>` : "";
