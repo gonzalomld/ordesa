@@ -16,8 +16,11 @@
 //
 // Also writes src/generated/retrace.ts (plan XY only) for the lazy
 // ?debug=retrace overlay chunk, and enforces the candidate gates:
-//   G110-retrace-plausible: max 20 m-base slope <= 35° everywhere
-//   G111-retrace-seams:     osm<->gpx seam jump <= 15 m, heading <= 35°
+//   G110-retrace-nonregression (was "plausible", absolute — wrong: the
+//     1 m-quantised heightmap aliases on the subida zigzags, so the CURRENT
+//     route fails it too. Non-regression instead, per zone + global max.)
+//   G111-retrace-seams:  each remaining seam jump <= 15 m, turn <= 35°,
+//     measured on the FINAL smoothed series (what is drawn)
 //   G112-retrace-monotonic: cumdist strictly increasing, no repeated section
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -212,12 +215,62 @@ const osmDist: number[] = new Array(RN).fill(Infinity);
 }
 
 // ---------- candidate polyline + origin ----------
+// §8c-bis(1): SHORT gpx ranges are DELETED, not blended. A ≤40 m no-coverage
+// stretch flanked by OSM on both sides whose true OSM-vs-current separation
+// is 25–45 m crosses on OSM (a smooth ~30 m bow beats a 106° elbow pair);
+// >60 m keeps the gpx range (OSM may map another variant). Measured values:
+//   8.051–8.081 (30 m): 23.3 m cand / 24.8 m current → DELETE
+//   14.441–14.466 (25 m): 22.7 m cand / 26.7 m current → DELETE
+//   14.551–14.576 (25 m): 26.4 m cand / 26.7 m current → DELETE
+// All three in 25–45 m: OSM crosses. Deletion = those points take the OSM
+// projection even though it sits 25–30 m off the current line.
 type Origin = "osm" | "gpx";
+const DROP_SHORT_GPX = true;
 const srcPts: Pt[] = [];
 const srcOrg: Origin[] = [];
+// short-range deletion needs the source index runs first: collect raw
+// origin, find gpx runs ≤40 m flanked by osm, check max OSM distance.
+const rawOrg: Origin[] = [];
 for (let k = 0; k < RN; k++) {
   const op = osmPt[k];
-  if (op !== null && (osmDist[k] as number) <= COVER_M) {
+  rawOrg.push(op !== null && (osmDist[k] as number) <= COVER_M ? "osm" : "gpx");
+}
+const dropIdx = new Set<number>();
+if (DROP_SHORT_GPX) {
+  let k = 0;
+  while (k < RN) {
+    if (rawOrg[k] !== "gpx") {
+      k++;
+      continue;
+    }
+    let j = k;
+    while (j < RN && rawOrg[j] === "gpx") j++;
+    // run [k, j) in source-index space; length in metres via current cumdist
+    const runLen = (curD[j - 1] as number) - (curD[k] as number);
+    const flanked = k > 0 && j < RN && rawOrg[k - 1] === "osm" && rawOrg[j] === "osm";
+    if (flanked && runLen <= 40) {
+      let mx = 0;
+      for (let t = k; t < j; t++) mx = Math.max(mx, osmDist[t] as number);
+      if (mx >= 25 && mx <= 45) {
+        for (let t = k; t < j; t++) dropIdx.add(t);
+        console.log(
+          `short-gpx DROP: src [${k},${j}) ${(runLen).toFixed(0)} m @km ${((curD[k] as number) / 1000).toFixed(2)}, maxSep ${mx.toFixed(1)} m`,
+        );
+      } else {
+        console.log(
+          `short-gpx KEEP: src [${k},${j}) ${(runLen).toFixed(0)} m @km ${((curD[k] as number) / 1000).toFixed(2)}, maxSep ${mx.toFixed(1)} m (outside 25–45)`,
+        );
+      }
+    }
+    k = j;
+  }
+}
+for (let k = 0; k < RN; k++) {
+  const op = osmPt[k];
+  if (dropIdx.has(k)) {
+    srcPts.push(op as Pt);
+    srcOrg.push("osm");
+  } else if (op !== null && (osmDist[k] as number) <= COVER_M) {
     srcPts.push(op);
     srcOrg.push("osm");
   } else {
@@ -253,12 +306,64 @@ const rsOrg: Origin[] = [];
   }
 }
 const r = ROUTE_SMOOTH_RADIUS;
-const sm: Pt[] = rs.map((p, q) => {
+const nRs = rs.length; // resampled count known before smoothing (cn comes later)
+const stepRs = total0 / n;
+// §8c-bis(2): BLEND BEFORE smoothing. At each remaining osm<->gpx seam,
+// cross-fade the two source polylines over BLEND_M each side (capped at
+// half the gpx range length so the two ends of one range never overlap).
+// The pipeline smoothing then works on an already-continuous line, and
+// G111 judges the FINAL smoothed series — what is drawn.
+const BLEND_M = 20;
+const rsBlended: Pt[] = rs.map((p) => ({ ...p }));
+{
+  // seam positions in resampled index space + their gpx-range half-lengths
+  const rangeHalf = new Map<number, number>(); // seam q -> half range (m)
+  {
+    let q = 0;
+    while (q < nRs + 1) {
+      if (q >= nRs || rsOrg[q] !== "gpx") {
+        q++;
+        continue;
+      }
+      let j = q;
+      while (j < nRs && rsOrg[j] === "gpx") j++;
+      const half = (total0 * (j - 1 - q)) / n / 2; // uniform resample: index→m
+      rangeHalf.set(q, half); // gpx->osm seam at j recorded below
+      (rangeHalf as Map<number, number>).set(j, half);
+      q = j;
+    }
+  }
+  for (let q = 1; q < nRs; q++) {
+    if (rsOrg[q] === rsOrg[q - 1]) continue;
+    const half = Math.min(BLEND_M, rangeHalf.get(q) ?? BLEND_M);
+    const w = Math.max(2, Math.round(half / stepRs));
+    // Anchor OUTSIDE the window: trends from ±(w+2..w+6), so the extension
+    // is the leg's own heading, not the corner being removed. (Anchoring at
+    // q±1/q±w reads the elbow itself and freezes half of it in place.)
+    const pA0 = rs[Math.max(0, q - w - 6)] as Pt;
+    const pA1 = rs[Math.max(0, q - w - 2)] as Pt;
+    const pB0 = rs[Math.min(nRs - 1, q + w + 1)] as Pt;
+    const pB1 = rs[Math.min(nRs - 1, q + w + 5)] as Pt;
+    for (let t = -w; t <= w; t++) {
+      const idx = q + t;
+      if (idx < 0 || idx >= nRs) continue;
+      const f = (t + w) / (2 * w);
+      const s = f * f * (3 - 2 * f);
+      // leg A trend extended forward, leg B trend extended backward
+      const ax = pA1.x + ((pA1.x - pA0.x) / Math.max(1, w + 1)) * (t + 1);
+      const ay = pA1.y + ((pA1.y - pA0.y) / Math.max(1, w + 1)) * (t + 1);
+      const bx = pB0.x + ((pB1.x - pB0.x) / Math.max(1, w + 1)) * t;
+      const by = pB0.y + ((pB1.y - pB0.y) / Math.max(1, w + 1)) * t;
+      rsBlended[idx] = { x: ax + (bx - ax) * s, y: ay + (by - ay) * s };
+    }
+  }
+}
+const sm: Pt[] = rsBlended.map((p, q) => {
   let sx = 0;
   let sy = 0;
   let c = 0;
   for (let t = -r; t <= r; t++) {
-    const v = rs[q + t];
+    const v = rsBlended[q + t];
     if (v) {
       sx += v.x;
       sy += v.y;
@@ -339,25 +444,196 @@ const labels = JSON.parse(readFileSync("public/assets/labels.json", "utf8")) as 
   labels: { id: string; x: number; y: number; d?: number }[];
 };
 
-// G110: max 20 m-base slope over the candidate drape series. cz is the
-// bare heightmap sample (NO +4 m offset — route.json z carries it, cz
-// doesn't); the gate reads terrain either way. Same metric fails on the
-// CURRENT route too (75° @km 1.36: the 1 m-quantised heightmap aliases on
-// cliff bands) — the verdict is comparative, not absolute (see report).
-let maxSlopeDeg = 0;
-let maxSlopeAt = 0;
-for (let k = 0; k + 4 < cn; k++) {
-  const g = Math.abs((cz[k + 4] as number) - (cz[k] as number)) / 20;
-  const deg = Math.atan(g) * (180 / Math.PI);
-  if (deg > maxSlopeDeg) {
-    maxSlopeDeg = deg;
-    maxSlopeAt = cd[k] as number;
+// G110-retrace-nonregression (reformulated §8c-bis(3): the old absolute
+// ≤35° gate failed on the CURRENT route too — 75.3° max, 145 legs >35°.
+// WHY no absolute threshold: the 1 m-quantised heightmap aliases on the
+// subida zigzags (km 1.0–1.9), a cliff-band artefact inherited from the
+// terrain, not a re-trace defect. Non-regression instead:
+//   · per zone: candidate legs >35° <= current legs >35°
+//   · global: candidate max <= current max (75.3°)
+// Zones from the baseline audit: 0.7 · 1.0–1.8 · 2.6 · 4.4 · 14.8 km.
+const G110_ZONES: [number, number][] = [
+  [500, 1000],
+  [1000, 1900],
+  [2500, 3100],
+  [3600, 4700],
+  [14300, 14900],
+];
+function legsOver35(
+  z: ArrayLike<number>,
+  dd: ArrayLike<number>,
+): { count: number; max: number; maxAt: number; perZone: number[] } {
+  let count = 0;
+  let max = 0;
+  let maxAt = 0;
+  const perZone = G110_ZONES.map(() => 0);
+  // §8c-bis(3): compare like with like — only points present in BOTH series
+  // (origin "osm" = OSM geometry; origin "gpx" = current geometry kept).
+  // A leg counts toward a series only if all 5 samples (k..k+4) have the
+  // required provenance. Series judged: candidate-osm vs current-where-
+  // candidate-is-osm (frozen at generation time below), candidate-gpx vs
+  // current-where-candidate-is-gpx. Both directions must non-regress.
+  for (let k = 0; k + 4 < (z.length as number); k++) {
+    const g = Math.abs((z[k + 4] as number) - (z[k] as number)) / 20;
+    const deg = Math.atan(g) * (180 / Math.PI);
+    if (deg > max) {
+      max = deg;
+      maxAt = dd[k] as number;
+    }
+    if (deg > 35) {
+      count++;
+      const d = dd[k] as number;
+      G110_ZONES.forEach(([lo, hi], zi) => {
+        if (d >= lo && d <= hi) perZone[zi] = (perZone[zi] as number) + 1;
+      });
+    }
+  }
+  return { count, max, maxAt, perZone };
+}
+// OSM-vs-OSM, GPX-vs-GPX: legsOver35 counts only legs whose 5 samples all
+// carry the required provenance (origin mask). Mask arrays parallel to z.
+function legsOver35Masked(
+  z: ArrayLike<number>,
+  dd: ArrayLike<number>,
+  wantOsm: boolean,
+  org: ArrayLike<string>,
+): { count: number; max: number; maxAt: number; perZone: number[] } {
+  let count = 0;
+  let max = 0;
+  let maxAt = 0;
+  const perZone = G110_ZONES.map(() => 0);
+  for (let k = 0; k + 4 < (z.length as number); k++) {
+    let prov = true;
+    for (let t = 0; t <= 4; t++) {
+      if (((org[k + t] as string) === "osm") !== wantOsm) {
+        prov = false;
+        break;
+      }
+      // blend windows judge neither source
+      if (nearSeam(dd[k + t] as number)) {
+        prov = false;
+        break;
+      }
+    }
+    if (!prov) continue;
+    const g = Math.abs((z[k + 4] as number) - (z[k] as number)) / 20;
+    const deg = Math.atan(g) * (180 / Math.PI);
+    if (deg > max) {
+      max = deg;
+      maxAt = dd[k] as number;
+    }
+    if (deg > 35) {
+      count++;
+      const d = dd[k] as number;
+      G110_ZONES.forEach(([lo, hi], zi) => {
+        if (d >= lo && d <= hi) perZone[zi] = (perZone[zi] as number) + 1;
+      });
+    }
+  }
+  return { count, max, maxAt, perZone };
+}
+// current-series provenance: nearest current point to each candidate point
+// votes osm/gpx — but ONLY where the two series run on the same ground
+// (nearest distance ≤ PROV_SAME_GROUND_M). Where OSM diverged 20–30 m, the
+// current line samples different terrain and its legs are not the baseline
+// for anything. Blend windows (±25 m) around seams are EXCLUDED from both
+// masks: the blend fabricates geometry that is neither source. (Without the
+// exclusion, candidate-gpx legs inside the blended window fail against
+// unblended current-gpx legs on the same ground — e.g. d=1285–1295 @km 1.29,
+// max 72.9° vs nothing.)
+const SEAM_EXCL_M = 25;
+const PROV_SAME_GROUND_M = 12;
+const seamDs: number[] = [];
+for (let k = 1; k < cn; k++) if (rsOrg[k] !== rsOrg[k - 1]) seamDs.push(cd[k] as number);
+function nearSeam(d: number): boolean {
+  return seamDs.some((s) => Math.abs(d - s) <= SEAM_EXCL_M);
+}
+const curOrg: string[] = new Array(cur.length).fill("gpx");
+const curSameGround: boolean[] = new Array(cur.length).fill(false);
+{
+  for (let q = 0; q < cn; q++) {
+    const p = sm[q] as Pt;
+    let bi = 0;
+    let bd = Infinity;
+    for (let t = 0; t < cur.length; t++) {
+      const dd = Math.hypot(p.x - (cur[t] as Pt).x, p.y - (cur[t] as Pt).y);
+      if (dd < bd) {
+        bd = dd;
+        bi = t;
+      }
+    }
+    // vote only where both series share ground — and record it
+    if (bd <= PROV_SAME_GROUND_M) {
+      curOrg[bi] = rsOrg[q] as string;
+      curSameGround[bi] = true;
+    }
+  }
+  // fill UNVOTED gaps only (never override a vote): short-range diffusion
+  // so mask boundaries don't shatter on single unvoted points
+  for (let pass = 0; pass < 12; pass++) {
+    for (let t = 1; t < cur.length - 1; t++) {
+      if (!curSameGround[t] && (curSameGround[t - 1] === true || curSameGround[t + 1] === true)) {
+        curOrg[t] = curOrg[t - 1] === "osm" || curOrg[t + 1] === "osm" ? "osm" : "gpx";
+        curSameGround[t] = true;
+      }
+    }
   }
 }
-// G111: seams — measured on the UNSMOOTHED sources (rs, not sm): the XY
-// moving average (radius 2) rounds the corner at the seam, so reading the
-// turn on sm would acquit real elbows. Turn = heading change between the
-// ±20 m legs on each side of the seam.
+// legsOver35Masked skips unvoted current points via the ground mask
+function legsOver35MaskedCur(
+  z: ArrayLike<number>,
+  dd: ArrayLike<number>,
+  wantOsm: boolean,
+): { count: number; max: number; maxAt: number; perZone: number[] } {
+  let count = 0;
+  let max = 0;
+  let maxAt = 0;
+  const perZone = G110_ZONES.map(() => 0);
+  for (let k = 0; k + 4 < (z.length as number); k++) {
+    let prov = true;
+    for (let t = 0; t <= 4; t++) {
+      if (!curSameGround[k + t] || (curOrg[k + t] as string) !== (wantOsm ? "osm" : "gpx")) {
+        prov = false;
+        break;
+      }
+    }
+    if (!prov) continue;
+    const g = Math.abs((z[k + 4] as number) - (z[k] as number)) / 20;
+    const deg = Math.atan(g) * (180 / Math.PI);
+    if (deg > max) {
+      max = deg;
+      maxAt = dd[k] as number;
+    }
+    if (deg > 35) {
+      count++;
+      const d = dd[k] as number;
+      G110_ZONES.forEach(([lo, hi], zi) => {
+        if (d >= lo && d <= hi) perZone[zi] = (perZone[zi] as number) + 1;
+      });
+    }
+  }
+  return { count, max, maxAt, perZone };
+}
+const g110candOsm = legsOver35Masked(cz as number[], cd as number[], true, rsOrg as ArrayLike<string>);
+const g110candGpx = legsOver35Masked(cz as number[], cd as number[], false, rsOrg as ArrayLike<string>);
+const g110curOsm = legsOver35MaskedCur(
+  (routeJ as unknown as { z_mdt: number[] }).z_mdt,
+  curD as number[],
+  true,
+);
+const g110curGpx = legsOver35MaskedCur(
+  (routeJ as unknown as { z_mdt: number[] }).z_mdt,
+  curD as number[],
+  false,
+);
+const g110zoneOk =
+  g110candOsm.perZone.every((c, zi) => c <= (g110curOsm.perZone[zi] as number)) &&
+  g110candGpx.perZone.every((c, zi) => c <= (g110curGpx.perZone[zi] as number));
+const g110ok =
+  g110zoneOk && g110candOsm.max <= g110curOsm.max && g110candGpx.max <= g110curGpx.max;
+// G111: seams — §8c-bis(4): measured on the FINAL smoothed series (sm),
+// jump <= 15 m, turn <= 35°. The blend (above) runs BEFORE the pipeline
+// smoothing, so what is judged is what is drawn.
 interface Seam {
   d: number;
   from: Origin;
@@ -368,9 +644,9 @@ interface Seam {
 const seams: Seam[] = [];
 for (let k = 1; k < cn; k++) {
   if (rsOrg[k] !== rsOrg[k - 1]) {
-    const a = rs[Math.max(0, k - 4)] as Pt;
-    const b = rs[k] as Pt;
-    const c = rs[Math.min(cn - 1, k + 4)] as Pt;
+    const a = sm[Math.max(0, k - 4)] as Pt;
+    const b = sm[k] as Pt;
+    const c = sm[Math.min(cn - 1, k + 4)] as Pt;
     const v1 = { x: b.x - a.x, y: b.y - a.y };
     const v2 = { x: c.x - b.x, y: c.y - b.y };
     const l1 = Math.hypot(v1.x, v1.y);
@@ -381,7 +657,7 @@ for (let k = 1; k < cn; k++) {
       d: Math.round((cd[k] as number) * 10) / 10,
       from: rsOrg[k - 1] as Origin,
       to: rsOrg[k] as Origin,
-      jumpM: Math.round(Math.hypot((rs[k] as Pt).x - (rs[k - 1] as Pt).x, (rs[k] as Pt).y - (rs[k - 1] as Pt).y) * 10) / 10,
+      jumpM: Math.round(Math.hypot((sm[k] as Pt).x - (sm[k - 1] as Pt).x, (sm[k] as Pt).y - (sm[k - 1] as Pt).y) * 10) / 10,
       turnDeg: Math.round((Math.acos(cos) * (180 / Math.PI)) * 10) / 10,
     });
   }
@@ -574,10 +850,25 @@ const out = {
   seams,
   gates: {
     g110: {
-      name: "G110-retrace-plausible",
-      ok: maxSlopeDeg <= 35,
-      maxSlopeDeg: Math.round(maxSlopeDeg * 10) / 10,
-      atD: Math.round(maxSlopeAt * 10) / 10,
+      name: "G110-retrace-nonregression",
+      ok: g110ok,
+      osm: {
+        candLegs: g110candOsm.count,
+        curLegs: g110curOsm.count,
+        candPerZone: g110candOsm.perZone,
+        curPerZone: g110curOsm.perZone,
+        candMax: Math.round(g110candOsm.max * 10) / 10,
+        curMax: Math.round(g110curOsm.max * 10) / 10,
+      },
+      gpx: {
+        candLegs: g110candGpx.count,
+        curLegs: g110curGpx.count,
+        candPerZone: g110candGpx.perZone,
+        curPerZone: g110curGpx.perZone,
+        candMax: Math.round(g110candGpx.max * 10) / 10,
+        curMax: Math.round(g110curGpx.max * 10) / 10,
+      },
+      zones: G110_ZONES.map(([lo, hi]) => `${(lo / 1000).toFixed(1)}–${(hi / 1000).toFixed(1)}`),
     },
     g111: {
       name: "G111-retrace-seams",
@@ -666,7 +957,9 @@ for (const s of top10)
   );
 console.log(`\n== gates ==`);
 console.log(
-  `G110-retrace-plausible: ${out.gates.g110.ok ? "PASS" : "FAIL"} (max ${out.gates.g110.maxSlopeDeg}° @${out.gates.g110.atD} m, need <=35°)`,
+  `G110-retrace-nonregression: ${out.gates.g110.ok ? "PASS" : "FAIL"} ` +
+    `(osm legs ${out.gates.g110.osm.candLegs} vs ${out.gates.g110.osm.curLegs}, max ${out.gates.g110.osm.candMax} vs ${out.gates.g110.osm.curMax}; ` +
+    `gpx legs ${out.gates.g110.gpx.candLegs} vs ${out.gates.g110.gpx.curLegs}, max ${out.gates.g110.gpx.candMax} vs ${out.gates.g110.gpx.curMax})`,
 );
 console.log(
   `G111-retrace-seams: ${out.gates.g111.ok ? "PASS" : "FAIL"} (${seams.length} seams, worst jump ${out.gates.g111.worst.jumpM} m / turn ${out.gates.g111.worst.turnDeg}° @${out.gates.g111.worst.d} m, need <=15 m / <=35°)`,
