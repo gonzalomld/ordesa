@@ -142,7 +142,7 @@ export function parseBootQuery(): BootQuery {
     }
   }
   return {
-    debug: mode === "1" || mode === "steep",
+    debug: mode === "1" || mode === "steep" || mode === "gaps",
     steep: mode === "steep",
     path: mode === "path",
     t: q.get("t"),

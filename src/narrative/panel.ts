@@ -86,11 +86,14 @@ function actBody(a: ActJson): string {
     const blocks = (a.epiBloques ?? [])
       .map(
         (b) =>
+          // h(escHtml) escapa < >: «< 50» llega como &lt; 50 y se lee bien.
+          // miniMd aquí rompería G68 (html ≠ miniMd(raw) que el verify
+          // recomputa) — el dt ya es pearl 500 por CSS.
           `<div class="fd-epi"><div class="eyebrow">${h(b.titulo.toUpperCase())}</div><dl>${b.filas.map((r) => `<div><dt>${h(r.valor)}</dt><dd>${h(r.etiqueta)}</dd></div>`).join("")}</dl></div>`,
       )
       .join("");
-    const cierre = a.epiCierre ? `<p>${a.epiCierre.html}</p>` : "";
-    const pie = a.pieFuentes ? `<ul class="chips"><li>${h(a.pieFuentes)}</li></ul>` : "";
+    const cierre = a.epiCierre ? `<p class="epi-cierre">${a.epiCierre.html}</p>` : "";
+    const pie = a.pieFuentes ? `<ul class="chips"><li>${h(a.pieFuentes.replace(/`/g, ""))}</li></ul>` : "";
     return `<div class="pstage act"><div class="eyebrow">EPÍLOGO · <b>EL INVENTARIO</b></div><h2>${a.titulo.html}</h2><div class="tiles"><div class="tile"><div class="k">RECORRIDO</div><div class="v">18,1<small>km</small></div><div class="d">CIRCULAR</div></div><div class="tile"><div class="k">DESNIVEL</div><div class="v">+815<small>m</small></div><div class="d">ACUMULADO</div></div></div>${blocks}${cierre}${pie}</div>`;
   }
   const chips = a.fichas.length > 0 ? `<ul class="chips">${a.fichas.map((f) => `<li>${h(f)}</li>`).join("")}</ul>` : "";

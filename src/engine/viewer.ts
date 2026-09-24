@@ -61,7 +61,6 @@ import {
   SKY_SAT,
   SKY_SCALE,
   SKY_SCALE_LOW,
-  SUNSET_ELEV_DEG,
 } from "../narrative/choreography.ts";
 import { initProgress, type ProgressHandle } from "../narrative/progress.ts";
 import { createScroll, type ScrollHandle } from "../narrative/scroll.ts";
@@ -108,6 +107,12 @@ function el(tag: string, cls: string, text = ""): HTMLElement {
 /** E3 uGlow: 1 at the milestone s, 0 outside +-GLOW_S_WINDOW. */
 function glowNear(s: number, milestoneS: number): number {
   return Math.min(1, Math.max(0, (GLOW_S_WINDOW - Math.abs(s - milestoneS)) / GLOW_S_WINDOW));
+}
+
+/** JS smoothstep (viewer-local; mirrors the GLSL one). */
+function smoothstepJS(e0: number, e1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
 }
 
 async function fetchWithProgress(
@@ -272,15 +277,36 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   const sunDirV = new THREE.Vector3(0, 1, 0);
   // N2: cloudUser = multiplicador del usuario (?clouds=); amount viene de
   // sun.cloudAmount(hora) y mult de CLOUD_ACT_MULT[acto] suavizado.
+  // Dawn-smoothing: sunElevSm is the 1−exp(−k·dt) state for every
+  // elevation-driven term (warm haze, uDawnF): scroll notches move the raw
+  // elevation ±0.3°/frame and the whole scene's warmth used to jump.
+  // k=1.2/s: ~2 s to converge, invisible lag against a minutes-long dawn.
+  let sunElevSm = 50;
+  let sunElevInit = false;
   let cloudDayF = 1;
   let cloudMultSm = 1;
   // N2c-fix: valores de sombra SUBIDOS a uniformes (misma escritura, no
   // recálculo) — el HUD los lee cada frame (letra a-f del diagnóstico).
   const shadowHud = { k: 0, sunF: 0, dayF: 0, amt: 0, mult: 1, user: 1, wMax: 0, alive: 0, noise: false };
 
-  function applyLighting(h: number): void {
-    const L = lightingAt(h);
+  function applyLighting(h: number, dt = -1): void {
     const sp = sunPosition(h);
+    // Dawn-smoothing: elevation-driven terms (warm haze, uDawnF) read the
+    // 1−exp(−k·dt) state, never the raw notch — a scroll step moves the sun
+    // ±0.3° and the whole scene's warmth used to jump. k=1.2/s converges
+    // in ~2 s, invisible lag against a minutes-long dawn. dt<0 (boot
+    // probes before the loop) snaps instead of easing from the 50° seed.
+    if (dt < 0 || !sunElevInit) {
+      sunElevSm = sp.elevationDeg;
+      sunElevInit = true;
+    } else {
+      sunElevSm += (sp.elevationDeg - sunElevSm) * (1 - Math.exp(-1.2 * dt));
+    }
+    const elevSmU = sunElevSm;
+    // lightingAt reads the SMOOTHED elevation (sun colour/intensity,
+    // exposure, day factors, nightMix) — hour-driven terms (fog, clouds)
+    // still read the clock inside. One writer for the dawn state.
+    const L = lightingAt(h, elevSmU);
     const az = (sp.azimuthDeg * Math.PI) / 180;
     const ev = (sp.elevationDeg * Math.PI) / 180;
     const dir = new THREE.Vector3(
@@ -319,17 +345,23 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     // F1 niebla de valle: uDawnF = 1 − smoothstep(2°,20°,elev) — al
     // alba/ocaso la niebla baja multiplica y el horizonte funde; a las
     // 12:00 vale 0 y el mediodía queda intacto por construcción.
+    // Dawn-smoothing: reads the eased elevation (same state as warmTop).
     {
-      const t = Math.min(1, Math.max(0, (sp.elevationDeg - 2) / 18));
+      const t = Math.min(1, Math.max(0, (elevSmU - 2) / 18));
       const f = t * t * (3 - 2 * t);
       (fogUniforms.uDawnF as { value: number }).value = 1 - f;
     }
-    const warm = Math.max(0, 1 - Math.abs(sp.elevationDeg - 12) / 25);
+    // Warm drift around 12° solar elevation (dawn/dusk glow on the haze).
+    // Shaped like the sun's own low arc: flat top ±6° (no kink at the
+    // peak), smoothstep falloff to zero at 12±18° — the old |e − 12|/25 V
+    // peaked at 12° and switched the whole scene's warmth in a scroll
+    // step at dawn. At 12:00 (elev ≈ 50.7°) warm is 0, as before.
+    const warmTop = 1 - smoothstepJS(6, 18, Math.abs(elevSmU - 12));
     fogUniforms.uFogTop.value = L.fogTopM;
     fogUniforms.uFogDensity.value = 0.25 + L.fogDensity * 0.75;
     const top: [number, number, number] = L.nightMix > 0.5
       ? [0.02, 0.03, 0.07]
-      : [0.55 + warm * 0.35, 0.6 + warm * 0.15, 0.72 - warm * 0.2];
+      : [0.55 + warmTop * 0.35, 0.6 + warmTop * 0.15, 0.72 - warmTop * 0.2];
     fogUniforms.uSkyColor.value = top;
     // A6/R1b: the valley in shadow is lit by the SKY, not the sun. Dome
     // colour from the same zenith estimate the overlay prints; it travels
@@ -355,7 +387,9 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
       hemiSky.setRGB(zrH * lift, zgH * lift, zbH * lift);
       hemi.color.copy(hemiSky);
       hemi.groundColor.copy(hemiGround);
-      const dayF = sp.elevationDeg > SUNSET_ELEV_DEG ? 1 : 0;
+      // Dawn continuity: the old `elev > SUNSET_ELEV_DEG ? 1 : 0` jumped the      // whole valley fill HEMI_NIGHT→HEMI_DAY in one scroll step at sunrise.
+      // Eased over −2°→0° like the sun/exposure ramps (nightMix already is).
+      const dayF = smoothstepJS(-2, 0, elevSmU);
       hemi.intensity = HEMI_DAY * dayF + HEMI_NIGHT * (1 - dayF);
       (fogUniforms.uHemiSky.value as [number, number, number])[0] = zr * 0.5 * lift;
       (fogUniforms.uHemiSky.value as [number, number, number])[1] = zg * 0.5 * lift;
@@ -1537,12 +1571,13 @@ if (uWallProbe > 0.5) {
     void trackTick;
   }
 
-  // §8 ?debug=gaps: invented-trace overlay (magenta over the normal line).
-  // Lazy chunk — never in the production bundle. Draws the whole invented
-  // stretch regardless of progress (it measures the trace, not the walk).
-  // EARLY (before the gate opens): swiftshader needs ~60 s for first paint
-  // and the watchdog fails at 45 s — the overlay must already be mounted
-  // when the capture probe runs, never after a late second paint.
+  // §8b ?debug=gaps: straight-trace overlay (magenta over the normal
+  // line). Detection = perpendicular deviation of the resampled+smoothed
+  // route off each raw-GPX chord (≤0.25 m interior, runs ≥100 m) — computed
+  // LIVE from route.json + the raw vertices (no generated file: the
+  // criterion is geometric, not an interval list). Lazy chunk — never in
+  // the production bundle. Draws the whole runs regardless of progress
+  // (it measures the trace, not the walk).
   let gapsOverlay:
     | { group: THREE.Group; inventedM: number; inventedRuns: number }
     | null = null;
@@ -1570,13 +1605,17 @@ if (uWallProbe > 0.5) {
   };
   if (boot.gaps) {
     try {
-      const [{ buildGapsOverlay }, { GAP_RANGES, GAP_META }] = await Promise.all([
-        import("./gaps-overlay.ts"),
-        import("../generated/gaps.ts"),
-      ]);
-      gapsBuild = { buildGapsOverlay };
-      gapsRanges = GAP_RANGES as unknown as Array<readonly [number, number]>;
-      gapsOverlay = buildGapsOverlay(line.linePositions(), route, gapsRanges, res2);
+      const gapsMod = await import("./gaps-overlay.ts");
+      const rawMod = await import("../generated/gaps.ts");
+      gapsBuild = { buildGapsOverlay: gapsMod.buildGapsOverlay };
+      const rawPairs = rawMod.GAP_RAW as Array<readonly [number, number]>;
+      const rawCum = rawMod.GAP_CUM as number[];
+      gapsRanges = gapsMod.straightRuns(
+        route,
+        rawPairs.map(([x, y]) => ({ x, y })),
+        rawCum,
+      );
+      gapsOverlay = gapsBuild.buildGapsOverlay(line.linePositions(), route, gapsRanges, res2);
       group.add(gapsOverlay.group);
       // §8: the overlay copies the line's positions — LOD redrape rebuilds it.
       line.onRedrape(rebuildGapsOverlay);
@@ -1584,18 +1623,12 @@ if (uWallProbe > 0.5) {
       (window as unknown as { __gaps?: unknown }).__gaps = {
         runs: gapsOverlay.inventedRuns,
         inventedM: Math.round(gapsOverlay.inventedM),
-        audit: GAP_META,
+        ranges: gapsRanges,
       };
-      window.addEventListener("resize", () => {
-        renderer.getDrawingBufferSize(res2);
-        if (!gapsOverlay) return;
-        for (const o of gapsOverlay.group.children) {
-          const lm = (o as unknown as { material: { resolution: THREE.Vector2 } }).material;
-          lm.resolution.copy(res2);
-        }
-      });
-    } catch {
-      /* overlay is an instrument: never block first paint */
+    } catch (e) {
+      // Instrument, never silent: publish the failure so the capture
+      // reports it instead of a clean frame with no magenta.
+      (window as unknown as { __gapsError?: unknown }).__gapsError = String(e).slice(0, 300);
     }
   }
   // ?debug=path instrument (3-panel overlay, lazy import keeps it out of the
@@ -1958,7 +1991,7 @@ if (uWallProbe > 0.5) {
     }
     const st = progress.getState();
     const hour = st.hourDec;
-    applyLighting(hour);
+    applyLighting(hour, dt);
     // E2: progressive cut at the walker (epilogue draws the whole loop).
     // BLOQUEANTE ?track=all: isolation probe — uProgressDist = lengthM,
     // nothing else touched. Answers geometry-vs-cut in a single load.

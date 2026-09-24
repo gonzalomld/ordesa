@@ -33,7 +33,18 @@ function parseGpx(path: string): GpxPt[] {
     /<trkpt[^>]*lat="([\d.+-]+)"[^>]*lon="([\d.+-]+)"[^>]*>(?:[\s\S]*?<ele>([\d.+-]+)<\/ele>)?/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(xml)) !== null) {
-    pts.push({ lat: Number(m[1]), lon: Number(m[2]), ele: Number(m[3] ?? NaN) });
+    const lat = Number(m[1]);
+    const lon = Number(m[2]);
+    const ele = Number(m[3] ?? NaN);
+    // DEDUP (§8b): the source GPX repeats every trkpt twice (446 tags, 224
+    // unique positions). 05 walks arc-length over these — a zero-length leg
+    // is harmless there, but every consumer that indexes raw segments j→j+1
+    // (audit, ?debug=gaps chords) needs the real vertices. Drop exact
+    // repeats; the resample output is unchanged (zero-length legs add no
+    // arc length, so targets/indices only shift by rounding).
+    const prev = pts[pts.length - 1];
+    if (prev !== undefined && prev.lat === lat && prev.lon === lon) continue;
+    pts.push({ lat, lon, ele });
   }
   if (pts.length === 0) throw new Error(`${path}: no <trkpt> found`);
   return pts;
