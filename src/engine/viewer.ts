@@ -637,7 +637,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     // medido con probeGLSL). Con la bandera en la clave, ?debug=walls nace
     // CON sonda y el GLSL trae las tres ramas. Sigue sin recompilar en
     // runtime (la clave no cambia 0→1→2→3: uWallProbe es uniforme).
-    const probeKey = boot.steep || boot.walls || boot.walls2 ? "+wallprobe" : "";
+    const probeKey = boot.steep || boot.walls || boot.walls2 || boot.tilediff ? "+wallprobe" : "";
     const corridor = routeReady ? { x: routeReady.x, y: routeReady.y, halfM: CORRIDOR_HALF_M } : undefined;
     const geo = buildTerrainGeometry(elev, meta, world, step, corridor);
     if (!terrainMat) {
@@ -680,6 +680,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uHasTiles"] = hasTiles;
         s.uniforms["uTilesDebug"] = tilesDebug;
         s.uniforms["uTilesSlot"] = tilesSlot;
+        s.uniforms["uTileDiff"] = tileDiff;
   s.uniforms["uRock"] = rockUniform;
   s.uniforms["uRockNormal"] = rockNormalUniform;
   s.uniforms["uHasRock"] = hasRock;
@@ -716,11 +717,18 @@ uniform sampler2D uRock; uniform sampler2D uRockNormal; uniform float uHasRock;
 // (epsg-min)/size) para no amplificar el error de cuanto en el fragmento.
 uniform sampler2D uTilesAtlas; uniform sampler2D uTilesIndex;
 uniform vec4 uTilesCorr; uniform vec4 uTilesOrg;
-uniform float uHasTiles; uniform float uTilesDebug; uniform float uTilesSlot;
+uniform float uHasTiles; uniform float uTilesDebug; uniform float uTilesSlot; uniform float uTileDiff;
 varying vec2 vTilesEpsg;
 varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv;
 float gSteep = 0.0;
 float gRaw = 0.0;
+// T1-cierre (?debug=tilediff): lumas de los DOS caminos en el mismo punto
+// del mundo, CALCULADAS aquí (antes de luz, niebla y roca) pero ESCRITAS
+// al final tras dithering (como la sonda de pared: escribir antes dejaría
+// que el tonemapping transformase los números). Misma transformación para
+// ambos: el espacio de color da igual, lo que se compara es la relación.
+float gLumaT = -1.0;
+float gLumaC = -1.0;
 float grockMix = 0.0;
 float gSlope = 0.0;
 // §5d-bis: gCroma/gCromaF/gGrain retirados (muertos: los cocientes se inflan
@@ -842,6 +850,12 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
   vec4 corr = texture2D(uCorridor, vUv2c.xy);
   float wcorr = vUv2c.z * uHasCorr;
   vec3 alb = mix(mix(diffuseColor.rgb, corr.rgb, wcorr), albT, wtiles);
+  // T1-cierre (?debug=tilediff): R = luma camino TESELA, G = luma camino
+  // CORREDOR, mismo punto del mundo, los dos ANTES de luz/niebla/roca.
+  // gLumaT/gLumaC se capturan aquí; la ESCRITURA va al final tras dithering
+  // (ver abajo): misma transformación para ambos, el espacio da igual.
+  gLumaC = gluma(corr.rgb);
+  gLumaT = (wtiles > 0.001) ? gluma(albT) : -1.0;
   // T1-bis: diagnóstico B (índice, sin atlas): R = idx.r*255/16,
   // G = (idx-1)/16, B = wtiles. En zona residente: R≈0.06/G≈0.02/B=1.
   // Se activa SOLO con URL ?slot=1 (?debug=tiles&slot=1) — bandera aparte,
@@ -959,7 +973,7 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
             wallDegVal: (wallDeg as { value: number }).value,
           };
         }
-        if ((boot.steep || boot.walls || boot.walls2) && !boot.rock) {
+        if ((boot.steep || boot.walls || boot.walls2 || boot.tilediff) && !boot.rock) {
           const prevDither = terrainMat.onBeforeCompile.bind(terrainMat);
           terrainMat.onBeforeCompile = (s2: {
             uniforms: Record<string, unknown>;
@@ -989,7 +1003,16 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
                 `#include <dithering_fragment>
 gLumaF = gluma(gl_FragColor.rgb);
 gBRF = gl_FragColor.b - gl_FragColor.r;
-if (uWallProbe > 0.5) {
+// T1-cierre (?debug=tilediff): escritura AL FINAL tras dithering (como la
+// sonda de pared: escribir antes dejaría que el tonemapping transformase
+// los números). R = luma TESELA, G = luma CORREDOR, B = 0,5. Misma
+// transformación para ambos: el espacio de color da igual, lo que se
+// compara es la relación entre ellos. Criterio: |R−G| <= max(0.15·G,
+// 8/255) — el suelo absoluto 8/255 manda sobre bosque oscuro en umbría
+// (luma ~0,05: el 15 % cae bajo la cuantización de 8 bits y el ruido WebP).
+if (uTileDiff > 0.5 && gLumaT >= 0.0) {
+  gl_FragColor = vec4(clamp(gLumaT, 0.0, 1.0), clamp(gLumaC, 0.0, 1.0), 0.5, 1.0);
+} else if (uWallProbe > 0.5) {
   float wsm = 0.05 + 0.9 * clamp(gSlope / 90.0, 0.0, 1.0);
   if (uWallProbe < 1.5)
     gl_FragColor = vec4(wsm, clamp(grockMix, 0.0, 1.0), clamp(gBR * 0.5 + 0.5, 0.0, 1.0), 1.0);
@@ -1053,6 +1076,8 @@ if (uWallProbe > 0.5) {
   const hasTiles = { value: 0 };
   const tilesDebug = { value: boot.tiles ? 1 : 0 };
   const tilesSlot = { value: boot.tilesSlot ? 1 : 0 };
+  // T1-cierre: ?debug=tilediff (UNIFORME vivo — NO constante de compilación).
+  const tileDiff = { value: boot.tilediff ? 1 : 0 };
   /** T1: índice rejilla→hueco como DataTexture R (slot+1, 0 = ausente).
    * NEAREST obligatorio: LINEAR mezclaría huecos vecinos en las juntas.
    * Sin flip norte/sur: la fila 0 de la DataTexture es v=0 = borde sur
@@ -1298,67 +1323,78 @@ if (uWallProbe > 0.5) {
   // huecos vecinos en las juntas. NOTA: subida con flipY=true como el
   // corredor (Image directa + needsUpdate tras fijar filtros: el
   // TextureLoader reusaba el upload y el atlas llegaba vacío a la GPU).
-  {
+  // GATEO T1: todo este camino (descarga, índice, hasTiles=1) vive DENTRO
+  // de armTiles y la única llamada está tras bandera (?debug=tiles o
+  // ?debug=tilediff). Sin bandera no se pide nada de /assets/tiles/ y
+  // hasTiles queda en 0: la rama if (uHasTiles > 0.5) no ejecuta y la
+  // salida es la de pre-T1. El GLSL (declaraciones + rama) queda SIEMPRE compilado — patrón uHasRock §5:
+  // un valor de runtime es un uniforme, nunca una constante de compilación
+  // (programas distintos para ?tiles y sin ?tiles romperían la prueba).
+  async function armTiles(): Promise<void> {
     const atlasAsset = meta.assets?.["tiles-atlas"];
     const gridInfo = (meta as unknown as {
       corridorBbox?: { minx: number; miny: number; maxx: number; maxy: number };
       tiles?: { cols: number; rows: number; originX: number; originY: number };
     }).tiles;
     const cbx = meta.corridorBbox;
-    if (atlasAsset && gridInfo && cbx) {
-      tilesCorr.value.set(cbx.minx, cbx.miny, cbx.maxx - cbx.minx, cbx.maxy - cbx.miny);
-      tilesOrg.value.set(gridInfo.originX, gridInfo.originY, 1 / gridInfo.cols, 1 / gridInfo.rows);
-      // índice de rejilla desde el bundle: R = slot+1 (/255), 0 = no
-      // residente. NEAREST siempre (LINEAR mezclaría huecos en las juntas).
-      const { TILE_SLOTS } = await import("../generated/tiles.ts");
-      try {
-        const img = new Image();
-        img.decoding = "sync";
-        await new Promise<void>((resolve, reject) => {
-          const to = window.setTimeout(() => reject(new Error("tiles atlas img timeout")), 60000);
-          img.onload = () => {
-            window.clearTimeout(to);
-            resolve();
-          };
-          img.onerror = () => {
-            window.clearTimeout(to);
-            reject(new Error("tiles atlas img decode failed"));
-          };
-          img.src = `/${atlasAsset}`;
-        });
-        const t = new THREE.Texture(img);
-        // T1-bis (diagnóstico): mientras el atlas lleve COLORES CODIFICADOS
-        // va con NoColorSpace — con SRGBColorSpace three lineariza los
-        // valores y un 0,1875 nominal llega al shader como ~0,029: los
-        // números leídos no serían los que el atlas contiene. Cuando el
-        // atlas vuelva a llevar FOTOS, SRGBColorSpace otra vez (ahí sí es
-        // lo correcto). Ajuste por propósito, no arreglo permanente.
-        t.colorSpace = THREE.NoColorSpace;
-        t.minFilter = THREE.LinearFilter;
-        t.magFilter = THREE.LinearFilter;
-        t.generateMipmaps = false;
-        t.wrapS = THREE.ClampToEdgeWrapping;
-        t.wrapT = THREE.ClampToEdgeWrapping;
-        // flipY=true como el corredor (probado): norte de imagen ↔ v≈1.
-        // El shader ya cuenta con ello (7-floor + inPx.y directo).
-        t.flipY = true;
-        t.needsUpdate = true;
-        tilesAtlasUniform.value = t;
-        tilesIndexUniform.value = buildTilesIndex(
-          gridInfo.cols,
-          gridInfo.rows,
-          TILE_SLOTS as Array<{ c: number; r: number; slot: number }>,
-        );
-        hasTiles.value = 1;
-        (window as unknown as { __tilesAtlas?: unknown }).__tilesAtlas = {
-          asset: atlasAsset,
-          resident: 16,
-          vramMB: (img.naturalWidth * img.naturalHeight * 4) / 1048576,
+    if (!atlasAsset || !gridInfo || !cbx) return;
+    tilesCorr.value.set(cbx.minx, cbx.miny, cbx.maxx - cbx.minx, cbx.maxy - cbx.miny);
+    tilesOrg.value.set(gridInfo.originX, gridInfo.originY, 1 / gridInfo.cols, 1 / gridInfo.rows);
+    // índice de rejilla desde el bundle: R = slot+1 (/255), 0 = no
+    // residente. NEAREST siempre (LINEAR mezclaría huecos en las juntas).
+    const { TILE_SLOTS } = await import("../generated/tiles.ts");
+    try {
+      const img = new Image();
+      img.decoding = "sync";
+      await new Promise<void>((resolve, reject) => {
+        const to = window.setTimeout(() => reject(new Error("tiles atlas img timeout")), 60000);
+        img.onload = () => {
+          window.clearTimeout(to);
+          resolve();
         };
-      } catch {
-        /* sin atlas: el corredor de hoy manda (fallback intacto) */
-      }
+        img.onerror = () => {
+          window.clearTimeout(to);
+          reject(new Error("tiles atlas img decode failed"));
+        };
+        img.src = `/${atlasAsset}`;
+      });
+      const t = new THREE.Texture(img);
+      // Atlas de FOTOS → SRGBColorSpace (lo correcto: con NoColorSpace las
+      // fotos saldrían oscuras). El NoColorSpace fue ajuste temporal del
+      // atlas de diagnóstico T1-bis (colores codificados: three los
+      // linearizaba y los números leídos no eran los del atlas).
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.minFilter = THREE.LinearFilter;
+      t.magFilter = THREE.LinearFilter;
+      t.generateMipmaps = false;
+      t.wrapS = THREE.ClampToEdgeWrapping;
+      t.wrapT = THREE.ClampToEdgeWrapping;
+      // flipY=true como el corredor (probado): norte de imagen ↔ v≈1.
+      // El shader ya cuenta con ello (7-floor + inPx.y directo).
+      t.flipY = true;
+      t.needsUpdate = true;
+      tilesAtlasUniform.value = t;
+      tilesIndexUniform.value = buildTilesIndex(
+        gridInfo.cols,
+        gridInfo.rows,
+        TILE_SLOTS as Array<{ c: number; r: number; slot: number }>,
+      );
+      hasTiles.value = 1;
+      (window as unknown as { __tilesAtlas?: unknown }).__tilesAtlas = {
+        asset: atlasAsset,
+        resident: 16,
+        vramMB: (img.naturalWidth * img.naturalHeight * 4) / 1048576,
+      };
+    } catch {
+      /* sin atlas: el corredor de hoy manda (fallback intacto) */
     }
+  }
+  // ÚNICA llamada: tras bandera (?debug=tiles | ?debug=tilediff — G120
+  // verifica la guarda por estructura, no por proximidad textual).
+  // tilediff necesita el atlas cargado para comparar; tilesDebug queda en 0
+  // con tilediff solo, así que el diagnóstico A T1-bis no secuestra el frame.
+  if (boot.tiles || boot.tilediff) {
+    void armTiles();
   }
   if (meta.assets?.["terrain-normal"] && texLevel !== "lite") {
     void armTex(meta.assets["terrain-normal"], false, (t) => {
@@ -1511,6 +1547,50 @@ if (uWallProbe > 0.5) {
   } else {
     // Apagados: etiquetas al suelo (mismo anclaje que antes de §3).
     for (const rt of labelRts) releaseBeam(rt);
+  }
+  // T1-cierre (?debug=tilediff): lector de 16 pares (R = luma camino TESELA,
+  // G = luma camino CORREDOR) por píxel del bloque. Proyecta cada centro de
+  // tesela residente con la cámara viva, lee un píxel del canvas con
+  // readPixels crudo (lectura permitida — AGENTS.md) y publica la tabla en
+  // window.__tilediff con el veredicto por par: |R−G| <= max(0.15·G,
+  // 8/255). Informa, no gobierna: no escribe ningún estado de la pieza.
+  // (§5d va debajo: su cableado vive aquí porque la pieza es dueña de sky,
+  // line, clouds, beams, labelLayer y wallProbe.)
+  if (boot.tilediff) {
+    try {
+      const { TILE_SLOTS } = await import("../generated/tiles.ts");
+      const tilediffSlots = TILE_SLOTS as Array<{ c: number; r: number; slot: number }>;
+      (window as unknown as { __tilediff?: unknown }).__tilediff = {
+        read: (): unknown => {
+          try {
+            const gl = renderer.getContext() as WebGL2RenderingContext;
+            const cw = renderer.domElement.width;
+            const ch = renderer.domElement.height;
+            const px = new Uint8Array(4);
+            const pairs = tilediffSlots.map((s) => {
+              const ex = (meta as unknown as { tiles: { originX: number; originY: number } }).tiles.originX + (s.c + 0.5) * 126;
+              const ey = (meta as unknown as { tiles: { originY: number } }).tiles.originY + (s.r + 0.5) * 126;
+              const v = new THREE.Vector3(ex - world.centerX, 2200, -(ey - world.centerY));
+              v.project(camera);
+              const sx = Math.max(0, Math.min(cw - 1, Math.floor((v.x * 0.5 + 0.5) * cw)));
+              const sy = Math.max(0, Math.min(ch - 1, Math.floor((-v.y * 0.5 + 0.5) * ch)));
+              gl.readPixels(sx, sy, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+              const R = (px[0] as number) / 255;
+              const G = (px[1] as number) / 255;
+              const tol = Math.max(0.15 * G, 8 / 255);
+              const d = Math.abs(R - G);
+              const verdict = R < 4 / 255 ? "negro" : d <= tol ? "ok" : R < G * 0.5 ? "bajo" : "alto";
+              return { slot: s.slot, c: s.c, r: s.r, R: +R.toFixed(4), G: +G.toFixed(4), d: +d.toFixed(4), tol: +tol.toFixed(4), verdict };
+            });
+            return { pairs };
+          } catch (e) {
+            return { error: String(e).slice(0, 300) };
+          }
+        },
+      };
+    } catch (e) {
+      (window as unknown as { __tilediffError?: unknown }).__tilediffError = String(e).slice(0, 300);
+    }
   }
   // §5d: la sonda de pared vive en su propio módulo (carga diferida —
   // producción no lo carga ni lo llama); el cableado vive aquí porque la

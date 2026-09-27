@@ -90,6 +90,13 @@ export interface BootQuery {
   /** T1-bis: diagnóstico B del índice — solo con ?slot=1
    * (?debug=tiles&slot=1). Nunca mezclado con el diagnóstico A. */
   tilesSlot: boolean;
+  /** T1-cierre: ?debug=tilediff — por píxel del bloque, R = luma del camino
+   * de TESELA, G = luma del camino de CORREDOR en el mismo punto del mundo,
+   * B = 0,5. Los dos calculados antes de luz, niebla y roca; la escritura
+   * va al final tras dithering (como la sonda de pared) para que el
+   * tonemapping no transforme los números. Misma transformación para ambos:
+   * el espacio de color da igual, lo que se compara es la relación. */
+  tilediff: boolean;
   /** Rastro enterrado: ghost pass to magenta at opacity 1 (?ghost=1).
    * The ghost draws exactly what lies behind the terrain. */
   ghost: boolean;
@@ -169,6 +176,7 @@ export function parseBootQuery(): BootQuery {
   retrace: q.get("debug") === "retrace",
   tiles: q.get("debug") === "tiles",
   tilesSlot: q.get("debug") === "tiles" && q.get("slot") === "1",
+  tilediff: q.get("debug") === "tilediff",
     ghost: q.has("ghost"),
     skymap: q.get("skymap") === "1",
     skycap: q.get("skycap") !== "0",

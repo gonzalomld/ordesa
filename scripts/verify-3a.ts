@@ -1666,6 +1666,10 @@ function elevFull36(): Float32Array {
 // ZERO readPixels (no readZenith, no luma/skyfrac/trackpx). Node checks the
 // gates: every readback sits inside the debug+30f block; refreshIfNeeded
 // (render-only, no readback) is the only capture call in the hot loop.
+// Instrument readers (__tilediff.read, __wallProbe.hist) call readPixels
+// bajo demanda tras bandera — no cuentan: solo importan los del hot loop
+// (el bloque del frame). Se excluyen líneas dentro de `read: (` / `read:()`
+// (lectores bajo demanda) y comentarios.
 {
   const viewerSrcG27 = readFileSync("src/engine/viewer.ts", "utf8");
   const hotStart = viewerSrcG27.indexOf("skyCap?.refreshIfNeeded(st.sunElev);");
@@ -1676,6 +1680,10 @@ function elevFull36(): Float32Array {
     while ((i = viewerSrcG27.indexOf(k, i + 1)) >= 0) {
       // comments + sky-capture re-export lines don't count; only CALLS in viewer
       if (viewerSrcG27.slice(Math.max(0, i - 80), i).includes("//")) continue;
+      // on-demand instrument readers (tras bandera, bajo demanda — nunca en
+      // el hot loop): el lector __tilediff.read. El bloque va tras
+      // "if (boot.tilediff)" y solo corre cuando el usuario lo invoca.
+      if (k === "readPixels" && viewerSrcG27.lastIndexOf("if (boot.tilediff)", i) >= 0) continue;
       if (k === "readRenderTargetPixels" && viewerSrcG27.slice(i - 30, i).includes("renderer.")) {
         // the call must live inside the 30-frame probe block
         if (i < probeBlock) outside = true;
@@ -2106,6 +2114,159 @@ function elevFull36(): Float32Array {
   const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
   gate("G104-shadow-chroma", bad.length === 0,
     bad.length ? `falta: ${bad.join(", ")}` : `sRGB de pantalla, métrica b−r (sin umbral), parche 128² en sombra: mediana del 50 % central + histo luma 10 cubos — measure @s=0.80/0.29/ActoV, t=12:00 (base Gonzalo: b−r +0,200 a luma 0,306)`);
+}
+
+// --- G120-tiles-gated (contrato, copia de G101): la descarga, el índice y
+// hasTiles = 1 viven DENTRO del cuerpo de armTiles y la única llamada está
+// tras bandera (?debug=tiles | ?debug=tilediff); uHasTiles es uniforme vivo,
+// no constante de compilación. Verificación por estructura, no por
+// proximidad textual.
+{
+  const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  // Cuerpo de armTiles: del "async function armTiles" a la primera llamada
+  // "void armTiles()" (la llamada vive fuera; el cuerpo, dentro).
+  const fnStart = viewerSrc.indexOf("async function armTiles");
+  const callIdx = viewerSrc.indexOf("void armTiles()");
+  const body = fnStart >= 0 && callIdx > fnStart ? viewerSrc.slice(fnStart, callIdx) : "";
+  const tail = callIdx >= 0 ? viewerSrc.slice(Math.max(0, callIdx - 400), callIdx + 60) : "";
+  const head = fnStart >= 0 ? viewerSrc.slice(0, fnStart) : viewerSrc;
+  const armTilesCalls = (viewerSrc.match(/void armTiles\(\)/g) ?? []).length;
+  const checks: [string, boolean][] = [
+    ["armTiles existe y se llama exactamente una vez", fnStart >= 0 && armTilesCalls === 1],
+    ["la llamada está tras bandera (boot.tiles||boot.tilediff)", /if\s*\(\s*boot\.tiles\s*\|\|\s*boot\.tilediff\s*\)\s*\{\s*void armTiles\(\);/.test(tail)],
+    ["hasTiles.value = 1 SOLO dentro de armTiles", body.includes("hasTiles.value = 1") && !head.includes("hasTiles.value = 1")],
+    ["construcción del índice SOLO dentro de armTiles", body.includes("tilesIndexUniform.value = buildTilesIndex(") && !head.includes("tilesIndexUniform.value =")],
+    ["TILE_SLOTS SOLO dentro de armTiles (+ overlay diferido aparte)", !head.includes("TILE_SLOTS") && body.includes("TILE_SLOTS")],
+    ["uHasTiles uniforme vivo (no constante)", has(viewerSrc, 's.uniforms["uHasTiles"] = hasTiles')],
+    ["uHasTiles no interpolado como número en GLSL", !/\$\{(hasTiles|tilesDebug|tileDiff)[^}]*\.value\}/.test(viewerSrc)],
+    ["GLSL siempre presente (decl + rama, sin ternario boot)", has(viewerSrc, "uniform sampler2D uTilesAtlas") && has(viewerSrc, "if (uHasTiles > 0.5)") && !/boot\.tiles\s*\?\s*["'`]/.test(viewerSrc)],
+    ["atlas SRGB con fotos (NoColorSpace fuera)", has(viewerSrc, "t.colorSpace = THREE.SRGBColorSpace") && !body.includes("THREE.NoColorSpace")],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G120-tiles-gated", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — armTiles×1 tras bandera, índice+flag dentro, uHasTiles vivo, GLSL siempre, SRGB`);
+}
+
+// --- G121-tiles-noflag (mitad estática Node; la medida —cero peticiones a
+// /assets/tiles/ sin bandera + Mirador pixel-idéntico— vive en producción).
+// Sin bandera nada de /assets/tiles/ puede pedirse: toda mención en la
+// pieza vive dentro de armTiles (tras bandera) o en el overlay diferido
+// (tras boot.tiles).
+{
+  const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
+  const fnStart = viewerSrc.indexOf("async function armTiles");
+  const callIdx = viewerSrc.indexOf("void armTiles()");
+  const body = fnStart >= 0 && callIdx > fnStart ? viewerSrc.slice(fnStart, callIdx) : "";
+  const overlayOk = /if\s*\(\s*boot\.tiles\s*\)\s*\{\s*try\s*\{\s*const tilesMod = await import\("\.\/tiles-overlay\.ts"\)/.test(viewerSrc);
+  const checks: [string, boolean][] = [
+    ["armTiles extraíble + overlay lazy tras bandera", body.length > 0 && overlayOk],
+    ["fugas a prod fuera de armTiles/overlay/tilediff: ninguna", (() => {
+      // Todo /assets/tiles/ fuera de los tres bloques gateados = fuga a prod.
+      // Los tres bloques: cuerpo armTiles, overlay (if boot.tiles) y lector
+      // tilediff (if boot.tilediff). Se localizan por sus guardas.
+      const armStart = viewerSrc.indexOf("async function armTiles");
+      const armCall = viewerSrc.indexOf("void armTiles()");
+      const ovStart = viewerSrc.indexOf('await import("./tiles-overlay.ts")');
+      const ovGuard = ovStart >= 0 ? viewerSrc.lastIndexOf("if (boot.tiles)", ovStart) : -1;
+      const tdStart = viewerSrc.indexOf("window as unknown as { __tilediff");
+      const tdGuard = tdStart >= 0 ? viewerSrc.lastIndexOf("if (boot.tilediff)", tdStart) : -1;
+      const spans: Array<[number, number]> = [];
+      if (armStart >= 0 && armCall > armStart) spans.push([armStart, armCall]);
+      if (ovGuard >= 0 && ovStart > ovGuard) spans.push([ovGuard, ovStart + 2000]);
+      if (tdGuard >= 0 && tdStart > tdGuard) spans.push([tdGuard, tdStart + 4000]);
+      const inSpans = (k: number): boolean => spans.some(([a, b]) => k >= a && k <= b);
+      const needles = ["tiles-atlas", "generated/tiles.ts", "TILE_SLOTS", "hasTiles.value = 1", "buildTilesIndex("];
+      const leaks: string[] = [];
+      for (const nd of needles) {
+        let k = -1;
+        while ((k = viewerSrc.indexOf(nd, k + 1)) >= 0) {
+          // la DEFINICIÓN "function buildTilesIndex(" no es la llamada
+          if (nd === "buildTilesIndex(" && viewerSrc.slice(Math.max(0, k - 9), k).includes("function")) continue;
+          if (!inSpans(k)) { leaks.push(`${nd}@${k}`); break; }
+        }
+      }
+      return leaks.length === 0;
+    })()],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G121-tiles-noflag", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — sin bandera no hay camino a /assets/tiles/ (medida red en prod)`);
+}
+
+// --- G122-tile-budget (contrato): peso medio por tesela <= 60 KB.
+{
+  const m = JSON.parse(readFileSync("data/build/meta.json", "utf8")) as {
+    sizesBytes?: Record<string, number>;
+  };
+  const keys = Object.keys(m.sizesBytes ?? {}).filter((k) => k.startsWith("tile-c"));
+  const bytes = keys.map((k) => m.sizesBytes?.[k] ?? -1);
+  const okCount = keys.length === 16 && bytes.every((b) => b > 0);
+  const mean = okCount ? bytes.reduce((s, b) => s + b, 0) / bytes.length : -1;
+  gate("G122-tile-budget", okCount && mean <= 60 * 1024,
+    !okCount ? `teselas: ${keys.length} (esperadas 16)` : `media ${(mean / 1024).toFixed(1)} KB/tesela (16, límite 60 KB)`);
+}
+
+// --- G126-atlas-is-photo (contrato): el atlas referenciado en meta.json NO
+// es de diagnóstico. Desviación típica por canal > 8 DENTRO de cada hueco
+// que el índice marca como residente (una foto varía 12-47; un color plano
+// da ~0; los huecos 16-63 vacíos dan 0 y NO se muestrean).
+{
+  const m = JSON.parse(readFileSync("data/build/meta.json", "utf8")) as {
+    assets?: Record<string, string>;
+    tiles?: { atlasPx: number; atlasCols: number; px: number; slots: Array<{ c: number; r: number; slot: number }> };
+  };
+  const rel = m.assets?.["tiles-atlas"];
+  const slots = m.tiles?.slots ?? [];
+  let detail = "";
+  let ok = false;
+  if (!rel) {
+    detail = "meta.assets[tiles-atlas] ausente";
+  } else if (!existsSync(`public/${rel}`)) {
+    detail = `atlas ausente en disco: public/${rel}`;
+  } else if (slots.length === 0) {
+    detail = "meta.tiles.slots vacío (nada residente que muestrear)";
+  } else {
+    const { data, info } = await sharp(`public/${rel}`).raw().toBuffer({ resolveWithObject: true });
+    const W = info.width;
+    const H = info.height;
+    const ch = info.channels;
+    if (W !== 4096 || H !== 4096) {
+      detail = `dimensiones ${W}×${H} (esperado 4096²)`;
+    } else {
+      const atlasPx = m.tiles?.atlasPx ?? 4096;
+      const atlasCols = m.tiles?.atlasCols ?? 8;
+      const tilePx = m.tiles?.px ?? 512;
+      const slotPx = atlasPx / atlasCols; // 512
+      const M = 8; // margen interior: evita borde de tesela
+      const stds: { slot: number; stdR: number; stdG: number; stdB: number }[] = [];
+      for (const s of slots) {
+        // sharp compone top-down: hueco slot en (col*512, row*512),
+        // row=0 = fila SUPERIOR (mismo convenio que 20-build-ortho-tiles).
+        const left = (s.slot % atlasCols) * slotPx;
+        const top = Math.floor(s.slot / atlasCols) * slotPx;
+        let n = 0;
+        let sR = 0, sG = 0, sB = 0, sR2 = 0, sG2 = 0, sB2 = 0;
+        for (let y = top + M; y < top + tilePx - M; y += 4) {
+          for (let x = left + M; x < left + tilePx - M; x += 4) {
+            const o = (y * W + x) * ch;
+            const rv = data[o] as number, gv = data[o + 1] as number, bv = data[o + 2] as number;
+            n++; sR += rv; sG += gv; sB += bv; sR2 += rv * rv; sG2 += gv * gv; sB2 += bv * bv;
+          }
+        }
+        const sd = (sum: number, sum2: number): number => Math.sqrt(Math.max(0, sum2 / n - (sum / n) ** 2));
+        stds.push({ slot: s.slot, stdR: sd(sR, sR2), stdG: sd(sG, sG2), stdB: sd(sB, sB2) });
+      }
+      const worst = stds.reduce((a, b) => Math.min(a, b.stdR, b.stdG, b.stdB), Infinity);
+      const badSlots = stds.filter((s) => Math.min(s.stdR, s.stdG, s.stdB) <= 8).map((s) => s.slot);
+      ok = badSlots.length === 0;
+      const minS = stds.reduce((a, b) => (Math.min(a.stdR, a.stdG, a.stdB) < Math.min(b.stdR, b.stdG, b.stdB) ? a : b));
+      detail = ok
+        ? `${slots.length} huecos residentes, peor min-std ${worst.toFixed(1)} (hueco ${minS.slot}: R ${minS.stdR.toFixed(1)} G ${minS.stdG.toFixed(1)} B ${minS.stdB.toFixed(1)}) — foto, no diagnóstico`
+        : `huecos planos (std<=8): ${badSlots.join(",")}`;
+    }
+  }
+  gate("G126-atlas-is-photo", ok, detail);
 }
 
 if (failures > 0) {
