@@ -1444,6 +1444,30 @@ function elevFull36(): Float32Array {
       : `cache contract broken (bundled=${bundled} rule=${rule} hash=${hashOk})`);
 }
 
+// --- G127-tilediff-control (T1-cierre): el lector __tilediff RENDERIZA Y
+// LEE en el mismo bloque síncrono (estructura wall-probe: guardar uTileDiff
+// + clear, subir, render, readPixels inmediato, restaurar en finally). Sin
+// eso, leer desde consola fuera del frame devuelve ceros (sin
+// preserveDrawingBuffer el buffer se limpia al presentar). Y G lleva el
+// CANAL DE CONTROL (luma del corredor, que pinta el terreno en pantalla):
+// si G sale cero, el lector está roto y R no significa nada.
+// WebGL: magFilter nunca es mipmap (GL_INVALID_ENUM — mag solo acepta
+// LINEAR/NEAREST; el driver se queda con el defecto).
+{
+  const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
+  const fogSrc = readFileSync("src/engine/height-fog.ts", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  const checks: [string, boolean][] = [
+    ["read() renderiza+lee en bloque (tileDiff=1, render, readPixels, finally)", has(viewerSrc, "tileDiff.value = 1") && has(viewerSrc, "renderer.render(scene, camera)") && has(viewerSrc, "gl.readPixels(sx, sy, 1, 1") && has(viewerSrc, "tileDiff.value = prevU")],
+    ["restaura clear + visibilidades (finally)", has(viewerSrc, "renderer.setClearColor(prevClear, prevAlpha)") && has(viewerSrc, "hideForTilediff")],
+    ["canal de control G (luma corredor, gLumaC)", has(viewerSrc, "gLumaC = gluma(corr.rgb)") && has(viewerSrc, "uniform float uTileDiff")],
+    ["magFilter sin mipmap (uCloud: LinearFilter)", fogSrc.includes("tex.magFilter = THREE_NS.LinearFilter") && !fogSrc.includes("tex.magFilter = THREE_NS.LinearMipmapLinearFilter")],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G127-tilediff-control", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — lector render+lee, G control, magFilter legal`);
+}
+
 // --- G54 shadow coherence (N2c). Cada gaussiana viva (w>0,1) cuelga de su
 // nube: offset solar off = (cy−suelo)·(sunDir.xz/max(sunDir.y,0.15)).
 // Node checks (__cloudShadows publicado + fórmula del offset en el viewer);
@@ -1555,7 +1579,12 @@ function elevFull36(): Float32Array {
 {
   const viewerSrcG29 = readFileSync("src/engine/viewer.ts", "utf8");
   const debugSrcG29 = readFileSync("src/engine/debug.ts", "utf8");
-  const resetFirst = viewerSrcG29.indexOf("renderer.info.reset()") < viewerSrcG29.indexOf("renderer.render(scene, camera)");
+  // reset→render PRINCIPAL adyacentes (no primera ocurrencia en el fichero:
+  // los renders de instrumentos —tilediff, wall-probe— viven antes/después
+  // y no cuentan; lo que importa es que el reset arme la pasada principal).
+  const resetAt = viewerSrcG29.indexOf("renderer.info.reset()");
+  const mainRenderAt = resetAt >= 0 ? viewerSrcG29.indexOf("renderer.render(scene, camera)", resetAt) : -1;
+  const resetFirst = resetAt >= 0 && mainRenderAt > resetAt && mainRenderAt - resetAt < 120;
   const readAfter = viewerSrcG29.indexOf("metrics.drawCalls = renderer.info.render.calls")
     < viewerSrcG29.indexOf("updateLabels(labelRts");
   const passesField = debugSrcG29.includes("passes: number") && debugSrcG29.includes("pases ${metrics.passes}");

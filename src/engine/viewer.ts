@@ -1550,22 +1550,54 @@ if (uWallProbe > 0.5) {
   }
   // T1-cierre (?debug=tilediff): lector de 16 pares (R = luma camino TESELA,
   // G = luma camino CORREDOR) por píxel del bloque. Proyecta cada centro de
-  // tesela residente con la cámara viva, lee un píxel del canvas con
-  // readPixels crudo (lectura permitida — AGENTS.md) y publica la tabla en
+  // tesela residente con la cámara viva y publica la tabla en
   // window.__tilediff con el veredicto por par: |R−G| <= max(0.15·G,
   // 8/255). Informa, no gobierna: no escribe ningún estado de la pieza.
+  // LECTURA VÁLIDA: read() RENDERIZA Y LEE en el mismo bloque síncrono
+  // (estructura copiada de wall-probe.ts renderProbe: guardar uTileDiff +
+  // clear, subir uTileDiff=1, renderer.render, readPixels INMEDIATO sin
+  // await/rAF/ceder control, restaurar en finally). Leer desde consola
+  // fuera del frame devuelve ceros (sin preserveDrawingBuffer el buffer se
+  // limpia al presentar): G salía 0 en las 16 y el fallo era del lector,
+  // no del camino. G es el CANAL DE CONTROL (el corredor pinta el terreno
+  // en pantalla): si G sale cero, el lector sigue roto y los números de R
+  // no significan nada. Toda sonda que compare dos caminos lleva un canal
+  // de control conocido.
   // (§5d va debajo: su cableado vive aquí porque la pieza es dueña de sky,
   // line, clouds, beams, labelLayer y wallProbe.)
   if (boot.tilediff) {
     try {
       const { TILE_SLOTS } = await import("../generated/tiles.ts");
       const tilediffSlots = TILE_SLOTS as Array<{ c: number; r: number; slot: number }>;
-      (window as unknown as { __tilediff?: unknown }).__tilediff = {
-        read: (): unknown => {
+      const hideForTilediff = (): (() => void) => {
+        const vis = new Map<THREE.Object3D, boolean>();
+        for (const o of [sky, line.group, clouds.group, beams?.group ?? null]) {
+          if (!o) continue;
+          vis.set(o, o.visible);
+          o.visible = false;
+        }
+        const prevDisplay = labelLayer.style.display;
+        labelLayer.style.display = "none";
+        return () => {
+          for (const [o, v] of vis) o.visible = v;
+          labelLayer.style.display = prevDisplay;
+        };
+      };
+      const readTilediffPairs = (): unknown => {
+        try {
+          const gl = renderer.getContext() as WebGL2RenderingContext;
+          const cw = renderer.domElement.width;
+          const ch = renderer.domElement.height;
+          if (cw < 1 || ch < 1) return { error: "canvas 0" };
+          const restore = hideForTilediff();
+          const prevClear = renderer.getClearColor(new THREE.Color());
+          const prevAlpha = renderer.getClearAlpha();
+          const prevU = tileDiff.value;
           try {
-            const gl = renderer.getContext() as WebGL2RenderingContext;
-            const cw = renderer.domElement.width;
-            const ch = renderer.domElement.height;
+            renderer.setClearColor(0x000000, 1);
+            renderer.clear(true, true, false);
+            tileDiff.value = 1;
+            renderer.render(scene, camera);
             const px = new Uint8Array(4);
             const pairs = tilediffSlots.map((s) => {
               const ex = (meta as unknown as { tiles: { originX: number; originY: number } }).tiles.originX + (s.c + 0.5) * 126;
@@ -1583,10 +1615,17 @@ if (uWallProbe > 0.5) {
               return { slot: s.slot, c: s.c, r: s.r, R: +R.toFixed(4), G: +G.toFixed(4), d: +d.toFixed(4), tol: +tol.toFixed(4), verdict };
             });
             return { pairs };
-          } catch (e) {
-            return { error: String(e).slice(0, 300) };
+          } finally {
+            tileDiff.value = prevU;
+            renderer.setClearColor(prevClear, prevAlpha);
+            restore();
           }
-        },
+        } catch (e) {
+          return { error: String(e).slice(0, 300) };
+        }
+      };
+      (window as unknown as { __tilediff?: unknown }).__tilediff = {
+        read: readTilediffPairs,
       };
     } catch (e) {
       (window as unknown as { __tilediffError?: unknown }).__tilediffError = String(e).slice(0, 300);

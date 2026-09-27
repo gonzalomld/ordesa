@@ -94,7 +94,7 @@ export function makeCloudShadowTexture(
   const tex = new THREE_NS.CanvasTexture(cv);
   tex.wrapS = THREE_NS.RepeatWrapping;
   tex.wrapT = THREE_NS.RepeatWrapping;
-  tex.magFilter = THREE_NS.LinearMipmapLinearFilter;
+  tex.magFilter = THREE_NS.LinearFilter;
   tex.minFilter = THREE_NS.LinearMipmapLinearFilter;
   tex.colorSpace = THREE_NS.NoColorSpace;
   tex.needsUpdate = true;
