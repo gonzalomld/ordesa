@@ -87,6 +87,9 @@ export interface BootQuery {
    * atlas), resident tiles get a coloured edge + atlas-slot number.
    * Lazy chunk (tiles-overlay.ts), zero trace in production bundles. */
   tiles: boolean;
+  /** T1-bis: diagnóstico B del índice — solo con ?slot=1
+   * (?debug=tiles&slot=1). Nunca mezclado con el diagnóstico A. */
+  tilesSlot: boolean;
   /** Rastro enterrado: ghost pass to magenta at opacity 1 (?ghost=1).
    * The ghost draws exactly what lies behind the terrain. */
   ghost: boolean;
@@ -165,6 +168,7 @@ export function parseBootQuery(): BootQuery {
    * side by side, nothing replaced. Lazy chunk (retrace-overlay.ts). */
   retrace: q.get("debug") === "retrace",
   tiles: q.get("debug") === "tiles",
+  tilesSlot: q.get("debug") === "tiles" && q.get("slot") === "1",
     ghost: q.has("ghost"),
     skymap: q.get("skymap") === "1",
     skycap: q.get("skycap") !== "0",

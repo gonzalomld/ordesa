@@ -126,19 +126,30 @@ for (const j of jobs) {
 const totalBytes = recs.reduce((s, t) => s + t.bytes, 0);
 console.log(`tiles: ${recs.length} × ${(totalBytes / recs.length / 1024).toFixed(1)} KB mean, ${(totalBytes / 1024).toFixed(1)} KB total`);
 
-// --- atlas 4096²: the 16 tiles composited into slots, rest black, WebP q80 ---
+// --- T1-bis: atlas AUTODESCRIPTIVO — los 64 huecos pintados con su
+// propio número (R = (col+0,5)/8, G = (fila+0,5)/8, B = 0,5 fijo).
+// El color en pantalla dice literalmente qué columna/fila del atlas se ha
+// muestreado. Las fotos van DESPUÉS, cuando la rejilla salga en su sitio.
+// sharp compone top-down: hueco (col,row) en (col*512, row*512), row=0 =
+// fila SUPERIOR de la imagen. Con flipY=true esa fila es v≈1 (fila 7 GL).
 {
-  const composites = jobs.map((j) => {
-    const sc = j.slot % ATLAS_COLS;
-    const sr = Math.floor(j.slot / ATLAS_COLS);
-    const jpg = jpegs.get(j.slot);
-    if (!jpg) throw new Error(`missing tile slot ${j.slot}`);
-    return { input: jpg, left: sc * TILE_PX, top: sr * TILE_PX };
-  });
+  const swatches: Array<{ input: Buffer; left: number; top: number }> = [];
+  for (let row = 0; row < ATLAS_COLS; row++) {
+    for (let col = 0; col < ATLAS_COLS; col++) {
+      const r = Math.round(((col + 0.5) / ATLAS_COLS) * 255);
+      const g = Math.round(((row + 0.5) / ATLAS_COLS) * 255);
+      const png = await sharp({
+        create: { width: TILE_PX, height: TILE_PX, channels: 3, background: { r, g, b: 128 } },
+      })
+        .png()
+        .toBuffer();
+      swatches.push({ input: png, left: col * TILE_PX, top: row * TILE_PX });
+    }
+  }
   const atlasBuf = await sharp({
     create: { width: ATLAS_PX, height: ATLAS_PX, channels: 3, background: { r: 0, g: 0, b: 0 } },
   })
-    .composite(composites)
+    .composite(swatches)
     .webp({ quality: TILE_QUALITY })
     .toBuffer();
   const h = hashOf(atlasBuf);

@@ -679,6 +679,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uTilesOrg"] = tilesOrg;
         s.uniforms["uHasTiles"] = hasTiles;
         s.uniforms["uTilesDebug"] = tilesDebug;
+        s.uniforms["uTilesSlot"] = tilesSlot;
   s.uniforms["uRock"] = rockUniform;
   s.uniforms["uRockNormal"] = rockNormalUniform;
   s.uniforms["uHasRock"] = hasRock;
@@ -715,7 +716,7 @@ uniform sampler2D uRock; uniform sampler2D uRockNormal; uniform float uHasRock;
 // (epsg-min)/size) para no amplificar el error de cuanto en el fragmento.
 uniform sampler2D uTilesAtlas; uniform sampler2D uTilesIndex;
 uniform vec4 uTilesCorr; uniform vec4 uTilesOrg;
-uniform float uHasTiles; uniform float uTilesDebug;
+uniform float uHasTiles; uniform float uTilesDebug; uniform float uTilesSlot;
 varying vec2 vTilesEpsg;
 varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv;
 float gSteep = 0.0;
@@ -803,11 +804,10 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
         && inTileM.x <= 126.0 && inTileM.y <= 126.0) {
       float slot = idx - 1.0;
       // Slot→hueco: sharp compone top-down (slots 0-7 en ty 0-511 = filas
-      // SUPERIORES de la imagen) y el atlas sube con flipY=true como el
-      // corredor: la fila superior de la imagen es v≈1. Slots 0-7 → fila 7,
-      // 8-15 → fila 6 (7-floor). Sin esto se muestrean las filas negras
-      // inferiores (bloque negro en vez de foto: medido). Dentro de la
-      // tesela inPx.y va directo (sur = v baja de su banda).
+      // SUPERIORES de la imagen) y el atlas sube con flipY=true: la fila
+      // superior de la imagen es v≈1. Slots 0-7 → fila GL 7, 8-15 → fila
+      // GL 6 (7-floor). El floor sin flip muestrea las filas vacías
+      // inferiores (diagnóstico T1-bis: colores espejados en vertical).
       vec2 slotCol = vec2(mod(slot, 8.0), 7.0 - floor(slot / 8.0));
       // borde 4 px de 512: el contenido útil vive en [4,508]/512.
       // Con flipY=true el layout texel-a-texel NO cambia (solo el orden de
@@ -828,6 +828,43 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
   vec4 corr = texture2D(uCorridor, vUv2c.xy);
   float wcorr = vUv2c.z * uHasCorr;
   vec3 alb = mix(mix(diffuseColor.rgb, corr.rgb, wcorr), albT, wtiles);
+  // T1-bis: a partir de aquí el bloque 2 (índice→slot→UV) es SOSPECHOSO.
+  // Diagnóstico autodescriptivo: pinta el ATLAS DIRECTO por rejilla, sin
+  // índice. MISMA transformación que el camino real (7-floor + borde 4 px,
+  // para medir el mapeo tal cual, no el centro ideal) pero con el slot
+  // ESPERADO (no el del índice). Sin overlay: el color es la rejilla.
+  // Si sale en su sitio, atlas+coords van bien y el fallo es el ÍNDICE.
+  if (uTilesDebug > 0.5 && uTilesSlot < 0.5) {
+    vec2 tileF3 = vTilesEpsg / 126.0;
+    vec2 tileId3 = floor(tileF3);
+    vec2 inTileM3 = (tileF3 - tileId3) * 126.0;
+    float inside3 = step(0.0, inTileM3.x) * step(inTileM3.x, 126.0)
+      * step(0.0, inTileM3.y) * step(inTileM3.y, 126.0);
+    // slot que DEBERÍA tocar: bloque c3-6/r9-12, slot = (r-9)*4+(c-3)
+    vec2 rel3 = tileId3 - vec2(3.0, 9.0);
+    float inBlock3 = step(0.0, rel3.x) * step(rel3.x, 3.0)
+      * step(0.0, rel3.y) * step(rel3.y, 3.0);
+    float slotExp = rel3.y * 4.0 + rel3.x;
+    // misma transformación que el camino real: 7-floor + borde 4 px
+    vec2 slotCol3 = vec2(mod(slotExp, 8.0), 7.0 - floor(slotExp / 8.0));
+    vec2 inPx3 = vec2((inTileM3.x + 1.0) * 4.0, (inTileM3.y + 1.0) * 4.0);
+    vec2 atlasUv3 = (slotCol3 * 512.0 + clamp(inPx3, vec2(4.0), vec2(508.0))) / 4096.0;
+    vec3 direct3 = texture2D(uTilesAtlas, atlasUv3).rgb;
+    // T1-bis (temporal): el diagnóstico debe saltarse roca/luz/niebla —
+    // si no, el color medido no es el del atlas. gl_FragColor directo.
+    gl_FragColor = vec4(mix(alb, direct3, inBlock3 * inside3), 1.0);
+    return;
+  }
+  // T1-bis: diagnóstico B (índice, sin atlas): R = idx.r*255/16,
+  // G = (idx-1)/16, B = wtiles. En zona residente: R≈0.06/G≈0.02/B=1.
+  // Se activa SOLO con URL ?slot=1 (?debug=tiles&slot=1) — bandera aparte,
+  // nunca mezclado con A (mezclarlos tiñó todo el terreno y no midió nada).
+  if (uTilesSlot > 0.5) {
+    vec2 tileF2 = vTilesEpsg / 126.0;
+    vec2 gridUv2 = (floor(tileF2) + vec2(0.5)) * uTilesOrg.zw;
+    float idx2 = texture2D(uTilesIndex, gridUv2).r * 255.0;
+    alb = vec3(idx2 / 16.0, (idx2 - 1.0) / 16.0, wtiles);
+  }
   vec3 wn2 = normalize(vWNormal2);
   float slopeDeg = degrees(acos(clamp(wn2.y, 0.0, 1.0)));
   gSlope = slopeDeg;
@@ -1028,6 +1065,7 @@ if (uWallProbe > 0.5) {
   const tilesOrg = { value: new THREE.Vector4(0, 0, 1, 1) };
   const hasTiles = { value: 0 };
   const tilesDebug = { value: boot.tiles ? 1 : 0 };
+  const tilesSlot = { value: boot.tilesSlot ? 1 : 0 };
   /** T1: índice rejilla→hueco como DataTexture R (slot+1, 0 = ausente).
    * NEAREST obligatorio: LINEAR mezclaría huecos vecinos en las juntas.
    * Sin flip norte/sur: la fila 0 de la DataTexture es v=0 = borde sur
@@ -1054,6 +1092,17 @@ if (uWallProbe > 0.5) {
     tex.wrapS = THREE.ClampToEdgeWrapping;
     tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.needsUpdate = true;
+    // T1-bis 2a: parámetros vivos para el informe (el brief los pide
+    // impresos). DataTexture nace con colorSpace "" (= NoColorSpace) y
+    // formato/tipo RGBA/UnsignedByte por construcción — se publica tal cual.
+    (window as unknown as { __tilesIndexParams?: unknown }).__tilesIndexParams = {
+      colorSpace: tex.colorSpace === "" ? "NoColorSpace" : tex.colorSpace,
+      minFilter: tex.minFilter,
+      magFilter: tex.magFilter,
+      format: tex.format,
+      type: tex.type,
+      generateMipmaps: tex.generateMipmaps,
+    };
     return tex;
   }
   const rockUniform = { value: null as THREE.Texture | null };
@@ -1234,16 +1283,10 @@ if (uWallProbe > 0.5) {
     asset: string | undefined,
     srgb: boolean,
     apply: (t: THREE.Texture) => void,
-    texOpts?: (t: THREE.Texture) => void,
   ): Promise<void> {
     if (!asset) return;
     try {
       const t = await loadTex(`/${asset}`, srgb);
-      texOpts?.(t);
-      // needsUpdate DESPUÉS de fijar filtros/wrap: la subida a VRAM lee la
-      // textura UNA vez y congela minFilter/mipmaps de ese momento (T1:
-      // el atlas llegaba vacío a la GPU por fijarlos después del upload).
-      t.needsUpdate = true;
       armRockTex(t);
       apply(t);
       // El flag es valor de uniforme: la GPU lo lee en el próximo draw.
@@ -1314,23 +1357,6 @@ if (uWallProbe > 0.5) {
           TILE_SLOTS as Array<{ c: number; r: number; slot: number }>,
         );
         hasTiles.value = 1;
-        // T1 sonda (informa, no gobierna): handles vivos para introspección
-        // (properties.get(tex).__webglTexture, muestreo aislado).
-        (window as unknown as { __tilesLive?: unknown }).__tilesLive = {
-          atlas: t,
-          index: tilesIndexUniform.value,
-        };
-        // T1: el programa del terreno ya existe (compilado con el corredor)
-        // y three congela uniformsList en el primer uso: si el atlas llega
-        // DESPUÉS, sus samplers nunca se suben (bloque negro con todo lo
-        // demás correcto). Forzar re-subida completa del programa vivo.
-        try {
-          const props = renderer.properties.get(terrainMat as THREE.Material);
-          props.uniformsList = null;
-          (terrainMat as THREE.Material).needsUpdate = true;
-        } catch {
-          /* el próximo draw lo intentará igual */
-        }
         (window as unknown as { __tilesAtlas?: unknown }).__tilesAtlas = {
           asset: atlasAsset,
           resident: 16,
