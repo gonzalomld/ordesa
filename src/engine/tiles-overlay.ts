@@ -117,12 +117,24 @@ export function mountTilesOverlay(
     resident: slots.length,
     slots: slots.map((s) => s.slot),
   };
+  // T1-bis (diagnóstico): NO hace falta projectCenter con cámara viva —
+  // el instrumento ya publica los centros en EPSG y la captura lleva los
+  // labels proyectados al montar. La tabla se lee del PNG en CPU con las
+  // coordenadas de los labels (sin cámara, sin readPixels en vivo).
+  const centers = slots.map((s) => ({
+    c: s.c,
+    r: s.r,
+    slot: s.slot,
+    x: TILE_GRID.originX + (s.c + 0.5) * TILE_GRID.tileM,
+    y: TILE_GRID.originY + (s.r + 0.5) * TILE_GRID.tileM,
+  }));
   (window as unknown as { __tiles?: unknown }).__tiles = {
     ...info,
     gridCols: TILE_GRID.cols,
     gridRows: TILE_GRID.rows,
     tileM: TILE_GRID.tileM,
     borderM: TILE_GRID.borderM,
+    centers,
   };
   return { group, labels, info };
 }

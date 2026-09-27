@@ -792,6 +792,14 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
   // vTilesEpsg viene del vértice (uv2c invertido): coords de rejilla en m.
   vec3 albT = diffuseColor.rgb;
   float wtiles = 0.0;
+  // T1-bis: a partir de aquí el bloque 2 (índice→slot→UV) es SOSPECHOSO.
+  // Diagnóstico (R,G) = (slotObtenido, slotEsperado)/64, B = 0,5 fijo:
+  // (1) slotObtenido = el slot leído del ÍNDICE (camino real);
+  // (2) slotEsperado = el que la tesela debería tener por su posición
+  // (bloque c3-6/r9-12: slot = (r-9)*4+(c-3)). Comparación aritmética.
+  // gl_FragColor directo: salta roca/luz/niebla/tonemapping. Vive DENTRO
+  // del if(uHasTiles) y de la guarda del índice (GLSL no tiene closures:
+  // fuera de la guarda slot/tileId no existen).
   if (uHasTiles > 0.5) {
     // vTilesEpsg = EPSG − origen de rejilla en m (calculado en el vértice
     // invirtiendo uv2c): tileF en teselas, inTileM en m dentro de la tesela.
@@ -823,38 +831,17 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
       vec3 tileRgb = texture2D(uTilesAtlas, atlasUv).rgb;
       albT = tileRgb;
       wtiles = vUv2c.z * uHasTiles;
+      if (uTilesDebug > 0.5 && uTilesSlot < 0.5) {
+        vec2 relE = tileId - vec2(3.0, 9.0);
+        float slotExp = relE.y * 4.0 + relE.x;
+        gl_FragColor = vec4(slot / 64.0, slotExp / 64.0, 0.5, 1.0);
+        return;
+      }
     }
   }
   vec4 corr = texture2D(uCorridor, vUv2c.xy);
   float wcorr = vUv2c.z * uHasCorr;
   vec3 alb = mix(mix(diffuseColor.rgb, corr.rgb, wcorr), albT, wtiles);
-  // T1-bis: a partir de aquí el bloque 2 (índice→slot→UV) es SOSPECHOSO.
-  // Diagnóstico autodescriptivo: pinta el ATLAS DIRECTO por rejilla, sin
-  // índice. MISMA transformación que el camino real (7-floor + borde 4 px,
-  // para medir el mapeo tal cual, no el centro ideal) pero con el slot
-  // ESPERADO (no el del índice). Sin overlay: el color es la rejilla.
-  // Si sale en su sitio, atlas+coords van bien y el fallo es el ÍNDICE.
-  if (uTilesDebug > 0.5 && uTilesSlot < 0.5) {
-    vec2 tileF3 = vTilesEpsg / 126.0;
-    vec2 tileId3 = floor(tileF3);
-    vec2 inTileM3 = (tileF3 - tileId3) * 126.0;
-    float inside3 = step(0.0, inTileM3.x) * step(inTileM3.x, 126.0)
-      * step(0.0, inTileM3.y) * step(inTileM3.y, 126.0);
-    // slot que DEBERÍA tocar: bloque c3-6/r9-12, slot = (r-9)*4+(c-3)
-    vec2 rel3 = tileId3 - vec2(3.0, 9.0);
-    float inBlock3 = step(0.0, rel3.x) * step(rel3.x, 3.0)
-      * step(0.0, rel3.y) * step(rel3.y, 3.0);
-    float slotExp = rel3.y * 4.0 + rel3.x;
-    // misma transformación que el camino real: 7-floor + borde 4 px
-    vec2 slotCol3 = vec2(mod(slotExp, 8.0), 7.0 - floor(slotExp / 8.0));
-    vec2 inPx3 = vec2((inTileM3.x + 1.0) * 4.0, (inTileM3.y + 1.0) * 4.0);
-    vec2 atlasUv3 = (slotCol3 * 512.0 + clamp(inPx3, vec2(4.0), vec2(508.0))) / 4096.0;
-    vec3 direct3 = texture2D(uTilesAtlas, atlasUv3).rgb;
-    // T1-bis (temporal): el diagnóstico debe saltarse roca/luz/niebla —
-    // si no, el color medido no es el del atlas. gl_FragColor directo.
-    gl_FragColor = vec4(mix(alb, direct3, inBlock3 * inside3), 1.0);
-    return;
-  }
   // T1-bis: diagnóstico B (índice, sin atlas): R = idx.r*255/16,
   // G = (idx-1)/16, B = wtiles. En zona residente: R≈0.06/G≈0.02/B=1.
   // Se activa SOLO con URL ?slot=1 (?debug=tiles&slot=1) — bandera aparte,
@@ -1340,7 +1327,13 @@ if (uWallProbe > 0.5) {
           img.src = `/${atlasAsset}`;
         });
         const t = new THREE.Texture(img);
-        t.colorSpace = THREE.SRGBColorSpace;
+        // T1-bis (diagnóstico): mientras el atlas lleve COLORES CODIFICADOS
+        // va con NoColorSpace — con SRGBColorSpace three lineariza los
+        // valores y un 0,1875 nominal llega al shader como ~0,029: los
+        // números leídos no serían los que el atlas contiene. Cuando el
+        // atlas vuelva a llevar FOTOS, SRGBColorSpace otra vez (ahí sí es
+        // lo correcto). Ajuste por propósito, no arreglo permanente.
+        t.colorSpace = THREE.NoColorSpace;
         t.minFilter = THREE.LinearFilter;
         t.magFilter = THREE.LinearFilter;
         t.generateMipmaps = false;
