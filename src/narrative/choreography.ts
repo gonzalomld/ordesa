@@ -154,6 +154,15 @@ export const SKY_G = 0.8; // mieDirectionalG
 export const SKY_SCALE = 0.17; // §6b: 0.22 -> 0.17 (ACES: el cielo está DEMASIADO claro para el tonemapper y vive en el hombro → pálido; oscurecerlo devuelve croma sin tocar Rayleigh. Alba/ocaso protegidos por construcción: scale efectivo = SKY_SCALE_LOW + (SKY_SCALE − SKY_SCALE_LOW)·smoothstep(2°,20°,solar))
 export const SKY_SCALE_LOW = 0.60; // §4b FASE 3c: twilight dome factor — below 2° solar elevation the dome keeps 0.60 (Preetham at 0° is already 5-8× dimmer than noon; ×0.22 turned low sun brown). applyLighting blends LOW→SCALE over 2°→20°.
 export const SKY_SAT = 2.0; // §4b FASE 3b: elevation-weighted saturation — full above 27° elevation, horizon intact (dawns/dusks); same block in dome + capture
+// §P9-C bruma de suelo bajo el horizonte: el domo three es de color
+// constante por debajo del horizonte (Sky.js clampa con max(0.0, …)), una
+// pared lisa contra la que termina el terreno lejano con borde duro. Se
+// desatura y oscurece hacia abajo, pleno a ~20° de depresión. La captura de
+// cielo (niebla de los 18 km) lo EXCLUYE a propósito (uGroundF = 0 durante
+// la captura): solo cambia el domo dibujado, nunca la niebla del recorrido.
+export const GROUND_DESAT = 0.75; // cuánto se desatura mirando hacia abajo
+export const GROUND_DARK = 0.55; // cuánto se oscurece
+export const GROUND_SPAN = 0.35; // sin(depresión) donde el efecto es pleno (~20°)
 export const SKY_EXPOSURE = 0.55; // DEAD (§4 correction): dimming via exposure dragged the terrain with the sky; exposure is 1.0 again, the dome carries the dimming. Kept so git history explains itself.
 export const HEMI_GRAY_MIX = 0.6; // §6b: 0.75 -> 0.6 (revertido: §6 lo subió por un motivo falso — solo actúa en height-fog.ts:202, niebla baja, NO en las paredes; si la niebla quiere más gris es decisión aparte con su medida)
 export const HEMI_LIGHT_GRAY = 0.4; // §6b: mezcla a gris de LUZ hemisférica (preserva luma) — el azul de las paredes en sombra, en su sitio. Solo hemi.color en viewer.ts; NO confundir con HEMI_GRAY_MIX (niebla baja). NO aplicar a uHemiSky (ya lleva HEMI_GRAY_MIX → se grisaría dos veces)

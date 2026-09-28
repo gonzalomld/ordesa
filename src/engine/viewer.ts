@@ -61,6 +61,9 @@ import {
   SKY_SAT,
   SKY_SCALE,
   SKY_SCALE_LOW,
+  GROUND_DESAT,
+  GROUND_DARK,
+  GROUND_SPAN,
 } from "../narrative/choreography.ts";
 import { initProgress, type ProgressHandle } from "../narrative/progress.ts";
 import { createScroll, type ScrollHandle } from "../narrative/scroll.ts";
@@ -75,6 +78,7 @@ import {
   buildLabels,
   rayBlocked,
   releaseBeam,
+  setIntroHidden,
   updateLabels,
   type LabelDef,
 } from "./labels.ts";
@@ -243,8 +247,15 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   // The 1.25 twilight exposure is untouched.
   const uSkyScaleShared = { value: SKY_SCALE };
   const uSunElevShared = { value: 50 };
+  // §P9-C: factor de bruma de suelo (1 = bruma plena, 0 = domo intacto).
+  // COMPARTIDO con la captura de cielo por referencia (igual que
+  // uSkyScaleShared): la captura lo pone a 0 durante su render para no
+  // mover la niebla de los 18 km y lo restaura después (aislamiento).
+  const uGroundFShared = { value: 1 };
   skyU["uSkyScale"] = uSkyScaleShared;
   skyU["uSunElev"] = uSunElevShared;
+  skyU["uGroundF"] = uGroundFShared;
+  (window as unknown as { __groundF?: { f: number; capF: number } }).__groundF = { f: 1, capF: -1 };
   // §4b FASE 3c-fix: three does NOT declare material.uniforms entries in
   // GLSL — it only uploads them. Every uniform added here MUST be declared
   // in the injected string (AGENTS.md rule). Prepended BEFORE any other
@@ -257,7 +268,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     (sky.material as THREE.Material).onBeforeCompile = (s: { fragmentShader: string }) => {
       prevSky(s);
       s.fragmentShader =
-        "uniform float uSkyScale;\nuniform float uSunElev;\n" + s.fragmentShader;
+        "uniform float uSkyScale;\nuniform float uSunElev;\nuniform float uGroundF;\n" + s.fragmentShader;
       s.fragmentShader = s.fragmentShader.replace(
         "gl_FragColor = vec4( retColor, 1.0 );",
         `float skyDirY = normalize( vWorldPosition - cameraPosition ).y;
@@ -270,6 +281,14 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         float skySat = mix( 1.0, ${(SKY_SAT as number).toFixed(2)}, skyViewF * skySunF );
         float skyL = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );
         retColor = max( vec3( 0.0 ), mix( vec3( skyL ), retColor, skySat ) );
+        // §P9-C: bruma de suelo bajo el horizonte. El domo three es de color
+        // constante ahí (max(0.0, …) en Sky.js) — pared lisa. Se desatura y
+        // oscurece hacia abajo, pleno a ~20° de depresión. uGroundF es el
+        // vivo (la captura lo pone a 0 en su render: aislamiento §P9).
+        float below = clamp( -skyDirY, 0.0, 1.0 );
+        float gLum = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );
+        vec3 gCol = mix( retColor, vec3( gLum ) * ${(GROUND_DARK as number).toFixed(2)}, ${(GROUND_DESAT as number).toFixed(2)} );
+        retColor = mix( retColor, gCol, uGroundF * smoothstep( 0.0, ${(GROUND_SPAN as number).toFixed(2)}, below ) );
         gl_FragColor = vec4( retColor * uSkyScale, 1.0 );`,
       );
     };
@@ -1271,6 +1290,31 @@ if (uWallProbe > 0.5) {
     t: 0,
   };
   (window as unknown as { __intro?: typeof introDiag }).__intro = introDiag;
+  // §P9-P8b: opacidad COMPUTADA (getComputedStyle) de panel/tele/primera
+  // etiqueta, actualizada mientras la intro está activa. La clase sola no
+  // basta: la especificidad CSS puede dejar opacity 1 con intro-on puesto.
+  const introUI = { panel: "n/a", tele: "n/a", lbl: "n/a" };
+  (window as unknown as { __introUI?: typeof introUI }).__introUI = introUI;
+  function publishIntroUI(): void {
+    try {
+      const p = document.querySelector("#panel");
+      introUI.panel = p ? getComputedStyle(p).opacity : "n/a";
+    } catch {
+      introUI.panel = "err";
+    }
+    try {
+      const t = document.querySelector(".tele");
+      introUI.tele = t ? getComputedStyle(t).opacity : "n/a";
+    } catch {
+      introUI.tele = "err";
+    }
+    try {
+      const l = document.querySelector(".lbl");
+      introUI.lbl = l ? getComputedStyle(l).opacity : "n/a";
+    } catch {
+      introUI.lbl = "err";
+    }
+  }
 
   function introRemoveSkips(): void {
     window.removeEventListener("pointerdown", introSkip);
@@ -1287,6 +1331,9 @@ if (uWallProbe > 0.5) {
     introRemoveSkips();
     // UI (panel + telemetry) fades back in on landing — 400 ms via CSS.
     document.documentElement.classList.remove("intro-on");
+    // §P9-B: las etiquetas vuelven con el mismo fundido que el panel
+    // (transition .lbl 400 ms en CSS); los haces se quedaron siempre.
+    setIntroHidden(false);
     // Land EXACTLY on the rail pose at s=0 (no intermediate point, no
     // accelerated version) and hand over the scroll.
     const p = rig.poseAt(0);
@@ -1309,6 +1356,9 @@ if (uWallProbe > 0.5) {
     // Panel + telemetry out of the way from the first frame; the peaks and
     // the Pradera labels and the beams stay (they are part of the landscape).
     document.documentElement.classList.add("intro-on");
+    // §P9-B: las etiquetas TAMBIÉN se van (eran HUD durante el vuelo).
+    setIntroHidden(true);
+    publishIntroUI();
     // Any gesture or key skips. Passive listeners: never block the gesture.
     window.addEventListener("pointerdown", introSkip, { passive: true });
     window.addEventListener("wheel", introSkip, { passive: true });
@@ -2649,6 +2699,8 @@ if (uWallProbe > 0.5) {
           const q = quatYXZ(sm.yaw, sm.pitch);
           camera.quaternion.set(q[0], q[1], q[2], q[3]);
           introDiag.t = introElapsedS;
+          // §P9-P8b: opacidad computada viva mientras la intro corre.
+          publishIntroUI();
         }
       }
       // 3B: the panel follows __scroll.act (same span lookup the loop owns

@@ -300,18 +300,13 @@ body {
 /* --- P1: la interfaz se retira durante el vuelo de entrada. Panel y barra de
    telemetría fuera desde el primer frame; reaparecen al aterrizar con un
    fundido de 400 ms. Las etiquetas de cumbres y los haces se quedan (son
-   paisaje). --- */
+   paisaje). La regla de ocultación vive DESPUÉS del bloque .panel-collapsed
+   (§P9): si no, #panel.pcard:not(.panel-collapsed) (1,2,0) gana a
+   html.intro-on #panel (1,1,1) y el panel se queda en opacity 1 durante el
+   vuelo. --- */
 #panel,
 .tele {
   transition: opacity 400ms ease;
-}
-
-html.intro-on #panel,
-html.intro-on .tele {
-  opacity: 0;
-  pointer-events: none;
-  /* Ocultar de golpe al empezar; el fundido de 400 ms es solo al reaparecer. */
-  transition: none;
 }
 
 @media (max-width: 700px) {
@@ -348,6 +343,8 @@ html.intro-on .tele {
   border: 1px solid rgb(244 241 234 / 22%);
   border-radius: 4px;
   will-change: transform;
+  /* §P9-B: mismo fundido que el panel al volver de la intro (400 ms). */
+  transition: opacity 400ms ease;
 }
 
 .lbl-name {
@@ -958,7 +955,31 @@ html.intro-on .tele {
   transform: scale(1);
   opacity: 1;
   transform-origin: 20px 20px;
-  transition: transform 0.28s ease, opacity 0.28s ease;
+  /* §P9-A: opacity a 400 ms (no 0.28s): al retirar intro-on la transition que
+     gana realmente es ESTA — (1,2,0) posterior a la base #panel (1,0,0) — y
+     con 0.28s se comería el fundido de vuelta del aterrizaje (>= 300 ms).
+     El colapso (ocultar) sigue a 0.28s: esa transition la pone la regla
+     .panel-collapsed, no esta. */
+  transition: transform 0.28s ease, opacity 400ms ease;
+}
+
+/* §P9-A: el panel se va DE VERDAD durante el vuelo. Vive DESPUÉS del bloque
+   .panel-collapsed (no arriba) y con especificidad (1,2,1): el primer
+   selector cubre el caso collapsed; el segundo gana a
+   #panel.pcard:not(.panel-collapsed) (1,2,0) por el html extra. Sin
+   !important. El fundido de vuelta (>= 300 ms) es el de la regla base
+   (#panel/.tele: opacity 400ms ease) — NUNCA el 0.28s del colapso: al
+   retirar intro-on la cascada vuelve a 0.28s en #panel.pcard, y la base solo
+   gana si está DESPUÉS o pesa más. Pesa más: esta regla también quita la
+   clase al aterrizar, así que la vuelta pasa por :not(.panel-collapsed)
+   0.28s a menos que la base gane. Medido el riesgo: se deja constancia aquí
+   para que nadie baje la base de 400 ms. */
+html.intro-on #panel.pcard,
+html.intro-on #panel.pcard:not(.panel-collapsed),
+html.intro-on .tele {
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
 }
 
 /* entrada al cambiar de acto (Everest .pstage.act): cada hijo directo

@@ -5,7 +5,7 @@
 // · G16 nod · G17 void · G18 align · G19 rim · + OrbitControls anti-bundle
 // (C10: chunk-name based, the minifier mangles identifiers).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CAM_RAIL_SAMPLES, CORRIDOR_HALF_M, EPI_PITCH, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G23_COVERAGE, G23_Y_MAX, G23_Y_MIN, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_MAX_DEG, G66_ACCEL_MAX_DEG, G66_PITCH_MAX_DEG, G66_QUAT_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_ALONG_MAX, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROCK_CORRIDOR_K, ROCK_FAR_M, ROCK_MIX, ROCK_NEAR_M, ROCK_SCALE_A, ROCK_SCALE_B, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
+import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CAM_RAIL_SAMPLES, CORRIDOR_HALF_M, EPI_PITCH, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G23_COVERAGE, G23_Y_MAX, G23_Y_MIN, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_MAX_DEG, G66_ACCEL_MAX_DEG, G66_PITCH_MAX_DEG, G66_QUAT_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, GROUND_DARK, GROUND_DESAT, GROUND_SPAN, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_ALONG_MAX, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROCK_CORRIDOR_K, ROCK_FAR_M, ROCK_MIX, ROCK_NEAR_M, ROCK_SCALE_A, ROCK_SCALE_B, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
 import { alongTrackRun, bakeCamRail, bisectSunset, followAt, quatDistDeg, quatYXZ, resolveAnchors, resolveFollowProfile, ropeHeadingDeg, trackAt, zRawAt } from "../src/narrative/anchors.ts";
 import { introSample, INTRO_DURATION_S, INTRO_START_ALT_M, INTRO_MIN_CLEARANCE_M, type IntroTarget } from "../src/narrative/intro.ts";
 import { findBridges } from "./lib/route-bridge.ts";
@@ -1782,14 +1782,14 @@ function elevFull36(): Float32Array {
 {
   const viewerSrcG40 = readFileSync("src/engine/viewer.ts", "utf8");
   const agents = readFileSync("AGENTS.md", "utf8");
-  const decl = viewerSrcG40.includes("uniform float uSkyScale;\\nuniform float uSunElev;\\n");
+  const decl = viewerSrcG40.includes("uniform float uSkyScale;\\nuniform float uSunElev;\\nuniform float uGroundF;\\n");
   const linkWalk = viewerSrcG40.includes("LINK_STATUS") && viewerSrcG40.includes("__programs")
     && viewerSrcG40.includes("getShaderInfoLog") && viewerSrcG40.includes("framesLive");
   const rule = agents.includes("se DECLARA en el GLSL") && agents.includes("window.__programs sin ningún ok=false");
   const ok = decl && linkWalk && rule;
   gate("G40-linked", ok,
     ok
-      ? "dome declares uSkyScale/uSunElev in GLSL; P0-3 walks LINK_STATUS + publishes __programs; AGENTS.md rule in place — measure all ok in prod"
+      ? "dome declares uSkyScale/uSunElev/uGroundF in GLSL; P0-3 walks LINK_STATUS + publishes __programs; AGENTS.md rule in place — measure all ok in prod"
       : `linked-programs contract broken (decl=${decl} linkWalk=${linkWalk} rule=${rule})`);
 }
 
@@ -2792,6 +2792,55 @@ function elevFull36(): Float32Array {
     const fade = css.includes("transition: opacity 400ms ease");
     gate("P8-ui-hidden", adds && removes && hides && fade,
       `intro-on add/remove=${adds}/${removes} · CSS #panel+.tele opacity 0=${hides} · fundido 400ms=${fade}`);
+  }
+
+  // §P9-P8b-ui-oculta-real: la CLASE no basta — la especificidad CSS puede
+  // dejar opacity 1 con intro-on puesto (eso pasó: #panel.pcard:not(.collapsed)
+  // (1,2,0) ganaba a html.intro-on #panel (1,1,1)). El viewer publica
+  // window.__introUI = { panel, tele, lbl } con la opacidad COMPUTADA, y la
+  // regla de intro pesa >= la de colapso.
+  {
+    const viewerSrcB = readFileSync("src/engine/viewer.ts", "utf8");
+    const css = readFileSync("src/styles/main.css", "utf8");
+    const publishes = viewerSrcB.includes("__introUI")
+      && viewerSrcB.includes("getComputedStyle")
+      && viewerSrcB.includes("publishIntroUI()");
+    // Especificidad: la regla de intro debe llevar los TRES segmentos
+    // (#panel + .pcard + :not/.collapsed…) para pesar >= (1,2,0).
+    const introRule = /html\.intro-on #panel\.pcard[^{]*\{[^}]*opacity:\s*0/m.test(css);
+    const afterCollapse = css.indexOf("html.intro-on #panel.pcard") > css.indexOf("#panel.pcard:not(.panel-collapsed)");
+    const ok = publishes && introRule && afterCollapse;
+    gate("P8b-ui-oculta-real", ok,
+      `__introUI computada=${publishes} · regla intro (1,2,1) con opacity 0=${introRule} · después de collapsed=${afterCollapse} — medir panel/tele/lbl "0" en prod con intro activa`);
+  }
+
+  // §P9-P9-suelo-domo: el domo declara uGroundF y lo usa con
+  // smoothstep(0.0, GROUND_SPAN, below). Si no, el cielo bajo el horizonte
+  // sigue siendo pared lisa y el terreno lejano termina en borde de cartón.
+  {
+    const viewerSrcG = readFileSync("src/engine/viewer.ts", "utf8");
+    const decl = viewerSrcG.includes("uniform float uGroundF;");
+    const use = viewerSrcG.includes("smoothstep( 0.0,")
+      && viewerSrcG.includes("GROUND_SPAN")
+      && viewerSrcG.includes("clamp( -skyDirY, 0.0, 1.0 )");
+    const shared = viewerSrcG.includes('skyU["uGroundF"] = uGroundFShared');
+    const vals = GROUND_DESAT === 0.75 && GROUND_DARK === 0.55 && GROUND_SPAN === 0.35;
+    const ok = decl && use && shared && vals;
+    gate("P9-suelo-domo", ok,
+      `declara uGroundF=${decl} · smoothstep(0,GROUND_SPAN,below)=${use} · compartido=${shared} · GROUND 0.75/0.55/0.35=${vals}`);
+  }
+
+  // §P9-P9-captura-aislada: la captura pone uGroundF a 0 antes de su render
+  // y lo restaura después — si no, cambiaría la niebla de los 18 km.
+  {
+    const capSrc = readFileSync("src/engine/sky-capture.ts", "utf8");
+    const zeroes = capSrc.includes("sharedGroundF.value = 0");
+    const restores = capSrc.includes("sharedGroundF.value = prevGroundF");
+    const guarded = capSrc.includes("finally");
+    const exposes = capSrc.includes("__groundF") && capSrc.includes("capF = 0");
+    const ok = zeroes && restores && guarded && exposes;
+    gate("P9-captura-aislada", ok,
+      `uGroundF a 0=${zeroes} · restaura=${restores} · en finally=${guarded} · __groundF.capF=0=${exposes} — medir __groundF en prod`);
   }
 }
 

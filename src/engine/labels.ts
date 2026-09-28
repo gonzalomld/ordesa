@@ -40,7 +40,7 @@ export function buildLabels(
   cy: number,
   container: HTMLElement,
 ): LabelRuntime[] {
-  return defs
+  const rts = defs
     .filter((d) => d.nombre)
     .map((def) => {
       const el = document.createElement("div");
@@ -68,6 +68,9 @@ export function buildLabels(
         occluded: false,
       };
     });
+  liveRts.length = 0;
+  liveRts.push(...rts);
+  return rts;
 }
 
 /** §3b: fija la etiqueta a la BASE del haz (terreno + 2 m, Everest).
@@ -125,6 +128,21 @@ export function rayBlocked(
 
 const _ndc = new THREE.Vector3();
 
+// §P9-B: durante la intro las etiquetas se van (leen como HUD, no como
+// paisaje). La opacidad es INLINE (gana a cualquier regla CSS sin
+// !important), así que se hace aquí: el flag multiplica por 0 la opacidad
+// ya calculada. Lo enciende/apaga el viewer junto a intro-on/introFinish.
+// Los haces se quedan.
+let introHidden = false;
+export function setIntroHidden(on: boolean): void {
+  introHidden = on;
+  // Resetear el cache para que la próxima updateLabels reescriba el inline
+  // (si no, el write-if-unchanged no tocaría nada al conmutar).
+  for (const rt of liveRts) rt.lastOpacity = "";
+}
+// Runtimes vivos para invalidar el cache de opacidad al conmutar.
+const liveRts: LabelRuntime[] = [];
+
 export function updateLabels(
   rts: LabelRuntime[],
   camera: THREE.Camera,
@@ -175,7 +193,11 @@ export function updateLabels(
       rt.el.style.display = hidden ? "none" : "block";
     }
     if (hidden) continue;
-    const op = rt.occluded ? "0.25" : "1";
+    const base = rt.occluded ? "0.25" : "1";
+    // §P9-B: en intro la etiqueta es HUD — opacidad 0 por flag de módulo
+    // (inline, gana al CSS). Mismo fundido que el panel: el el entra/sale con
+    // transition .lbl en CSS si existe; si no, el viewer lo repone al acabar.
+    const op = introHidden ? "0" : base;
     // T2: compare with epsilon; write unrounded values into the transform.
     if (Math.abs(px - rt.lastX) > 0.01 || Math.abs(py - rt.lastY) > 0.01) {
       rt.lastX = px;

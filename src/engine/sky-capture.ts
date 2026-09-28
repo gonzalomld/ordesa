@@ -20,7 +20,7 @@
 // the target is linear working data for fog + meter.
 // No offscreen pass uses the main scene; raw GL is never written (AGENTS.md).
 import * as THREE from "three";
-import { SKY_EPS_DEG, SKY_SAT } from "../narrative/choreography.ts";
+import { GROUND_DARK, GROUND_DESAT, GROUND_SPAN, SKY_EPS_DEG, SKY_SAT } from "../narrative/choreography.ts";
 import { fogUniforms } from "./height-fog.ts";
 
 export interface SkyCapture {
@@ -127,6 +127,7 @@ const CAPTURE_FRAG = (skySat: string): string => /* glsl */ `
   uniform vec3 up;
   uniform float uSkyScale;
   uniform float uSunElev;
+  uniform float uGroundF;
 
   const float cPi = 3.141592653589793238462643383279502884197169;
 
@@ -198,6 +199,13 @@ const CAPTURE_FRAG = (skySat: string): string => /* glsl */ `
     float skySat = mix( 1.0, ${skySat}, skyWE1 * skySunF );
     float skyL = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );
     retColor = max( vec3( 0.0 ), mix( vec3( skyL ), retColor, skySat ) );
+    // §P9-C: MISMA bruma de suelo que el domo (mismo GLSL, mismos valores —
+    // si divergen, la bruma deja de casar con el cielo dibujado). La pone a 0
+    // el aislamiento de doRefresh durante la captura (niebla intacta).
+    float below = clamp( -direction.y, 0.0, 1.0 );
+    float gLum = dot( retColor, vec3( 0.2126, 0.7152, 0.0722 ) );
+    vec3 gCol = mix( retColor, vec3( gLum ) * ${GROUND_DARK.toFixed(2)}, ${GROUND_DESAT.toFixed(2)} );
+    retColor = mix( retColor, gCol, uGroundF * smoothstep( 0.0, ${GROUND_SPAN.toFixed(2)}, below ) );
     gl_FragColor = vec4( retColor * uSkyScale, 1.0 );
   }`;
 
@@ -229,6 +237,11 @@ export function createSkyCapture(
   const domeU = (skyDome.material as THREE.ShaderMaterial).uniforms as Record<string, THREE.IUniform>;
   const sharedScale = domeU["uSkyScale"] as THREE.IUniform;
   const sharedSunElev = domeU["uSunElev"] as THREE.IUniform;
+  // §P9-C: el MISMO objeto uGroundF del domo (vivo por referencia). La
+  // captura lo pone a 0 en su render y lo restaura: lo que ve expone
+  // window.__groundF { f: valor vivo, capF: valor durante la captura }.
+  const sharedGroundF = domeU["uGroundF"] as THREE.IUniform;
+  const groundFDbg = (window as unknown as { __groundF?: { f: number; capF: number } }).__groundF;
   const capMat = new THREE.ShaderMaterial({
     uniforms: {
       sunPosition: domeU["sunPosition"],
@@ -239,6 +252,7 @@ export function createSkyCapture(
       up: domeU["up"],
       uSkyScale: sharedScale,
       uSunElev: sharedSunElev,
+      uGroundF: sharedGroundF,
     },
     vertexShader: CAPTURE_VERT,
     fragmentShader: CAPTURE_FRAG((SKY_SAT as number).toFixed(2)),
@@ -352,14 +366,38 @@ export function createSkyCapture(
     } catch {
       /* keep the previous azimuth */
     }
-    const prevTone = renderer.toneMapping;
-    renderer.toneMapping = THREE.NoToneMapping;
-    renderer.setRenderTarget(rt);
-    renderer.render(skyScene, quadCam);
-    // Back to canvas through the renderer so three's GL-state cache stays
-    // in sync — never touch raw GL here.
-    renderer.setRenderTarget(null);
-    renderer.toneMapping = prevTone;
+    // §P9-C AISLAMIENTO: la bruma de suelo NO entra en la captura — su
+    // resultado alimenta la niebla de distancia de TODO el recorrido y la
+    // bruma solo cambia el domo dibujado. A 0 antes del render, restaurado
+    // después (try/finally: ni un throw deja la niebla teñida).
+    let prevGroundF = 1;
+    try {
+      prevGroundF = (sharedGroundF?.value as number) ?? 1;
+      if (sharedGroundF) sharedGroundF.value = 0;
+    } catch {
+      /* sin uniforme: la captura sale igual que antes */
+    }
+    if (groundFDbg) {
+      groundFDbg.f = prevGroundF;
+      groundFDbg.capF = 0;
+    }
+    try {
+      const prevTone = renderer.toneMapping;
+      renderer.toneMapping = THREE.NoToneMapping;
+      renderer.setRenderTarget(rt);
+      renderer.render(skyScene, quadCam);
+      // Back to canvas through the renderer so three's GL-state cache stays
+      // in sync — never touch raw GL here.
+      renderer.setRenderTarget(null);
+      renderer.toneMapping = prevTone;
+    } finally {
+      try {
+        if (sharedGroundF) sharedGroundF.value = prevGroundF;
+      } catch {
+        /* restaurar o nada */
+      }
+      if (groundFDbg) groundFDbg.f = prevGroundF;
+    }
   }
   return {
     refresh() {
