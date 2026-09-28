@@ -97,6 +97,14 @@ export interface BootQuery {
    * tonemapping no transforme los números. Misma transformación para ambos:
    * el espacio de color da igual, lo que se compara es la relación. */
   tilediff: boolean;
+  /** T1-cierre (muestra cruda): ?debug=rawtile — pinta tras dithering el
+   * color CRUDO que devuelve texture2D sobre uTilesAtlas (el valor tal cual
+   * sale del muestreador, sin luz/niebla/roca/tonemapping). ?debug=rawcorr
+   * hace lo mismo con uCorridor. Dos banderas, un uniforme (uRawMode 1/2):
+   * comparar el mismo punto de la tesela c3-r9 con cada una dice qué textura
+   * se está decodificando y cuál no. */
+  rawtile: boolean;
+  rawcorr: boolean;
   /** T1-d: ?lod0=1 — diagnóstico sRGB-mipmap: muestrea el corredor a nivel
    * 0 (textureLod) en vez de por su cadena de mipmaps. Solo para la tabla
    * tilediff; si R/G salta a ~1, la tesela era la correcta y el corredor
@@ -184,6 +192,8 @@ export function parseBootQuery(): BootQuery {
   tiles: q.get("debug") === "tiles",
   tilesSlot: q.get("debug") === "tiles" && q.get("slot") === "1",
   tilediff: q.get("debug") === "tilediff",
+    rawtile: q.get("debug") === "rawtile",
+    rawcorr: q.get("debug") === "rawcorr",
     lod0: q.get("lod0") === "1",
     ghost: q.has("ghost"),
     skymap: q.get("skymap") === "1",

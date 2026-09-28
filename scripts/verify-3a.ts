@@ -1540,6 +1540,34 @@ function elevFull36(): Float32Array {
     bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — lector render+lee, G control, magFilter legal`);
 }
 
+// --- G132-raw-probe (T1-cierre): la muestra cruda vive tras bandera
+// (?debug=rawtile | ?debug=rawcorr), como uniforme vivo uRawMode, y su
+// lectura usa el mismo round-trip render+lee en bloque que read(). Los
+// parámetros de textura se publican vivos en __tilediff.tex(). Si esto se
+// rompe, no hay forma de ver qué textura decodifica three y el 0,67 vuelve
+// a ser una caja negra.
+{
+  const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
+  const debugSrc = readFileSync("src/engine/debug.ts", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  const guardIdx = viewerSrc.indexOf("if (boot.tilediff || boot.rawtile || boot.rawcorr)");
+  const rawIdx = viewerSrc.indexOf("const readRaw = (mode: 1 | 2)");
+  const texIdx = viewerSrc.indexOf("const texParams = (): unknown");
+  const checks: [string, boolean][] = [
+    ["flags rawtile/rawcorr en debug.ts", has(debugSrc, 'q.get("debug") === "rawtile"') && has(debugSrc, 'q.get("debug") === "rawcorr"')],
+    ["uRawMode uniforme vivo declarado + subido", has(viewerSrc, "uniform float uRawMode;") && has(viewerSrc, 's.uniforms["uRawMode"] = rawMode')],
+    ["escritura cruda tras dithering (tile y corredor)", has(viewerSrc, "if (uRawMode > 1.5)") && has(viewerSrc, "gl_FragColor = vec4(clamp(gCorrRgb") && has(viewerSrc, "gl_FragColor = vec4(clamp(gTileRgb")],
+    ["captura cruda en el muestreo (gTileRgb/gCorrRgb)", has(viewerSrc, "gTileRgb = tileRgb") && has(viewerSrc, "gCorrRgb = corr.rgb")],
+    ["readRaw renderiza+lee en bloque (mode, prevRaw)", has(viewerSrc, "rawMode.value = mode") && has(viewerSrc, "renderer.render(scene, camera)") && has(viewerSrc, "rawMode.value = prevRaw")],
+    ["lector y parámetros DENTRO de la guarda", guardIdx >= 0 && rawIdx > guardIdx && texIdx > guardIdx],
+    ["parámetros vivos publicados (__tilediff.tex + readRaw)", has(viewerSrc, "describeTex(tilesAtlasUniform.value)") && has(viewerSrc, "describeTex(corridorUniform.value)") && has(viewerSrc, "readRaw,")],
+    ["armTiles arma atlas con rawtile/rawcorr (una sola guarda)", /if\s*\(\s*boot\.tiles\s*\|\|\s*boot\.tilediff\s*\|\|\s*boot\.rawtile\s*\|\|\s*boot\.rawcorr\s*\)\s*\{\s*void armTiles\(\);/.test(viewerSrc)],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G132-raw-probe", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — muestra cruda tras bandera, uniforme vivo, round-trip en bloque, parámetros vivos`);
+}
+
 // --- G54 shadow coherence (N2c). Cada gaussiana viva (w>0,1) cuelga de su
 // nube: offset solar off = (cy−suelo)·(sunDir.xz/max(sunDir.y,0.15)).
 // Node checks (__cloudShadows publicado + fórmula del offset en el viewer);
@@ -1782,9 +1810,10 @@ function elevFull36(): Float32Array {
       // comments + sky-capture re-export lines don't count; only CALLS in viewer
       if (viewerSrcG27.slice(Math.max(0, i - 80), i).includes("//")) continue;
       // on-demand instrument readers (tras bandera, bajo demanda — nunca en
-      // el hot loop): el lector __tilediff.read. El bloque va tras
-      // "if (boot.tilediff)" y solo corre cuando el usuario lo invoca.
-      if (k === "readPixels" && viewerSrcG27.lastIndexOf("if (boot.tilediff)", i) >= 0) continue;
+      // el hot loop): el lector __tilediff.read/readRaw. El bloque va tras
+      // "if (boot.tilediff || boot.rawtile || boot.rawcorr)" y solo corre
+      // cuando el usuario lo invoca.
+      if (k === "readPixels" && viewerSrcG27.lastIndexOf("if (boot.tilediff", i) >= 0) continue;
       if (k === "readRenderTargetPixels" && viewerSrcG27.slice(i - 30, i).includes("renderer.")) {
         // the call must live inside the 30-frame probe block
         if (i < probeBlock) outside = true;
@@ -2235,7 +2264,7 @@ function elevFull36(): Float32Array {
   const armTilesCalls = (viewerSrc.match(/void armTiles\(\)/g) ?? []).length;
   const checks: [string, boolean][] = [
     ["armTiles existe y se llama exactamente una vez", fnStart >= 0 && armTilesCalls === 1],
-    ["la llamada está tras bandera (boot.tiles||boot.tilediff)", /if\s*\(\s*boot\.tiles\s*\|\|\s*boot\.tilediff\s*\)\s*\{\s*void armTiles\(\);/.test(tail)],
+    ["la llamada está tras bandera (boot.tiles||boot.tilediff||rawtile||rawcorr)", /if\s*\(\s*boot\.tiles\s*\|\|\s*boot\.tilediff\s*\|\|\s*boot\.rawtile\s*\|\|\s*boot\.rawcorr\s*\)\s*\{\s*void armTiles\(\);/.test(tail)],
     ["hasTiles.value = 1 SOLO dentro de armTiles", body.includes("hasTiles.value = 1") && !head.includes("hasTiles.value = 1")],
     ["construcción del índice SOLO dentro de armTiles", body.includes("tilesIndexUniform.value = buildTilesIndex(") && !head.includes("tilesIndexUniform.value =")],
     ["TILE_SLOTS SOLO dentro de armTiles (+ overlay diferido aparte)", !head.includes("TILE_SLOTS") && body.includes("TILE_SLOTS")],
@@ -2271,7 +2300,7 @@ function elevFull36(): Float32Array {
       const ovStart = viewerSrc.indexOf('await import("./tiles-overlay.ts")');
       const ovGuard = ovStart >= 0 ? viewerSrc.lastIndexOf("if (boot.tiles)", ovStart) : -1;
       const tdStart = viewerSrc.indexOf("window as unknown as { __tilediff");
-      const tdGuard = tdStart >= 0 ? viewerSrc.lastIndexOf("if (boot.tilediff)", tdStart) : -1;
+      const tdGuard = tdStart >= 0 ? viewerSrc.lastIndexOf("if (boot.tilediff", tdStart) : -1;
       const spans: Array<[number, number]> = [];
       if (armStart >= 0 && armCall > armStart) spans.push([armStart, armCall]);
       if (ovGuard >= 0 && ovStart > ovGuard) spans.push([ovGuard, ovStart + 2000]);

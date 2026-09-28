@@ -681,6 +681,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uTilesDebug"] = tilesDebug;
         s.uniforms["uTilesSlot"] = tilesSlot;
         s.uniforms["uTileDiff"] = tileDiff;
+        s.uniforms["uRawMode"] = rawMode;
         s.uniforms["uLod0"] = lod0;
   s.uniforms["uRock"] = rockUniform;
   s.uniforms["uRockNormal"] = rockNormalUniform;
@@ -719,6 +720,9 @@ uniform sampler2D uRock; uniform sampler2D uRockNormal; uniform float uHasRock;
 uniform sampler2D uTilesAtlas; uniform sampler2D uTilesIndex;
 uniform vec4 uTilesCorr; uniform vec4 uTilesOrg;
 uniform float uHasTiles; uniform float uTilesDebug; uniform float uTilesSlot; uniform float uTileDiff; uniform float uLod0;
+// T1-cierre (muestra cruda): uRawMode 0=off · 1=camino TESELA · 2=camino
+// CORREDOR. Escribe tras dithering el color CRUDO del texture2D (ver abajo).
+uniform float uRawMode;
 varying vec2 vTilesEpsg;
 varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv;
 float gSteep = 0.0;
@@ -730,6 +734,12 @@ float gRaw = 0.0;
 // ambos: el espacio de color da igual, lo que se compara es la relación.
 float gLumaT = -1.0;
 float gLumaC = -1.0;
+// T1-cierre (muestra cruda): color CRUDO de cada camino, capturado donde se
+// muestrea y ESCRITO tras dithering (uRawMode). Crudo = lo que devuelve el
+// texture2D, sin transformar: si el atlas va en sRGB y el corredor también,
+// los dos salen lineales (~0,16) y la comparación dice qué decodifica three.
+vec3 gTileRgb = vec3(0.0);
+vec3 gCorrRgb = vec3(0.0);
 float grockMix = 0.0;
 float gSlope = 0.0;
 // §5d-bis: gCroma/gCromaF/gGrain retirados (muertos: los cocientes se inflan
@@ -839,6 +849,7 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
       vec2 atlasUv = (slotCol * 512.0 + clamp(inPx, vec2(4.0), vec2(508.0))) / 4096.0;
       vec3 tileRgb = texture2D(uTilesAtlas, atlasUv).rgb;
       albT = tileRgb;
+      gTileRgb = tileRgb;
       wtiles = vUv2c.z * uHasTiles;
       if (uTilesDebug > 0.5 && uTilesSlot < 0.5) {
         vec2 relE = tileId - vec2(3.0, 9.0);
@@ -849,6 +860,7 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
     }
   }
   vec4 corr = texture2D(uCorridor, vUv2c.xy);
+  gCorrRgb = corr.rgb;
   // T1-d (?lod0=1): muestrea el corredor a nivel 0 en G, sin tocar R ni
   // nada más (el nivel lo elige el diagnóstico, no la pieza). Si G==
   // corrLod y el ratio salta a ~1, el mipmap sRGB era el factor 0,67.
@@ -979,7 +991,7 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
             wallDegVal: (wallDeg as { value: number }).value,
           };
         }
-        if ((boot.steep || boot.walls || boot.walls2 || boot.tilediff) && !boot.rock) {
+        if ((boot.steep || boot.walls || boot.walls2 || boot.tilediff || boot.rawtile || boot.rawcorr) && !boot.rock) {
           const prevDither = terrainMat.onBeforeCompile.bind(terrainMat);
           terrainMat.onBeforeCompile = (s2: {
             uniforms: Record<string, unknown>;
@@ -1016,7 +1028,14 @@ gBRF = gl_FragColor.b - gl_FragColor.r;
 // compara es la relación entre ellos. Criterio: |R−G| <= max(0.15·G,
 // 8/255) — el suelo absoluto 8/255 manda sobre bosque oscuro en umbría
 // (luma ~0,05: el 15 % cae bajo la cuantización de 8 bits y el ruido WebP).
-if (uTileDiff > 0.5 && gLumaT >= 0.0) {
+if (uRawMode > 1.5) {
+  // Muestra cruda del CORREDOR: el color tal cual sale de texture2D.
+  gl_FragColor = vec4(clamp(gCorrRgb, 0.0, 1.0), 1.0);
+} else if (uRawMode > 0.5) {
+  // Muestra cruda de la TESELA (residente; fuera de la zona residente cae a
+  // negro, que es informativo: ahí no hay tile que muestrear).
+  gl_FragColor = vec4(clamp(gTileRgb, 0.0, 1.0), 1.0);
+} else if (uTileDiff > 0.5 && gLumaT >= 0.0) {
   gl_FragColor = vec4(clamp(gLumaT, 0.0, 1.0), clamp(gLumaC, 0.0, 1.0), 0.5, 1.0);
 } else if (uWallProbe > 0.5) {
   float wsm = 0.05 + 0.9 * clamp(gSlope / 90.0, 0.0, 1.0);
@@ -1084,6 +1103,9 @@ if (uWallProbe > 0.5) {
   const tilesSlot = { value: boot.tilesSlot ? 1 : 0 };
   // T1-cierre: ?debug=tilediff (UNIFORME vivo — NO constante de compilación).
   const tileDiff = { value: boot.tilediff ? 1 : 0 };
+  // T1-cierre (muestra cruda): ?debug=rawtile → 1 (atlas), ?debug=rawcorr → 2
+  // (corredor). Uniforme vivo: el modo lo puede cambiar readRaw() en caliente.
+  const rawMode = { value: boot.rawtile ? 1 : boot.rawcorr ? 2 : 0 };
   // T1-d: ?lod0=1 — diagnóstico sRGB-mipmap (uniforme vivo, misma doctrina).
   const lod0 = { value: boot.lod0 ? 1 : 0 };
   /** T1: índice rejilla→hueco como DataTexture R (slot+1, 0 = ausente).
@@ -1397,11 +1419,12 @@ if (uWallProbe > 0.5) {
       /* sin atlas: el corredor de hoy manda (fallback intacto) */
     }
   }
-  // ÚNICA llamada: tras bandera (?debug=tiles | ?debug=tilediff — G120
-  // verifica la guarda por estructura, no por proximidad textual).
-  // tilediff necesita el atlas cargado para comparar; tilesDebug queda en 0
-  // con tilediff solo, así que el diagnóstico A T1-bis no secuestra el frame.
-  if (boot.tiles || boot.tilediff) {
+  // ÚNICA llamada: tras bandera (?debug=tiles | ?debug=tilediff |
+  // ?debug=rawtile | ?debug=rawcorr — G120 verifica la guarda por estructura,
+  // no por proximidad textual). tilediff/rawtile necesitan el atlas cargado;
+  // rawcorr también lo arma (una sola guarda simétrica: cargar el atlas en un
+  // modo de diagnóstico es barato y evita dos caminos que divergen).
+  if (boot.tiles || boot.tilediff || boot.rawtile || boot.rawcorr) {
     void armTiles();
   }
   if (meta.assets?.["terrain-normal"] && texLevel !== "lite") {
@@ -1573,7 +1596,7 @@ if (uWallProbe > 0.5) {
   // de control conocido.
   // (§5d va debajo: su cableado vive aquí porque la pieza es dueña de sky,
   // line, clouds, beams, labelLayer y wallProbe.)
-  if (boot.tilediff) {
+  if (boot.tilediff || boot.rawtile || boot.rawcorr) {
     try {
       const { TILE_SLOTS } = await import("../generated/tiles.ts");
       const tilediffSlots = TILE_SLOTS as Array<{ c: number; r: number; slot: number }>;
@@ -1648,8 +1671,91 @@ if (uWallProbe > 0.5) {
           return { error: String(e).slice(0, 300) };
         }
       };
+      // T1-cierre (muestra cruda): mismo round-trip render+lee en el mismo
+      // bloque síncrono que read(), pero sobre el centro de c3-r9 y con
+      // uRawMode=1 (atlas) o 2 (corredor). Devuelve los TRES canales crudos
+      // promediados (n trazable): comparar el mismo suelo con cada modo dice
+      // qué textura decodifica three y cuál no. El canal de control aquí es
+      // que AMBOS modos deben dar el mismo suelo físicamente (disco: sRGB
+      // 1,0040 / lineal 1,0384); un salto grande entre ellos es el fallo.
+      const readRaw = (mode: 1 | 2): unknown => {
+        try {
+          const gl = renderer.getContext() as WebGL2RenderingContext;
+          const cw = renderer.domElement.width;
+          const ch = renderer.domElement.height;
+          if (cw < 1 || ch < 1) return { error: "canvas 0" };
+          const restore = hideForTilediff();
+          const prevClear = renderer.getClearColor(new THREE.Color());
+          const prevAlpha = renderer.getClearAlpha();
+          const prevRaw = rawMode.value;
+          const PS = 32;
+          const patch = new Uint8Array(PS * PS * 4);
+          try {
+            renderer.setClearColor(0x000000, 1);
+            renderer.clear(true, true, false);
+            rawMode.value = mode;
+            renderer.render(scene, camera);
+            const t = (meta as unknown as { tiles: { originX: number; originY: number } }).tiles;
+            const ex = t.originX + (3 + 0.5) * 126;
+            const ey = t.originY + (9 + 0.5) * 126;
+            const v = new THREE.Vector3(ex - world.centerX, 2200, -(ey - world.centerY));
+            v.project(camera);
+            const cx = Math.max(0, Math.min(cw - 1, Math.floor((v.x * 0.5 + 0.5) * cw)));
+            const cy = Math.max(0, Math.min(ch - 1, Math.floor((-v.y * 0.5 + 0.5) * ch)));
+            const x0 = Math.max(0, Math.min(cw - 1, cx - PS / 2));
+            const y0 = Math.max(0, Math.min(ch - 1, cy - PS / 2));
+            const w = Math.min(PS, cw - x0);
+            const h = Math.min(PS, ch - y0);
+            gl.readPixels(x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, patch);
+            let sR = 0, sG = 0, sB = 0;
+            const nn = w * h;
+            for (let i = 0; i < nn; i++) {
+              sR += (patch[i * 4] as number) / 255;
+              sG += (patch[i * 4 + 1] as number) / 255;
+              sB += (patch[i * 4 + 2] as number) / 255;
+            }
+            return { mode, c: 3, r: 9, R: +(sR / nn).toFixed(4), G: +(sG / nn).toFixed(4), B: +(sB / nn).toFixed(4), n: nn };
+          } finally {
+            rawMode.value = prevRaw;
+            renderer.setClearColor(prevClear, prevAlpha);
+            restore();
+          }
+        } catch (e) {
+          return { error: String(e).slice(0, 300) };
+        }
+      };
+      // T1-cierre (parámetros vivos): los dos juegos de parámetros de textura
+      // uno al lado del otro. Sospecha principal: colorSpace distinto entre
+      // atlas y corredor (el NoColorSpace del diagnóstico T1-bis). Solo lee.
+      const filterName = (f: number): string =>
+        f === THREE.NearestFilter ? "Nearest"
+        : f === THREE.LinearFilter ? "Linear"
+        : f === THREE.NearestMipmapNearestFilter ? "NearestMipmapNearest"
+        : f === THREE.NearestMipmapLinearFilter ? "NearestMipmapLinear"
+        : f === THREE.LinearMipmapNearestFilter ? "LinearMipmapNearest"
+        : f === THREE.LinearMipmapLinearFilter ? "LinearMipmapLinear"
+        : `?${f}`;
+      const describeTex = (t: THREE.Texture | null): unknown => (t ? {
+        colorSpace: t.colorSpace,
+        minFilter: filterName(t.minFilter as number),
+        magFilter: filterName(t.magFilter as number),
+        generateMipmaps: t.generateMipmaps,
+        anisotropy: t.anisotropy,
+        flipY: t.flipY,
+        format: t.format,
+        type: t.type,
+        imageSize: t.image ? `${(t.image as { width: number }).width}x${(t.image as { height: number }).height}` : "none",
+      } : null);
+      const texParams = (): unknown => ({
+        uTilesAtlas: describeTex(tilesAtlasUniform.value),
+        uCorridor: describeTex(corridorUniform.value),
+        uTilesIndex: describeTex(tilesIndexUniform.value),
+        uRawMode: rawMode.value,
+      });
       (window as unknown as { __tilediff?: unknown }).__tilediff = {
         read: readTilediffPairs,
+        readRaw,
+        tex: texParams,
       };
     } catch (e) {
       (window as unknown as { __tilediffError?: unknown }).__tilediffError = String(e).slice(0, 300);
