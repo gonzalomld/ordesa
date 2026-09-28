@@ -1,7 +1,8 @@
 {
-  "generatedAt": "2026-09-24T10:56:19.085Z",
+  "generatedAt": "2026-09-28T11:59:12.808Z",
+  "legacyHash": "f4b0570e",
   "source": {
-    "route": "public/assets/route.json",
+    "route": "public/assets/route-gpx-legacy.json",
     "osm": "data/source/osm-paths.geojson",
     "elevation": "public/assets/heightmap.png + data/build/meta.json (bilinear)"
   },

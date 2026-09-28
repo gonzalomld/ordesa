@@ -243,8 +243,11 @@ for (let i = 0; i <= STEPS; i++) {
   let badD = -1;
   let badT = -1;
   for (let i = 0; i < STEPS; i++) {
-    if ((ds[i + 1] as number) < (ds[i] as number) && badD < 0) badD = i;
-    if ((hs[i + 1] as number) < (hs[i] as number) && badT < 0) badT = i;
+    // 1e-6 m: the flat final span makes the Hermite basis sum to 1 within a
+    // few ulps (18238.500000000004 -> 18238.5). That is float noise, not a
+    // backward step — zero tolerance here caught the ulp, not the geometry.
+    if ((ds[i + 1] as number) < (ds[i] as number) - 1e-6 && badD < 0) badD = i;
+    if ((hs[i + 1] as number) < (hs[i] as number) - 1e-6 && badT < 0) badT = i;
   }
   gate("G1-monotonicity", badD < 0 && badT < 0,
     badD >= 0 ? `d decreases at s=${(badD / STEPS).toFixed(4)}` : badT >= 0 ? `t decreases at s=${(badT / STEPS).toFixed(4)}` : `d(s),t(s) non-decreasing over ${STEPS} steps`);
@@ -2424,6 +2427,114 @@ function elevFull36(): Float32Array {
   const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
   gate("G130-gain-global", bad.length === 0,
     bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — gain ${ill?.gain?.toFixed(4) ?? "?"} global, hash ${ill?.mosaicHash ?? "?"}, aborta en mismatch`);
+}
+
+// --- G113-route-origin (§8d): every route.json point carries origin
+// "osm"|"gpx", and the gpx fraction agrees with the candidate's four
+// no-coverage ranges (~500 m, ~2.8 %). Far above = the matching failed where
+// OSM coverage existed.
+{
+  const rj = JSON.parse(readFileSync("public/assets/route.json", "utf8")) as {
+    x: number[];
+    origin?: string[];
+  };
+  const cand = JSON.parse(readFileSync("data/build/route-osm-candidate.json", "utf8")) as {
+    origin: string[];
+    gpxRanges: [number, number][];
+  };
+  const orig = rj.origin ?? [];
+  const allValid = orig.length === rj.x.length && orig.every((o) => o === "osm" || o === "gpx");
+  const pctRoute = orig.length ? (100 * orig.filter((o) => o === "gpx").length) / orig.length : -1;
+  const pctCand = (100 * cand.origin.filter((o) => o === "gpx").length) / cand.origin.length;
+  const rangesM = cand.gpxRanges.reduce((s, [a, b]) => s + (b - a), 0);
+  const ok = allValid && cand.gpxRanges.length === 4 && Math.abs(pctRoute - pctCand) <= 1.0;
+  gate("G113-route-origin", ok,
+    `origin arrays: ${allValid ? "all points tagged" : `BAD (${orig.length}/${rj.x.length})`}; ` +
+      `gpx ${pctRoute.toFixed(2)}% vs candidate ${pctCand.toFixed(2)}% (${cand.gpxRanges.length} ranges, ${rangesM.toFixed(0)} m)`);
+}
+
+// --- G114-clearance-nonregression (§8d): the geometry moved laterally up to
+// 26 m, so the camera-clearance minimum must not drop more than 10 m versus
+// the pre-adoption GPX rail. The "before" is the SAME bakeCamRail over
+// route-gpx-legacy.json (identical GPX geometry) — no stale baseline file. If
+// it fails, report km + value; never lower the camera to hide it.
+{
+  const lg = JSON.parse(readFileSync("public/assets/route-gpx-legacy.json", "utf8")) as {
+    x: number[];
+    y: number[];
+    z_mdt: number[];
+    z_raw?: number[];
+    d: number[];
+    cumClimb: number[];
+    lengthM: number;
+  };
+  const lr = {
+    n: lg.x.length,
+    lengthM: lg.lengthM,
+    x: Float32Array.from(lg.x),
+    y: Float32Array.from(lg.y),
+    z: Float32Array.from(lg.z_mdt),
+    d: Float32Array.from(lg.d),
+    cumClimb: Float32Array.from(lg.cumClimb),
+    zRaw: Float32Array.from(lg.z_raw ?? lg.z_mdt),
+  };
+  const resL = resolveAnchors(lr);
+  resL.follow = resolveFollowProfile(lr, sampleGrid, meta.bbox);
+  const pchipL = buildPchip(resL.sAnchors, resL.dAnchorsM, "s->d");
+  const railL = bakeCamRail(
+    { route: lr, follow: resL.follow, sToD: pchipL, sample: sampleGrid, cx, cy, fovDeg: 50, floorM: CAM_CLEARANCE_M },
+    (rope) => resolveFollowSafety(sampleGrid, cx, cy, { camPos: rope.camPos, aim: rope.aim, hCam: rope.hCam, lookM: rope.lookM, backM: rope.backM, distPlan: rope.distPlan }, lr, { centerX: cx, centerY: cy, sizeX: 0, sizeZ: 0 }),
+  );
+  let minClearL = Infinity;
+  let sL = 0;
+  for (let i = 0; i <= STEPS; i++) {
+    const s = i / STEPS;
+    const camX = railL.fCamX(s) - cx;
+    const camY = railL.fCamY(s);
+    const camZ = -(railL.fCamZ(s) - cy);
+    const clear = camY - sampleGrid(camX + cx, cy - camZ);
+    if (clear < minClearL) {
+      minClearL = clear;
+      sL = s;
+    }
+  }
+  const dAfter = pchipSD(minClearS);
+  const dBefore = pchipL(sL);
+  gate("G114-clearance-nonregression", minClear >= minClearL - 10,
+    `clearance min ${minClearL.toFixed(1)} m (km ${(dBefore / 1000).toFixed(2)}) → ${minClear.toFixed(1)} m ` +
+      `(km ${(dAfter / 1000).toFixed(2)}); delta ${(minClear - minClearL).toFixed(1)} m (need >= -10)`);
+}
+
+// --- G115-legacy-kept (§8d): route-gpx-legacy.json exists, is versioned
+// (not gitignored) and pins the GPX geometry: 3.626 pts, 18.125,9 m.
+{
+  const path = "public/assets/route-gpx-legacy.json";
+  const exists = existsSync(path);
+  const lg = exists ? JSON.parse(readFileSync(path, "utf8")) as { x: number[]; lengthM: number } : null;
+  const gitignore = existsSync(".gitignore") ? readFileSync(".gitignore", "utf8") : "";
+  const versioned = !gitignore.includes("route-gpx-legacy");
+  const ok = !!lg && versioned && lg.x.length === 3626 && Math.abs(lg.lengthM - 18125.9) < 0.05;
+  gate("G115-legacy-kept", ok,
+    !lg ? "missing route-gpx-legacy.json"
+      : `${lg.x.length} pts, ${lg.lengthM} m (need 3626 / 18125.9), versioned ${versioned}`);
+}
+
+// --- G116-adopt-guard (§8d): 05 does NOT adopt when the candidate's
+// legacyHash does not match the legacy it just wrote, and says so LOUD. The
+// negative test (flip a byte, run 05, see it fall back to GPX) is run by hand
+// at deploy time; here we check the guard exists and that the current
+// route.json is the adopted one (origin carries "osm").
+{
+  const s05 = readFileSync("scripts/05-build-route.ts", "utf8");
+  const comparesHash = s05.includes("cand.legacyHash !== legacyHash");
+  const loudWarn = s05.includes("NOT adopting the re-trace");
+  const adopted = (JSON.parse(readFileSync("public/assets/route.json", "utf8")) as { origin?: string[] }).origin?.some((o) => o === "osm") === true;
+  const bad: string[] = [];
+  if (!comparesHash) bad.push("05 no compara legacyHash");
+  if (!loudWarn) bad.push("05 no avisa en alto al no adoptar");
+  if (!adopted) bad.push("route.json actual no está adoptado (origin sin osm)");
+  gate("G116-adopt-guard", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : "05 guarda por legacyHash + aviso alto; route.json adoptado (osm+gpx)");
 }
 
 if (failures > 0) {

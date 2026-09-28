@@ -41,6 +41,10 @@ export const HEIGHTMAP_FILE = "public/assets/heightmap.png"; // versioned
 export const TEXTURE_2K = "public/assets/terrain-2k.webp"; // versioned
 export const TEXTURE_8K = "public/assets/terrain-8k.webp"; // versioned
 export const ROUTE_FILE = "public/assets/route.json"; // versioned
+// §8d: GPX-only route written ALWAYS by 05; 19 reads it (never route.json)
+// and seals its content hash into the OSM candidate. 05 only adopts the
+// candidate when that hash matches the legacy it just wrote.
+export const ROUTE_LEGACY_FILE = "public/assets/route-gpx-legacy.json"; // versioned
 
 // --- Reference points in EPSG:25830 (anchors from the project's own GPX;
 // exact elevations come from the MDT). Verified 2026-09-13: XY projected

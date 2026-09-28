@@ -7,7 +7,7 @@
 // (738600,4725200), 3500-4500 m, heading ~75°, fov 50° — rechecked by ray
 // marching over the MDT; anchors + visibility list saved to camera.json.
 import { readFileSync, writeFileSync } from "node:fs";
-import { DEM_FILE, ROUTE_FILE } from "./geo-constants.ts";
+import { DEM_FILE, REF_POINTS, ROUTE_FILE } from "./geo-constants.ts";
 import { readDem } from "./lib/tiff.ts";
 import { utm30NToWgs84 } from "./lib/utm.ts";
 
@@ -111,9 +111,28 @@ const H = (m: number, id: string, nombre: string, fuente: string): void => {
   labels.push({ id, tipo: "hito", ...p, nombre, fuente });
   console.log(`${nombre} → km ${(p.d / 1000).toFixed(2)} z=${p.z.toFixed(0)}`);
 };
+// §8d: the two terrain accidents are DERIVED from route.json (same source as
+// ACT_BOUND_D_M in 05): cota máxima = max-z sample; Cola = nearest point to
+// REF_POINTS.colaCaballo. 0 and are editorial.
+let cotaMaxI = 0;
+for (let i = 1; i < route.z_mdt.length; i++) {
+  if ((route.z_mdt[i] as number) > (route.z_mdt[cotaMaxI] as number)) cotaMaxI = i;
+}
+const cotaMaxD = route.d[cotaMaxI] as number;
+let colaI = 0;
+let colaBd = Infinity;
+const cola = REF_POINTS.colaCaballo as { x: number; y: number };
+for (let i = 0; i < route.x.length; i++) {
+  const dd = Math.hypot((route.x[i] as number) - cola.x, (route.y[i] as number) - cola.y);
+  if (dd < colaBd) {
+    colaBd = dd;
+    colaI = i;
+  }
+}
+const colaD = route.d[colaI] as number;
 H(0, "pradera", "Pradera de Ordesa", "GPX inicio, MDT 1318");
-H(2440, "cota-maxima", "Cota máxima del camino", "trazado km 2,44 MDT 1999 (mirador 1952: verificar D6-P5)");
-H(9670, "cola-caballo", "Cola de Caballo", "trazado km 9,67 MDT 1762 = publicado ~1760");
+H(cotaMaxD, "cota-maxima", "Cota máxima del camino", "route.json max-z sample (mirador 1952: verificar D6-P5)");
+H(colaD, "cola-caballo", "Cola de Caballo", "route.json punto más cercano a REF_POINTS.colaCaballo");
 writeFileSync("public/assets/labels.json", JSON.stringify({ labels }, null, 1));
 console.log(`saved: public/assets/labels.json (${labels.length})`);
 

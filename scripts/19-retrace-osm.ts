@@ -22,10 +22,11 @@
 //   G111-retrace-seams:  each remaining seam jump <= 15 m, turn <= 35°,
 //     measured on the FINAL smoothed series (what is drawn)
 //   G112-retrace-monotonic: cumdist strictly increasing, no repeated section
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import sharp from "sharp";
-import { ACTS, GPX_FILE, ROUTE_FILE, ROUTE_SMOOTH_RADIUS, ROUTE_STEP_M } from "./geo-constants.ts";
+import { ACTS, ROUTE_LEGACY_FILE, ROUTE_SMOOTH_RADIUS, ROUTE_STEP_M } from "./geo-constants.ts";
 import { GAP_RAW } from "../src/generated/gaps.ts";
 import { wgs84ToUtm30N } from "./lib/utm.ts";
 
@@ -41,17 +42,21 @@ interface Pt {
   y: number;
 }
 
-// ---------- current route ----------
-const routeJ = JSON.parse(readFileSync(ROUTE_FILE, "utf8")) as {
+// ---------- current route (GPX legacy, NEVER route.json) ----------
+// 05 writes route-gpx-legacy.json on every run; this is the exact geometry we
+// project onto OSM. Reading route.json here would be circular once 05 adopts
+// the candidate. The content hash seals which legacy this candidate came from.
+const routeJ = JSON.parse(readFileSync(ROUTE_LEGACY_FILE, "utf8")) as {
   x: number[];
   y: number[];
   d: number[];
   lengthM: number;
 };
+const legacyHash = createHash("sha256").update(readFileSync(ROUTE_LEGACY_FILE)).digest("hex").slice(0, 8);
 const RN = routeJ.x.length;
 const cur: Pt[] = routeJ.x.map((x, i) => ({ x, y: routeJ.y[i] as number }));
 const curD: number[] = routeJ.d;
-console.log(`route: ${RN} pts, ${routeJ.lengthM} m`);
+console.log(`route: ${RN} pts, ${routeJ.lengthM} m (legacy ${legacyHash})`);
 
 // ---------- OSM ways -> UTM segments ----------
 interface OsmSeg {
@@ -822,8 +827,9 @@ const top10 = [...seps]
 
 const out = {
   generatedAt: new Date().toISOString(),
+  legacyHash,
   source: {
-    route: ROUTE_FILE,
+    route: ROUTE_LEGACY_FILE,
     osm: OSM_FILE,
     elevation: "public/assets/heightmap.png + data/build/meta.json (bilinear)",
   },

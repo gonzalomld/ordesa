@@ -21,10 +21,12 @@ export const ACT_SCREENS: Record<ActKey, number> = {
 }; // N3b: scroll screens per act section; sum = 45 (G62 reads this)
 export const TRACK_VH_TOTAL = 45; // N3b: sum(ACT_SCREENS) — the sum mandates, not a knob
 export const ACT_SECTION_ID_PREFIX = "acto"; // N3b: section ids are `acto-0`, `acto-I`, … (future anchors)
-/** N3b: act-boundary distances (m) mirrored from ACTS starts in
- * scripts/geo-constants.ts. progress.ts inverts the s->d map at these —
- * no new table, binary search over the live PCHIP. */
-export const ACT_BOUND_D_M: [number, number, number, number, number, number] = [0, 300, 2440, 3000, 9000, 10500];
+/** N3b: act-boundary distances (m). §8d: two of them are terrain accidents,
+ * not editorial — 2440 (cota máxima) and 9000 (Cola de Caballo) are derived
+ * by 05-build-route.ts into src/generated/route-bounds.ts. progress.ts
+ * inverts the s->d map at these — no new table, binary search over the live
+ * PCHIP. This is a mirror of that generated source, not a new literal. */
+export { ACT_BOUND_D_M } from "../generated/route-bounds.ts";
 export const LENIS_ACT_JUMP_DURATION = 1.8; // N3b: ?act= scrollTo duration (s, Everest parity)
 /** N3b: ?act= scrollTo easing (quartic out — the N3 easing, now named).
  * Duration WITHOUT easing would fall back to the lerp branch inside Lenis

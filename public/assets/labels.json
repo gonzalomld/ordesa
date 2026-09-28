@@ -147,9 +147,9 @@
   {
    "id": "pradera",
    "tipo": "hito",
-   "x": 741219.3,
-   "y": 4726057,
-   "z": 1317,
+   "x": 741210.1,
+   "y": 4726031.4,
+   "z": 1316,
    "d": 0,
    "nombre": "Pradera de Ordesa",
    "fuente": "GPX inicio, MDT 1318"
@@ -157,22 +157,22 @@
   {
    "id": "cota-maxima",
    "tipo": "hito",
-   "x": 741764.4,
-   "y": 4724974.3,
-   "z": 1995.2,
-   "d": 2440.1,
+   "x": 741775.1,
+   "y": 4724985,
+   "z": 1991,
+   "d": 2354.8,
    "nombre": "Cota máxima del camino",
-   "fuente": "trazado km 2,44 MDT 1999 (mirador 1952: verificar D6-P5)"
+   "fuente": "route.json max-z sample (mirador 1952: verificar D6-P5)"
   },
   {
    "id": "cola-caballo",
    "tipo": "hito",
    "x": 747190.5,
-   "y": 4726347.6,
+   "y": 4726338.6,
    "z": 1758,
-   "d": 9670.5,
+   "d": 9714.2,
    "nombre": "Cola de Caballo",
-   "fuente": "trazado km 9,67 MDT 1762 = publicado ~1760"
+   "fuente": "route.json punto más cercano a REF_POINTS.colaCaballo"
   }
  ]
 }
