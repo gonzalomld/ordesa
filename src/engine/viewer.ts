@@ -80,7 +80,6 @@ import {
 } from "./labels.ts";
 import { trackAt, quatYXZ } from "../narrative/anchors.ts";
 import {
-  introProgressDist,
   introSample,
   INTRO_DURATION_S,
   type IntroTarget,
@@ -1255,7 +1254,11 @@ if (uWallProbe > 0.5) {
     return { pos: [p.pos[0], p.pos[1], p.pos[2]], yaw: p.yaw, pitch: p.pitch };
   })();
   let introActive = false;
-  let introStartMs = 0;
+  let introStarted = false;
+  // Accumulated, per-frame-CLAMPED clock (P7): the sequence never loses time
+  // to a stall. introStartMs is gone on purpose — an absolute clock let one
+  // slow frame (the gate's first render compiles shaders) swallow the dive.
+  let introElapsedS = 0;
   // Stable diagnostic object (mutated, never reallocated per frame) — the
   // browser reads it under any flag, like __scroll/__metrics.
   const introDiag = {
@@ -1282,6 +1285,8 @@ if (uWallProbe > 0.5) {
     introDiag.done = true;
     introDiag.t = INTRO_DURATION_S;
     introRemoveSkips();
+    // UI (panel + telemetry) fades back in on landing — 400 ms via CSS.
+    document.documentElement.classList.remove("intro-on");
     // Land EXACTLY on the rail pose at s=0 (no intermediate point, no
     // accelerated version) and hand over the scroll.
     const p = rig.poseAt(0);
@@ -1296,10 +1301,14 @@ if (uWallProbe > 0.5) {
   }
   function introBegin(): void {
     introActive = true;
-    introStartMs = performance.now();
+    introStarted = false;
+    introElapsedS = 0;
     introDiag.active = true;
     introDiag.done = false;
     introDiag.t = 0;
+    // Panel + telemetry out of the way from the first frame; the peaks and
+    // the Pradera labels and the beams stay (they are part of the landscape).
+    document.documentElement.classList.add("intro-on");
     // Any gesture or key skips. Passive listeners: never block the gesture.
     window.addEventListener("pointerdown", introSkip, { passive: true });
     window.addEventListener("wheel", introSkip, { passive: true });
@@ -2621,17 +2630,25 @@ if (uWallProbe > 0.5) {
       // during the intro the SEQUENCE directs the camera on top of it.
       rig.update(dt);
       if (introActive) {
-        const elapsedS = (nowMs - introStartMs) / 1000;
-        if (elapsedS >= INTRO_DURATION_S) {
-          // Clock-driven, never frame-counted (P3): a slow machine ends at
-          // the same 7.0 s, it does not stretch the sequence.
+        if (!introStarted) {
+          // P1b: the clock starts on the FIRST RENDERED FRAME after the
+          // click, never on the click — the shader-compile stall in between
+          // (hundreds of ms) must not eat the timeline.
+          introStarted = true;
+        } else {
+          // P1b/P7: per-frame dt clamped to 1/20 s. A long frame (tab
+          // backgrounded, compile) can never consume more than 50 ms of the
+          // sequence; a slow machine plays it a bit longer, never skipped.
+          introElapsedS += Math.min(dt, 0.05);
+        }
+        if (introElapsedS >= INTRO_DURATION_S) {
           introFinish();
         } else {
-          const sm = introSample(elapsedS / INTRO_DURATION_S, introTarget);
+          const sm = introSample(introElapsedS / INTRO_DURATION_S, introTarget);
           camera.position.set(sm.pos[0], sm.pos[1], sm.pos[2]);
           const q = quatYXZ(sm.yaw, sm.pitch);
           camera.quaternion.set(q[0], q[1], q[2], q[3]);
-          introDiag.t = elapsedS;
+          introDiag.t = introElapsedS;
         }
       }
       // 3B: the panel follows __scroll.act (same span lookup the loop owns
@@ -2652,7 +2669,9 @@ if (uWallProbe > 0.5) {
     {
       const e = route.lengthM;
       if (boot.trackAll || boot.gaps) line.setProgressDist(e);
-      else if (introActive) line.setProgressDist(introProgressDist(introDiag.t / INTRO_DURATION_S, e));
+      // P1b: during the intro the line stays at the rail's s=0 value (0) —
+      // the whole trail visible in green, nothing walked. The normal branch
+      // already yields that while s=0, so there is no intro curve here.
       else line.setProgressDist(st.s >= EPILOGUE_S ? e : Math.min(st.d, e));
     }
     // E3: line width from plan camera->aim distance; halo glow at the

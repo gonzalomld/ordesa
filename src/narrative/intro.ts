@@ -5,18 +5,21 @@
 //
 // Pure module: no three, no DOM, no rAF, no time source. The render loop owns
 // the single rAF and passes the elapsed clock; this module only answers
-// "where is the camera at fraction t" and "how much trail is drawn at t".
+// "where is the camera at fraction t".
 //
-// PENDING DESIGN NOTE (uProgressDist): d(s=0)=0, so "the rail's value at s=0"
-// is 0. Landing there is what keeps the handoff seam-free, so the trail is
-// revealed full length -> 0 during the dive (the camino writes itself from
-// the Cola back to the Pradera). If the brief wanted the opposite (0 -> full
-// with a pop at handoff), change introProgressDist only.
+// P1b note (uProgressDist): the brief wants the whole trail visible in green
+// from the first frame — the rail's s=0 value (d=0). During the intro the
+// line stays exactly there (no retraction, no advance): the loop's normal
+// branch already writes min(st.d, e) = 0 while s=0, so the intro has no
+// progress curve of its own.
 
 export const INTRO_DURATION_S = 7.0;
 export const INTRO_START_ALT_M = 4200;
-/** Downward pitch at the top of the dive (deg). */
-export const INTRO_START_PITCH_DEG = -30;
+/** Downward pitch at the top of the dive (deg). In this engine POSITIVE
+ * pitch looks DOWN (EPI_PITCH convention: pitch = atan2(camAlt - aimAlt, …)):
+ * +55° puts the aim point at ~2.9 km (fog ≈ 0.03) instead of ~7 km
+ * (fog ≈ 0.7), so the frame opens with the canyon, not with sky. */
+export const INTRO_START_PITCH_DEG = 55;
 /** P2: minimum terrain clearance anywhere along the flight (m). */
 export const INTRO_MIN_CLEARANCE_M = 60;
 
@@ -41,12 +44,6 @@ export interface IntroSample {
 export function introEase(t: number): number {
   const c = t <= 0 ? 0 : t >= 1 ? 1 : t;
   return c * c * (3 - 2 * c);
-}
-
-/** Trail reveal factor: 1.0 at t=0 (full length walked) -> 0.0 at t=1 (the
- * rail's s=0 value), slower at the start ("más lenta al principio"). */
-export function introProgressDist(t: number, lengthM: number): number {
-  return lengthM * (1 - introEase(t));
 }
 
 function lerp(a: number, b: number, f: number): number {

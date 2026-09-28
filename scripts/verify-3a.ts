@@ -2671,15 +2671,16 @@ function elevFull36(): Float32Array {
       `min clearance ${minC.toFixed(1)} m at t=${minT.toFixed(1)} s (need >=${INTRO_MIN_CLEARANCE_M}) — start ${INTRO_START_ALT_M} m, landing ${p0pos[1].toFixed(0)} m`);
   }
 
-  // P3-duration: 7,0 s ± 0,3 con el reloj real, dirigida por reloj (no por
-  // número de frames): a 20 fps dura lo mismo.
+  // P3-duration: 7,0 s ± 0,3 con el reloj real, dirigida por reloj por
+  // ACUMULACIÓN acotada (no por número de frames, no por reloj absoluto):
+  // a 20 fps dura lo mismo y un parón no se la traga.
   {
     const viewerSrcP = readFileSync("src/engine/viewer.ts", "utf8");
     const dur = Math.abs(INTRO_DURATION_S - 7.0) <= 0.3;
-    const clockDriven = viewerSrcP.includes("(nowMs - introStartMs) / 1000")
-      && viewerSrcP.includes("elapsedS >= INTRO_DURATION_S");
+    const clockDriven = viewerSrcP.includes("introElapsedS += Math.min(dt, 0.05)")
+      && viewerSrcP.includes("introStarted = true");
     gate("P3-duration", dur && clockDriven,
-      `duration ${INTRO_DURATION_S} s (need 7.0±0.3) · dirigida por reloj (nowMs−startMs)=${clockDriven}`);
+      `duration ${INTRO_DURATION_S} s (need 7.0±0.3) · reloj por acumulación acotada=${clockDriven}`);
   }
 
   // P4-rail-pure: la intro es pura (sin import/rAF/DOM/reloj propios) y el
@@ -2705,6 +2706,91 @@ function elevFull36(): Float32Array {
     const loops = (viewerSrcP.match(/setAnimationLoop/g) ?? []).length;
     gate("P5-single-raf", !introRaf && loops === 1,
       `intro sin rAF=${!introRaf} · setAnimationLoop en viewer=${loops} (need 1)`);
+  }
+
+  // P6-intro-nonblank: en t = 0,3 · 1,0 · 2,0 · 3,5 · 5,0 s el fotograma
+  // contiene TERRENO (>= 35 % de píxeles no-cielo). Node lo mide con la
+  // misma geometría que el pase oclusor de ?skyfrac (ray-cast sobre el
+  // heightfield, cámara/FOV/lejanía reales); el navegador lo confirma con
+  // ?skyfrac=1 (__skyFrac = cielo → terreno = 1 − __skyFrac).
+  {
+    const FOV = 50;
+    const ASPECT = 16 / 9;
+    const FAR = 40000; // CAM_FAR
+    const bbox = meta.bbox;
+    const NX = 48;
+    const NY = 27;
+    const half = Math.tan(((FOV * Math.PI) / 180) / 2);
+    const castTerrain = (fr: number, nx: number, ny: number): boolean => {
+      const sm = introSample(fr, introTarget);
+      const Y = (sm.yaw * Math.PI) / 180;
+      const P = (sm.pitch * Math.PI) / 180;
+      const cosP = Math.cos(P), sinP = Math.sin(P), sinY = Math.sin(Y), cosY = Math.cos(Y);
+      // basis (forward/right/up) from the quatYXZ convention (positive pitch down)
+      const fx = cosP * sinY, fy = -sinP, fz = -cosP * cosY;
+      const rx = cosY, ry = 0, rz = sinY;
+      const ux = sinP * sinY, uy = cosP, uz = -sinP * cosY;
+      let dx = fx + rx * nx * half * ASPECT + ux * ny * half;
+      let dy = fy + ry * nx * half * ASPECT + uy * ny * half;
+      let dz = fz + rz * nx * half * ASPECT + uz * ny * half;
+      const L = Math.hypot(dx, dy, dz);
+      dx /= L; dy /= L; dz /= L;
+      let inside = false;
+      for (let dist = 12; dist <= FAR; dist += 20) {
+        const wx = sm.pos[0] + dx * dist;
+        const wy = sm.pos[1] + dy * dist;
+        const wz = sm.pos[2] + dz * dist;
+        const ex = wx + cx;
+        const ey = cy - wz;
+        const inB = ex >= bbox.minx && ex <= bbox.maxx && ey >= bbox.miny && ey <= bbox.maxy;
+        if (inB) {
+          inside = true;
+          if (wy <= sampleGrid(ex, ey)) return true;
+        } else if (inside) {
+          return false; // left the heightfield: nothing more to hit
+        }
+      }
+      return false;
+    };
+    const instants = [0.3, 1.0, 2.0, 3.5, 5.0];
+    const fracs = instants.map((t) => {
+      let hits = 0;
+      for (let iy = 0; iy < NY; iy++) {
+        for (let ix = 0; ix < NX; ix++) {
+          const nx = ((ix + 0.5) / NX) * 2 - 1;
+          const ny = 1 - ((iy + 0.5) / NY) * 2;
+          if (castTerrain(t / INTRO_DURATION_S, nx, ny)) hits++;
+        }
+      }
+      return hits / (NX * NY);
+    });
+    gate("P6-intro-nonblank", fracs.every((f) => f >= 0.35),
+      `terreno ${fracs.map((f) => `${(f * 100).toFixed(0)}%`).join(" · ")} (need >=35% each) at t=0.3/1/2/3.5/5 — confirmar con ?skyfrac=1 (1−__skyFrac)`);
+  }
+
+  // P7-intro-plays: con el dt acotado, un frame de 2 s a mitad de la intro
+  // avanza t como mucho 1/20 s y la secuencia termina igualmente.
+  {
+    const viewerSrcP = readFileSync("src/engine/viewer.ts", "utf8");
+    const clamp = viewerSrcP.includes("introElapsedS += Math.min(dt, 0.05)");
+    const firstFrame = viewerSrcP.includes("introStarted = true");
+    let t = 0;
+    t += Math.min(2.0, 0.05); // simula UN frame de 2 s desde t=0
+    gate("P7-intro-plays", clamp && firstFrame && Math.abs(t - 0.05) < 1e-9 && t < INTRO_DURATION_S,
+      `clamp 1/20=${clamp} · reloj en el primer frame=${firstFrame} · tras un frame de 2 s: t=${t.toFixed(3)} s (need 0.050, <7)`);
+  }
+
+  // P8-ui-hidden: panel y HUD fuera durante la intro, visibles al terminar
+  // con fundido de 400 ms.
+  {
+    const viewerSrcP = readFileSync("src/engine/viewer.ts", "utf8");
+    const css = readFileSync("src/styles/main.css", "utf8");
+    const adds = viewerSrcP.includes('classList.add("intro-on")');
+    const removes = viewerSrcP.includes('classList.remove("intro-on")');
+    const hides = css.includes("html.intro-on #panel") && css.includes("html.intro-on .tele");
+    const fade = css.includes("transition: opacity 400ms ease");
+    gate("P8-ui-hidden", adds && removes && hides && fade,
+      `intro-on add/remove=${adds}/${removes} · CSS #panel+.tele opacity 0=${hides} · fundido 400ms=${fade}`);
   }
 }
 

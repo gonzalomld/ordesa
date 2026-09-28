@@ -297,6 +297,23 @@ body {
   white-space: nowrap;
 }
 
+/* --- P1: la interfaz se retira durante el vuelo de entrada. Panel y barra de
+   telemetría fuera desde el primer frame; reaparecen al aterrizar con un
+   fundido de 400 ms. Las etiquetas de cumbres y los haces se quedan (son
+   paisaje). --- */
+#panel,
+.tele {
+  transition: opacity 400ms ease;
+}
+
+html.intro-on #panel,
+html.intro-on .tele {
+  opacity: 0;
+  pointer-events: none;
+  /* Ocultar de golpe al empezar; el fundido de 400 ms es solo al reaparecer. */
+  transition: none;
+}
+
 @media (max-width: 700px) {
   .tele {
     grid-template-columns: repeat(3, 1fr);
