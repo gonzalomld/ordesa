@@ -216,8 +216,10 @@ function netDescent(zMdt: number[], d: number[], a: number, b: number): number {
 
 /** Rebuilds every Z-dependent series from the plan XY: Z from the DEM (never
  *  from the candidate), uniform d over the given arc length, the R1 valley
- *  bridge, and the watch-style accumulated climb. */
-function buildRoute(xs: number[], ys: number[], zGpx: number[], lengthM: number): RouteSeries {
+ *  bridge (ONLY when `bridge` is set), and the watch-style accumulated climb.
+ *  The GPX legacy is built with bridge=false: it is never drawn, it is the
+ *  rollback and 19's input, so it must stay the faithful GPX drape. */
+function buildRoute(xs: number[], ys: number[], zGpx: number[], lengthM: number, bridge: boolean): RouteSeries {
   const N = xs.length;
   const n = N - 1;
   const total = lengthM;
@@ -225,11 +227,11 @@ function buildRoute(xs: number[], ys: number[], zGpx: number[], lengthM: number)
   // Drawn Z: raw drape from the full-precision DEM (no offset yet).
   const zS = xs.map((x, i) => dem.sampleBilinear(x, ys[i] as number));
   // R1: bridge the profile valleys after the drape and BEFORE cumClimb.
-  const bridges = findBridges(zS, ROUTE_STEP_M);
-  const zB = applyBridges(zS, bridges);
+  const bridges = bridge ? findBridges(zS, ROUTE_STEP_M) : [];
+  const zB = bridges.length > 0 ? applyBridges(zS, bridges) : zS;
   const zMdt = zB.map((z) => round1(z + ROUTE_OFFSET_M));
-  const before = accumulateClimb(zS);
   const after = accumulateClimb(zB);
+  const totalClimbMBefore = bridge ? accumulateClimb(zS).totalClimbM : after.totalClimbM;
   const zMdtBefore = zS.map((z) => round1(z + ROUTE_OFFSET_M));
   return {
     xs,
@@ -240,7 +242,7 @@ function buildRoute(xs: number[], ys: number[], zGpx: number[], lengthM: number)
     d,
     cumClimb: after.cumClimb,
     totalClimbM: after.totalClimbM,
-    totalClimbMBefore: before.totalClimbM,
+    totalClimbMBefore,
     bridges,
     net105BeforeM: netDescent(zMdtBefore, d, 10500, 18240),
     lengthM: round1(total),
@@ -248,6 +250,10 @@ function buildRoute(xs: number[], ys: number[], zGpx: number[], lengthM: number)
 }
 
 function logBridges(tag: string, s: RouteSeries): void {
+  if (s.bridges.length === 0) {
+    console.log(`R1 ${tag}: sin puentear (fallback fiel al drapeado) · climb ${s.totalClimbM} m`);
+    return;
+  }
   console.log(
     `R1 ${tag}: ${s.bridges.length} puenteo(s) · climb ${s.totalClimbMBefore} -> ${s.totalClimbM} m ` +
       `· descenso neto km10.5-18.24 (antes) ${s.net105BeforeM} m`,
@@ -299,7 +305,7 @@ function serialize(s: RouteSeries, origin: string[]): string {
 }
 
 // --- a) GPX legacy: ALWAYS written (the rollback) ---
-const legacySeries = buildRoute(smX, smY, smZGpx, gpxRes.total);
+const legacySeries = buildRoute(smX, smY, smZGpx, gpxRes.total, false);
 logBridges("legacy", legacySeries);
 if (legacySeries.lengthM !== round1(legacySeries.lengthM)) {
   throw new Error("route: non-finite length");
@@ -361,7 +367,7 @@ if (adopted) {
     }
     return bz;
   });
-  routeSeries = buildRoute(cand.x, cand.y, zGpxCand, cand.lengthM);
+  routeSeries = buildRoute(cand.x, cand.y, zGpxCand, cand.lengthM, true);
   logBridges("adoptada", routeSeries);
   routeOrigin = cand.origin;
   console.log(

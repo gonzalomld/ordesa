@@ -2811,14 +2811,14 @@ function elevFull36(): Float32Array {
     };
   }
   const rjson = JSON.parse(readFileSync("public/assets/route.json", "utf8")) as RJ;
-  const ljson = JSON.parse(readFileSync("public/assets/route-gpx-legacy.json", "utf8")) as RJ;
   const teethMain = findBridges(rjson.z_mdt, rjson.lengthM / (rjson.x.length - 1));
-  const teethLegacy = findBridges(ljson.z_mdt, ljson.lengthM / (ljson.x.length - 1));
-  gate("R1-no-teeth", teethMain.length === 0 && teethLegacy.length === 0,
-    `route.json ${teethMain.length} diente(s) · legacy ${teethLegacy.length} — ${
+  // The GPX legacy is NEVER bridged (it is not drawn; it is the rollback and
+  // 19's input), so the gate only guards the drawn route.
+  gate("R1-no-teeth", teethMain.length === 0,
+    `route.json ${teethMain.length} diente(s) — ${
       teethMain.length === 0 ? "los puenteos cierran"
         : teethMain.map((b) => `km ${((rjson.d[b.i] as number) / 1000).toFixed(3)} d${b.depthM.toFixed(1)} w${b.widthM.toFixed(0)}`).join(" | ")
-    }`);
+    } (legacy sin puentear por diseño)`);
 
   // Net descent of the return (km 10.5-18.24), measured on route.json, vs the
   // pre-bridge baseline stored by 05. Bridging interior valleys must not move
@@ -2837,9 +2837,9 @@ function elevFull36(): Float32Array {
 
   const list = rjson.bridge?.list ?? [];
   gate("R1-bridge-list", (rjson.bridge?.count ?? -1) === list.length && list.length <= 20,
-    `${list.length} puenteo(s) [legacy ${ljson.bridge?.count ?? "?"}]: ${
+    `${list.length} puenteo(s) en route.json: ${
       list.length ? list.map((b) => `km ${b.km} d${b.depthM} w${b.widthM}`).join(" | ") : "ninguno"
-    } · climb ${rjson.bridge?.totalClimbMBefore} -> ${rjson.bridge?.totalClimbMAfter} m`);
+    } · climb ${rjson.bridge?.totalClimbMBefore} -> ${rjson.bridge?.totalClimbMAfter} m (legacy sin puentear)`);
 }
 
 if (failures > 0) {
