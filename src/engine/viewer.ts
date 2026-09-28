@@ -681,6 +681,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
         s.uniforms["uTilesDebug"] = tilesDebug;
         s.uniforms["uTilesSlot"] = tilesSlot;
         s.uniforms["uTileDiff"] = tileDiff;
+        s.uniforms["uLod0"] = lod0;
   s.uniforms["uRock"] = rockUniform;
   s.uniforms["uRockNormal"] = rockNormalUniform;
   s.uniforms["uHasRock"] = hasRock;
@@ -717,7 +718,7 @@ uniform sampler2D uRock; uniform sampler2D uRockNormal; uniform float uHasRock;
 // (epsg-min)/size) para no amplificar el error de cuanto en el fragmento.
 uniform sampler2D uTilesAtlas; uniform sampler2D uTilesIndex;
 uniform vec4 uTilesCorr; uniform vec4 uTilesOrg;
-uniform float uHasTiles; uniform float uTilesDebug; uniform float uTilesSlot; uniform float uTileDiff;
+uniform float uHasTiles; uniform float uTilesDebug; uniform float uTilesSlot; uniform float uTileDiff; uniform float uLod0;
 varying vec2 vTilesEpsg;
 varying vec3 vWPos2; varying vec3 vWNormal2; varying vec2 vTerrainUv;
 float gSteep = 0.0;
@@ -848,13 +849,18 @@ vec3 rockNormalTriplanar(vec3 wp, vec3 wn){
     }
   }
   vec4 corr = texture2D(uCorridor, vUv2c.xy);
+  // T1-d (?lod0=1): muestrea el corredor a nivel 0 en G, sin tocar R ni
+  // nada más (el nivel lo elige el diagnóstico, no la pieza). Si G==
+  // corrLod y el ratio salta a ~1, el mipmap sRGB era el factor 0,67.
+  vec3 corrL0 = textureLod(uCorridor, vUv2c.xy, 0.0).rgb;
+  vec3 corrForG = (uLod0 > 0.5) ? corrL0 : corr.rgb;
   float wcorr = vUv2c.z * uHasCorr;
   vec3 alb = mix(mix(diffuseColor.rgb, corr.rgb, wcorr), albT, wtiles);
   // T1-cierre (?debug=tilediff): R = luma camino TESELA, G = luma camino
   // CORREDOR, mismo punto del mundo, los dos ANTES de luz/niebla/roca.
   // gLumaT/gLumaC se capturan aquí; la ESCRITURA va al final tras dithering
   // (ver abajo): misma transformación para ambos, el espacio da igual.
-  gLumaC = gluma(corr.rgb);
+  gLumaC = gluma(corrForG);
   gLumaT = (wtiles > 0.001) ? gluma(albT) : -1.0;
   // T1-bis: diagnóstico B (índice, sin atlas): R = idx.r*255/16,
   // G = (idx-1)/16, B = wtiles. En zona residente: R≈0.06/G≈0.02/B=1.
@@ -1078,6 +1084,8 @@ if (uWallProbe > 0.5) {
   const tilesSlot = { value: boot.tilesSlot ? 1 : 0 };
   // T1-cierre: ?debug=tilediff (UNIFORME vivo — NO constante de compilación).
   const tileDiff = { value: boot.tilediff ? 1 : 0 };
+  // T1-d: ?lod0=1 — diagnóstico sRGB-mipmap (uniforme vivo, misma doctrina).
+  const lod0 = { value: boot.lod0 ? 1 : 0 };
   /** T1: índice rejilla→hueco como DataTexture R (slot+1, 0 = ausente).
    * NEAREST obligatorio: LINEAR mezclaría huecos vecinos en las juntas.
    * Sin flip norte/sur: la fila 0 de la DataTexture es v=0 = borde sur

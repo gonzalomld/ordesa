@@ -1461,7 +1461,7 @@ function elevFull36(): Float32Array {
     ["read() renderiza+lee en bloque (tileDiff=1, render, readPixels parche, finally)", has(viewerSrc, "tileDiff.value = 1") && has(viewerSrc, "renderer.render(scene, camera)") && has(viewerSrc, "gl.readPixels(x0, y0, w, h") && has(viewerSrc, "tileDiff.value = prevU")],
     ["parche 32×32 promediado en ambos canales (n trazable)", has(viewerSrc, "const PS = 32") && has(viewerSrc, "verdict, n: nn")],
     ["restaura clear + visibilidades (finally)", has(viewerSrc, "renderer.setClearColor(prevClear, prevAlpha)") && has(viewerSrc, "hideForTilediff")],
-    ["canal de control G (luma corredor, gLumaC)", has(viewerSrc, "gLumaC = gluma(corr.rgb)") && has(viewerSrc, "uniform float uTileDiff")],
+    ["canal de control G (luma corredor, gLumaC)", (has(viewerSrc, "gLumaC = gluma(corrForG)") || has(viewerSrc, "gLumaC = gluma(corr.rgb)")) && has(viewerSrc, "uniform float uTileDiff")],
     ["magFilter sin mipmap (uCloud: LinearFilter)", fogSrc.includes("tex.magFilter = THREE_NS.LinearFilter") && !fogSrc.includes("tex.magFilter = THREE_NS.LinearMipmapLinearFilter")],
   ];
   const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);

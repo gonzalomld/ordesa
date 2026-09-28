@@ -97,6 +97,13 @@ export interface BootQuery {
    * tonemapping no transforme los números. Misma transformación para ambos:
    * el espacio de color da igual, lo que se compara es la relación. */
   tilediff: boolean;
+  /** T1-d: ?lod0=1 — diagnóstico sRGB-mipmap: muestrea el corredor a nivel
+   * 0 (textureLod) en vez de por su cadena de mipmaps. Solo para la tabla
+   * tilediff; si R/G salta a ~1, la tesela era la correcta y el corredor
+   * leía de más. Si G sale ~0, el Lod muestrea en negro en este programa
+   * (precedente texture2DLodEXT) y el test no concluye nada: G es el
+   * control, como siempre. */
+  lod0: boolean;
   /** Rastro enterrado: ghost pass to magenta at opacity 1 (?ghost=1).
    * The ghost draws exactly what lies behind the terrain. */
   ghost: boolean;
@@ -177,6 +184,7 @@ export function parseBootQuery(): BootQuery {
   tiles: q.get("debug") === "tiles",
   tilesSlot: q.get("debug") === "tiles" && q.get("slot") === "1",
   tilediff: q.get("debug") === "tilediff",
+    lod0: q.get("lod0") === "1",
     ghost: q.has("ghost"),
     skymap: q.get("skymap") === "1",
     skycap: q.get("skycap") !== "0",

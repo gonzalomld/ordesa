@@ -26,6 +26,7 @@ import sharp from "sharp";
 import { BBOX, CORRIDOR_BLEND_M, META_FILE, ORTHO_MOSAIC, WMS_LAYER, WMS_MAX_ATTEMPTS, WMS_MAX_CONCURRENCY, WMS_RETRY_BASE_MS, WMS_URL, WMS_VERSION } from "./geo-constants.ts";
 import { applyDeshadow } from "./lib/deshadow.ts";
 import { fetchWithRetry } from "./lib/http.ts";
+import { assertSameFlight } from "./lib/same-flight.ts";
 
 // --- scheme constants (the fixed scheme; mirrored to generated/tiles.ts) ---
 export const TILE_M = 126; // usable terrain per tile
@@ -89,8 +90,9 @@ function captureBbox(c: number, r: number): [number, number, number, number] {
 
 // --- T1-c: illumination field + GLOBAL gain (read from meta.json, never
 // recomputed per tile — per-tile means would make brightness depend on
-// content and the corridor would come out patchy). Gate: mosaicHash must
-// match OUR local mosaic when it exists (G131 covers the WMS side).
+// content and the corridor would come out patchy). Gates before the first
+// fetch: mosaicHash must match OUR local mosaic, then G131 (lib/same-flight)
+// checks WMS still serves the same flight.
 const meta20 = JSON.parse(readFileSync(META_FILE, "utf8")) as {
   illumination?: {
     file: string; width: number; height: number; min: number; max: number;
@@ -109,8 +111,12 @@ if (existsSync(ill.mosaicFile)) {
   if (mosaicNow !== ill.mosaicHash) {
     throw new Error(`20: mosaic changed since deshadow (now ${mosaicNow} vs field ${ill.mosaicHash}) — re-run 11+12`);
   }
+  // G131: the hash only proves OUR mosaic is unchanged; it cannot see
+  // whether WMS serves a different flight today. Checked here, before the
+  // first tile fetch, so it cannot be skipped by forgetting a manual step.
+  await assertSameFlight();
 } else {
-  console.log(`20: WARNING ${ill.mosaicFile} absent (CI?) — mosaic-gate skipped, G131 covers the WMS side`);
+  console.log(`20: WARNING ${ill.mosaicFile} absent (CI?) — mosaic-hash and G131 skipped (need the local mosaic)`);
 }
 const GAIN = ill.gain as number;
 const ILL_W = ill.width;
