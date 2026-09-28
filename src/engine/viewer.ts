@@ -78,7 +78,13 @@ import {
   updateLabels,
   type LabelDef,
 } from "./labels.ts";
-import { trackAt } from "../narrative/anchors.ts";
+import { trackAt, quatYXZ } from "../narrative/anchors.ts";
+import {
+  introProgressDist,
+  introSample,
+  INTRO_DURATION_S,
+  type IntroTarget,
+} from "../narrative/intro.ts";
 import { buildRouteLine, renderCount } from "./route-line.ts";
 import { epsgToWorld } from "./terrain.ts";
 import { lightingAt, sunPosition } from "./sun.ts";
@@ -468,9 +474,14 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   // B7: while the gate stands, body scroll is locked and lenis is stopped.
   // On enter: scrollTo(0,0), lenis.start(), unlock — in that order.
   let scroll: ScrollHandle | null = null;
+  // P1: the gate hands off to the intro when it plays; otherwise it goes
+  // straight in (reduced motion / pose-override flags). The holder is filled
+  // once the rig + intro exist, below.
+  let onGateEnter: (() => void) | null = null;
   const gate = buildGate(() => {
     window.scrollTo(0, 0);
-    scroll?.start();
+    if (onGateEnter) onGateEnter();
+    else scroll?.start();
   });
   // Higiene: el vigilante se pausa con la pestaña oculta — acusar a la
   // conexión cuando nadie mira no tiene sentido. 45 s VISIBLES, no 45 s de
@@ -1219,6 +1230,83 @@ if (uWallProbe > 0.5) {
     camera.position.set(p0.pos[0], p0.pos[1], p0.pos[2]);
     camera.quaternion.set(p0.quaternion[0], p0.quaternion[1], p0.quaternion[2], p0.quaternion[3]);
   }
+
+  // --- P1: intro flight. Clock-driven and OUTSIDE the rail: the camera is
+  // directed by the sequence while it runs, then handed back exactly on
+  // poseAt(0). Disabled (straight in) with prefers-reduced-motion and under
+  // every pose override / debug flag, so audits and ?s=/?cam=/?orbit stay
+  // deterministic. One rAF: the loop below owns it (P5).
+  const reducedMotionIntro = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const introOn =
+    !reducedMotionIntro &&
+    !boot.orbit &&
+    boot.cam === null &&
+    boot.s === null &&
+    boot.act === null &&
+    !boot.debug &&
+    !boot.gaps &&
+    !boot.retrace &&
+    !boot.trackDist &&
+    !boot.trackAll &&
+    !boot.ghost;
+  // Landing target = poseAt(0), sampled ONCE. The rail is never written.
+  const introTarget: IntroTarget = (() => {
+    const p = rig.poseAt(0);
+    return { pos: [p.pos[0], p.pos[1], p.pos[2]], yaw: p.yaw, pitch: p.pitch };
+  })();
+  let introActive = false;
+  let introStartMs = 0;
+  // Stable diagnostic object (mutated, never reallocated per frame) — the
+  // browser reads it under any flag, like __scroll/__metrics.
+  const introDiag = {
+    enabled: introOn,
+    reduced: reducedMotionIntro,
+    active: false,
+    done: false,
+    skipped: false,
+    durationS: INTRO_DURATION_S,
+    t: 0,
+  };
+  (window as unknown as { __intro?: typeof introDiag }).__intro = introDiag;
+
+  function introRemoveSkips(): void {
+    window.removeEventListener("pointerdown", introSkip);
+    window.removeEventListener("wheel", introSkip);
+    window.removeEventListener("touchstart", introSkip);
+    window.removeEventListener("keydown", introSkip);
+  }
+  function introFinish(): void {
+    if (!introActive) return;
+    introActive = false;
+    introDiag.active = false;
+    introDiag.done = true;
+    introDiag.t = INTRO_DURATION_S;
+    introRemoveSkips();
+    // Land EXACTLY on the rail pose at s=0 (no intermediate point, no
+    // accelerated version) and hand over the scroll.
+    const p = rig.poseAt(0);
+    camera.position.set(p.pos[0], p.pos[1], p.pos[2]);
+    camera.quaternion.set(p.quaternion[0], p.quaternion[1], p.quaternion[2], p.quaternion[3]);
+    scroll?.start();
+  }
+  function introSkip(): void {
+    if (!introActive) return;
+    introDiag.skipped = true;
+    introFinish();
+  }
+  function introBegin(): void {
+    introActive = true;
+    introStartMs = performance.now();
+    introDiag.active = true;
+    introDiag.done = false;
+    introDiag.t = 0;
+    // Any gesture or key skips. Passive listeners: never block the gesture.
+    window.addEventListener("pointerdown", introSkip, { passive: true });
+    window.addEventListener("wheel", introSkip, { passive: true });
+    window.addEventListener("touchstart", introSkip, { passive: true });
+    window.addEventListener("keydown", introSkip);
+  }
+  if (introOn) onGateEnter = introBegin;
 
   // --- 3B panel de los actos (Everest reference): text shell, the JSON
   // carries the words. Mounted unless the rig is excluded (?orbit=1 / ?cam=
@@ -2529,7 +2617,23 @@ if (uWallProbe > 0.5) {
     } else {
       scroll.update(dtMs, nowMs);
       progress.update();
+      // The rail is sampled every frame (diag + sun target stay coherent);
+      // during the intro the SEQUENCE directs the camera on top of it.
       rig.update(dt);
+      if (introActive) {
+        const elapsedS = (nowMs - introStartMs) / 1000;
+        if (elapsedS >= INTRO_DURATION_S) {
+          // Clock-driven, never frame-counted (P3): a slow machine ends at
+          // the same 7.0 s, it does not stretch the sequence.
+          introFinish();
+        } else {
+          const sm = introSample(elapsedS / INTRO_DURATION_S, introTarget);
+          camera.position.set(sm.pos[0], sm.pos[1], sm.pos[2]);
+          const q = quatYXZ(sm.yaw, sm.pitch);
+          camera.quaternion.set(q[0], q[1], q[2], q[3]);
+          introDiag.t = elapsedS;
+        }
+      }
       // 3B: the panel follows __scroll.act (same span lookup the loop owns
       // — no recompute). Write-if-changed inside; ~0 when the act holds.
       if (panel) {
@@ -2548,6 +2652,7 @@ if (uWallProbe > 0.5) {
     {
       const e = route.lengthM;
       if (boot.trackAll || boot.gaps) line.setProgressDist(e);
+      else if (introActive) line.setProgressDist(introProgressDist(introDiag.t / INTRO_DURATION_S, e));
       else line.setProgressDist(st.s >= EPILOGUE_S ? e : Math.min(st.d, e));
     }
     // E3: line width from plan camera->aim distance; halo glow at the

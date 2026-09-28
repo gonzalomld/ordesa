@@ -7,6 +7,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CAM_RAIL_SAMPLES, CORRIDOR_HALF_M, EPI_PITCH, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G23_COVERAGE, G23_Y_MAX, G23_Y_MIN, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_MAX_DEG, G66_ACCEL_MAX_DEG, G66_PITCH_MAX_DEG, G66_QUAT_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_ALONG_MAX, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROCK_CORRIDOR_K, ROCK_FAR_M, ROCK_MIX, ROCK_NEAR_M, ROCK_SCALE_A, ROCK_SCALE_B, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
 import { alongTrackRun, bakeCamRail, bisectSunset, followAt, quatDistDeg, quatYXZ, resolveAnchors, resolveFollowProfile, ropeHeadingDeg, trackAt, zRawAt } from "../src/narrative/anchors.ts";
+import { introSample, INTRO_DURATION_S, INTRO_START_ALT_M, INTRO_MIN_CLEARANCE_M, type IntroTarget } from "../src/narrative/intro.ts";
 import { resolveFollowSafety } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
 import { sunPosition } from "./lib/sun.ts";
@@ -2632,6 +2633,79 @@ function elevFull36(): Float32Array {
   if (!adopted) bad.push("route.json actual no está adoptado (origin sin osm)");
   gate("G116-adopt-guard", bad.length === 0,
     bad.length ? `falta: ${bad.join(", ")}` : "05 guarda por legacyHash + aviso alto; route.json adoptado (osm+gpx)");
+}
+
+// --- P1-P5 — FASE P1: el vuelo de entrada (intro.ts puro + viewer.ts). El
+// rail NO se toca: la intro muestrea poseAt(0) UNA vez como objetivo de
+// aterrizaje y devuelve la cámara exactamente encima.
+{
+  const p0pos: [number, number, number] = [rail.fCamX(0) - cx, rail.fCamY(0), -(rail.fCamZ(0) - cy)];
+  const introTarget: IntroTarget = { pos: p0pos, yaw: rail.fYaw(0), pitch: rail.fPitch(0) };
+
+  // P1-seam: al terminar, la cámara está en poseAt(0) con error de posición
+  // <= 0,5 m y de orientación <= 0,2° (yaw y pitch).
+  {
+    const end = introSample(1, introTarget);
+    const posErr = Math.hypot(end.pos[0] - p0pos[0], end.pos[1] - p0pos[1], end.pos[2] - p0pos[2]);
+    const yawErr = Math.abs((((end.yaw - introTarget.yaw + 540) % 360) - 180));
+    const pitchErr = Math.abs(end.pitch - introTarget.pitch);
+    const oriErr = quatDistDeg(quatYXZ(end.yaw, end.pitch), quatYXZ(introTarget.yaw, introTarget.pitch));
+    gate("P1-seam", posErr <= 0.5 && yawErr <= 0.2 && pitchErr <= 0.2,
+      `pos err ${posErr.toFixed(4)} m (need <=0.5) · yaw err ${yawErr.toFixed(4)}° · pitch err ${pitchErr.toFixed(4)}° (need <=0.2) · quat ${oriErr.toFixed(4)}°`);
+  }
+
+  // P2-clearance: holgura mínima al terreno a lo largo de TODO el vuelo,
+  // muestreada cada 0,1 s. >= 60 m.
+  {
+    let minC = Infinity;
+    let minT = 0;
+    for (let ts = 0; ts <= INTRO_DURATION_S + 1e-9; ts += 0.1) {
+      const sm = introSample(ts / INTRO_DURATION_S, introTarget);
+      const c = sm.pos[1] - sampleGrid(sm.pos[0] + cx, cy - sm.pos[2]);
+      if (c < minC) {
+        minC = c;
+        minT = ts;
+      }
+    }
+    gate("P2-clearance", minC >= INTRO_MIN_CLEARANCE_M,
+      `min clearance ${minC.toFixed(1)} m at t=${minT.toFixed(1)} s (need >=${INTRO_MIN_CLEARANCE_M}) — start ${INTRO_START_ALT_M} m, landing ${p0pos[1].toFixed(0)} m`);
+  }
+
+  // P3-duration: 7,0 s ± 0,3 con el reloj real, dirigida por reloj (no por
+  // número de frames): a 20 fps dura lo mismo.
+  {
+    const viewerSrcP = readFileSync("src/engine/viewer.ts", "utf8");
+    const dur = Math.abs(INTRO_DURATION_S - 7.0) <= 0.3;
+    const clockDriven = viewerSrcP.includes("(nowMs - introStartMs) / 1000")
+      && viewerSrcP.includes("elapsedS >= INTRO_DURATION_S");
+    gate("P3-duration", dur && clockDriven,
+      `duration ${INTRO_DURATION_S} s (need 7.0±0.3) · dirigida por reloj (nowMs−startMs)=${clockDriven}`);
+  }
+
+  // P4-rail-pure: la intro es pura (sin import/rAF/DOM/reloj propios) y el
+  // objetivo es poseAt(0) muestreado una vez; no escribe estado de s. La
+  // medida real (s=0,30 → 0,60 → 0,30 idénticos) se hace en navegador.
+  {
+    const introSrc = readFileSync("src/narrative/intro.ts", "utf8");
+    const pure = !introSrc.includes("import ")
+      && !introSrc.includes("requestAnimationFrame")
+      && !introSrc.includes("performance.now")
+      && !introSrc.includes("window.");
+    const viewerSrcP = readFileSync("src/engine/viewer.ts", "utf8");
+    const targetOnce = viewerSrcP.includes("const introTarget: IntroTarget") && viewerSrcP.includes("rig.poseAt(0)");
+    gate("P4-rail-pure", pure && targetOnce,
+      `intro.ts puro=${pure} · objetivo poseAt(0) una vez=${targetOnce} — medir en navegador s=0.30/0.60/0.30`);
+  }
+
+  // P5-single-raf: la intro se engancha al bucle existente, no abre el suyo.
+  {
+    const introSrc = readFileSync("src/narrative/intro.ts", "utf8");
+    const viewerSrcP = readFileSync("src/engine/viewer.ts", "utf8");
+    const introRaf = introSrc.includes("requestAnimationFrame");
+    const loops = (viewerSrcP.match(/setAnimationLoop/g) ?? []).length;
+    gate("P5-single-raf", !introRaf && loops === 1,
+      `intro sin rAF=${!introRaf} · setAnimationLoop en viewer=${loops} (need 1)`);
+  }
 }
 
 if (failures > 0) {
