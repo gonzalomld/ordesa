@@ -847,6 +847,57 @@ gate("G3-clearance", minClear >= CAM_CLEARANCE_M - 0.01,
     `|slopeWin| max ${worst.toFixed(1)}% at s=${worstS.toFixed(3)} (need <=120 wide cap on purpose, not the text's 80%); km 1.20 raw-Z window: ${atAnchor.toFixed(1)}% (need [45, 120] wide anchor on purpose)`);
 }
 
+// --- G117-climb-tortuosity (§8d): the act-I climb (km 0.3-2.4) must zigzag.
+// Measured in PLAN, so it is immune to the drape — unlike G14b, whose slope
+// window was what implicitly guarded this and what the OSM re-trace revealed
+// was measuring the hillside, not the trail. If this fails, someone replaced
+// the switchbacks with a straight "up the fall line" line, which is exactly
+// what the act-I text describes it is not ("el camino no sube: zigzaguea,
+// porque de frente no se puede").
+// Two definition choices, both round-tripped against the refs (GPX 2.21/2532°,
+// OSM 2.25/2953°):
+//  · path length is the trail's cumulative d (d[i1]-d[i0]), NOT the chord sum
+//    of the resampled XY: the XY is a projection and its chord sum reads ~2.09,
+//    not the 2.25 of the trail.
+//  · headings use the raw JSON doubles, not r.x/r.y (Float32Array): the float
+//    quantization adds sub-metre jitter that inflates turn to ~3231°.
+{
+  const D0 = 300;
+  const D1 = 2400;
+  let i0 = -1;
+  let i1 = -1;
+  for (let i = 0; i < r.n; i++) {
+    const d = r.d[i] as number;
+    if (i0 < 0 && d >= D0) i0 = i;
+    if (d <= D1) i1 = i;
+  }
+  let turnDeg = 0;
+  let prevH: number | null = null;
+  for (let i = i0; i <= i1; i++) {
+    if (i > i0) {
+      const h = Math.atan2(
+        (route.y[i] as number) - (route.y[i - 1] as number),
+        (route.x[i] as number) - (route.x[i - 1] as number),
+      );
+      if (prevH !== null) {
+        let dh = (h - prevH) * (180 / Math.PI);
+        while (dh > 180) dh -= 360;
+        while (dh < -180) dh += 360;
+        turnDeg += Math.abs(dh);
+      }
+      prevH = h;
+    }
+  }
+  const pathLen = (r.d[i1] as number) - (r.d[i0] as number);
+  const straight = Math.hypot(
+    (route.x[i1] as number) - (route.x[i0] as number),
+    (route.y[i1] as number) - (route.y[i0] as number),
+  );
+  const tort = straight > 0 ? pathLen / straight : Infinity;
+  gate("G117-climb-tortuosity", tort >= 2.0 && turnDeg >= 2200,
+    `act-I plan km ${((r.d[i0] as number) / 1000).toFixed(2)}-${((r.d[i1] as number) / 1000).toFixed(2)}: tortuosity ${tort.toFixed(2)} (need >=2.00), accumulated turn ${turnDeg.toFixed(0)}deg (need >=2200) — refs GPX 2.21/2532°, OSM 2.25/2953°`);
+}
+
 // --- G16 mode duty (C1): the baked ladder mode must not oscillate.
 // direct = rope flies free; lift/push/tilt = ladder engaged. Count runs of
 // non-direct steps: <= 12 separate engagements pre-epilogue (same budget as
