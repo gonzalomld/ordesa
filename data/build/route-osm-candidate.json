@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-09-28T11:59:12.808Z",
-  "legacyHash": "f4b0570e",
+  "generatedAt": "2026-09-28T16:07:35.394Z",
+  "legacyHash": "76facff8",
   "source": {
     "route": "public/assets/route-gpx-legacy.json",
     "osm": "data/source/osm-paths.geojson",
@@ -105,7 +105,7 @@
       "ok": true,
       "osm": {
         "candLegs": 54,
-        "curLegs": 129,
+        "curLegs": 127,
         "candPerZone": [
           5,
           35,
@@ -114,14 +114,14 @@
           9
         ],
         "curPerZone": [
-          8,
-          41,
-          33,
-          32,
-          12
+          5,
+          42,
+          35,
+          29,
+          13
         ],
         "candMax": 65.4,
-        "curMax": 73.6
+        "curMax": 73.8
       },
       "gpx": {
         "candLegs": 1,

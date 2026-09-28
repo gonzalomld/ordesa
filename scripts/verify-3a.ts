@@ -8,6 +8,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CAM_RAIL_SAMPLES, CORRIDOR_HALF_M, EPI_PITCH, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G23_COVERAGE, G23_Y_MAX, G23_Y_MIN, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_MAX_DEG, G66_ACCEL_MAX_DEG, G66_PITCH_MAX_DEG, G66_QUAT_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_ALONG_MAX, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROCK_CORRIDOR_K, ROCK_FAR_M, ROCK_MIX, ROCK_NEAR_M, ROCK_SCALE_A, ROCK_SCALE_B, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
 import { alongTrackRun, bakeCamRail, bisectSunset, followAt, quatDistDeg, quatYXZ, resolveAnchors, resolveFollowProfile, ropeHeadingDeg, trackAt, zRawAt } from "../src/narrative/anchors.ts";
 import { introSample, INTRO_DURATION_S, INTRO_START_ALT_M, INTRO_MIN_CLEARANCE_M, type IntroTarget } from "../src/narrative/intro.ts";
+import { findBridges } from "./lib/route-bridge.ts";
 import { resolveFollowSafety } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
 import { sunPosition } from "./lib/sun.ts";
@@ -2792,6 +2793,53 @@ function elevFull36(): Float32Array {
     gate("P8-ui-hidden", adds && removes && hides && fade,
       `intro-on add/remove=${adds}/${removes} · CSS #panel+.tele opacity 0=${hides} · fundido 400ms=${fade}`);
   }
+}
+
+// --- R1 — puentear las vaguadas del perfil (05-build-route + lib/route-bridge) ---
+{
+  interface RJ {
+    x: number[];
+    z_mdt: number[];
+    d: number[];
+    lengthM: number;
+    bridge?: {
+      count?: number;
+      totalClimbMBefore?: number;
+      totalClimbMAfter?: number;
+      net105BeforeM?: number;
+      list?: Array<{ km: number; depthM: number; widthM: number }>;
+    };
+  }
+  const rjson = JSON.parse(readFileSync("public/assets/route.json", "utf8")) as RJ;
+  const ljson = JSON.parse(readFileSync("public/assets/route-gpx-legacy.json", "utf8")) as RJ;
+  const teethMain = findBridges(rjson.z_mdt, rjson.lengthM / (rjson.x.length - 1));
+  const teethLegacy = findBridges(ljson.z_mdt, ljson.lengthM / (ljson.x.length - 1));
+  gate("R1-no-teeth", teethMain.length === 0 && teethLegacy.length === 0,
+    `route.json ${teethMain.length} diente(s) · legacy ${teethLegacy.length} — ${
+      teethMain.length === 0 ? "los puenteos cierran"
+        : teethMain.map((b) => `km ${((rjson.d[b.i] as number) / 1000).toFixed(3)} d${b.depthM.toFixed(1)} w${b.widthM.toFixed(0)}`).join(" | ")
+    }`);
+
+  // Net descent of the return (km 10.5-18.24), measured on route.json, vs the
+  // pre-bridge baseline stored by 05. Bridging interior valleys must not move
+  // it (the endpoints are untouched); >2% means real descents were eaten.
+  const netBefore = rjson.bridge?.net105BeforeM ?? NaN;
+  let i0 = -1;
+  let i1 = -1;
+  for (let i = 0; i < rjson.z_mdt.length; i++) {
+    if (i0 < 0 && (rjson.d[i] as number) >= 10500) i0 = i;
+    if ((rjson.d[i] as number) <= 18240) i1 = i;
+  }
+  const netAfter = (rjson.z_mdt[i0] as number) - (rjson.z_mdt[i1] as number);
+  const pct = Number.isFinite(netBefore) && netBefore !== 0 ? (Math.abs(netAfter - netBefore) / Math.abs(netBefore)) * 100 : Infinity;
+  gate("R1-descents-intact", pct <= 2,
+    `descenso neto km10.5-18.24 ${netBefore} -> ${netAfter.toFixed(1)} m (Δ ${pct.toFixed(2)}%, need <=2%)`);
+
+  const list = rjson.bridge?.list ?? [];
+  gate("R1-bridge-list", (rjson.bridge?.count ?? -1) === list.length && list.length <= 20,
+    `${list.length} puenteo(s) [legacy ${ljson.bridge?.count ?? "?"}]: ${
+      list.length ? list.map((b) => `km ${b.km} d${b.depthM} w${b.widthM}`).join(" | ") : "ninguno"
+    } · climb ${rjson.bridge?.totalClimbMBefore} -> ${rjson.bridge?.totalClimbMAfter} m`);
 }
 
 if (failures > 0) {

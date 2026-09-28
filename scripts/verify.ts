@@ -137,6 +137,7 @@ const route = JSON.parse(readFileSync(ROUTE_FILE, "utf8")) as {
   totalClimbM: number;
   climbThresholdM: number;
   climbSmoothM: number;
+  bridge?: { list?: Array<{ L: number; R: number }> };
 };
 const RP = route.x.map((x, i) => ({
   x,
@@ -145,6 +146,12 @@ const RP = route.x.map((x, i) => ({
   z_gpx: route.z_gpx[i] as number,
   d: route.d[i] as number,
 }));
+// R1: bridged valleys are a DELIBERATE departure from the drape (crossing the
+// gully instead of dropping into it), so track-terrain skips those spans.
+const bridgedIdx = new Set<number>();
+for (const b of route.bridge?.list ?? []) {
+  for (let k = b.L; k <= b.R; k++) bridgedIdx.add(k);
+}
 
 // --- 1. max elevation ≈ 3347 m (Monte Perdido, official 3348) ---
 gate(
@@ -184,11 +191,14 @@ gate(
   );
 }
 
-// --- 5. track-terrain coherence: draped z within [mdt, mdt+25] ---
+// --- 5. track-terrain coherence: draped z within [mdt, mdt+25]. Bridged
+// spans (R1) are excluded: there z is intentionally above the terrain. ---
 {
   let below = 0;
   let above = 0;
-  for (const p of RP) {
+  for (let i = 0; i < RP.length; i++) {
+    if (bridgedIdx.has(i)) continue;
+    const p = RP[i] as (typeof RP)[number];
     const mdt = sampleGrid(p.x, p.y);
     const drawn = p.z_mdt - ROUTE_OFFSET_M;
     if (drawn < mdt - 0.5) below++;
@@ -197,7 +207,7 @@ gate(
   gate(
     "track-terrain",
     below === 0 && above === 0,
-    `${below} below MDT, ${above} above +${ROUTE_DRAPE_MAX_ABOVE_M} m (n=${RP.length})`,
+    `${below} below MDT, ${above} above +${ROUTE_DRAPE_MAX_ABOVE_M} m (n=${RP.length}, ${bridgedIdx.size} bridged px skipped)`,
   );
 }
 

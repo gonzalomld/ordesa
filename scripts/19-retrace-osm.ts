@@ -621,16 +621,13 @@ function legsOver35MaskedCur(
 }
 const g110candOsm = legsOver35Masked(cz as number[], cd as number[], true, rsOrg as ArrayLike<string>);
 const g110candGpx = legsOver35Masked(cz as number[], cd as number[], false, rsOrg as ArrayLike<string>);
-const g110curOsm = legsOver35MaskedCur(
-  (routeJ as unknown as { z_mdt: number[] }).z_mdt,
-  curD as number[],
-  true,
-);
-const g110curGpx = legsOver35MaskedCur(
-  (routeJ as unknown as { z_mdt: number[] }).z_mdt,
-  curD as number[],
-  false,
-);
+// R1: G110 compares BARE TERRAIN both sides. The legacy z_mdt is now bridged
+// (R1), so re-drape the current XY from the same heightfield the candidate
+// uses; reading the bridged z would flatten the baseline and make the
+// candidate look worse than it is (bridging is not a re-trace defect).
+const curZ = cur.map((p) => sampleMDT(p.x, p.y));
+const g110curOsm = legsOver35MaskedCur(curZ, curD as number[], true);
+const g110curGpx = legsOver35MaskedCur(curZ, curD as number[], false);
 const g110zoneOk =
   g110candOsm.perZone.every((c, zi) => c <= (g110curOsm.perZone[zi] as number)) &&
   g110candGpx.perZone.every((c, zi) => c <= (g110curGpx.perZone[zi] as number));

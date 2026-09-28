@@ -30,6 +30,7 @@ import {
 } from "./geo-constants.ts";
 import { readDem } from "./lib/tiff.ts";
 import { wgs84ToUtm30N } from "./lib/utm.ts";
+import { applyBridges, findBridges, type RouteBridge } from "./lib/route-bridge.ts";
 
 const CANDIDATE_FILE = "data/build/route-osm-candidate.json";
 const ROUTE_BOUNDS_GEN = "src/generated/route-bounds.ts";
@@ -146,23 +147,19 @@ interface RouteSeries {
   d: number[];
   cumClimb: number[];
   totalClimbM: number;
+  /** R1: accumulated climb BEFORE bridging (for the report/gate). */
+  totalClimbMBefore: number;
+  /** R1: bridged valleys (indices + depth/width). */
+  bridges: RouteBridge[];
+  /** R1: net descent over km 10.5-18.24 BEFORE bridging (baseline). */
+  net105BeforeM: number;
   lengthM: number;
 }
 
-/** Rebuilds every Z-dependent series from the plan XY: Z from the DEM (never
- *  from the candidate), uniform d over the given arc length, and the
- *  watch-style accumulated climb. */
-function buildRoute(xs: number[], ys: number[], zGpx: number[], lengthM: number): RouteSeries {
-  const N = xs.length;
-  const n = N - 1;
-  const total = lengthM;
-  const d = xs.map((_, i) => round1((total * i) / n));
-  // Drawn Z: raw drape from the full-precision DEM + fixed offset.
-  const zS = xs.map((x, i) => dem.sampleBilinear(x, ys[i] as number));
-  const zMdt = zS.map((z) => round1(z + ROUTE_OFFSET_M));
-  // Accumulated climb, watch-style: hysteresis of CLIMB_THRESHOLD_M over the
-  // Z series SMOOTHED at CLIMB_SMOOTH_RADIUS_M (S7). Only the climb
-  // accumulation is smoothed; the drawn Z stays the raw drape.
+/** Watch-style accumulated climb over a raw-drape Z series (S7): hysteresis
+ *  of CLIMB_THRESHOLD_M over the Z smoothed at CLIMB_SMOOTH_RADIUS_M. Only the
+ *  climb accumulation is smoothed; the drawn Z stays the raw drape. */
+function accumulateClimb(zS: number[]): { cumClimb: number[]; totalClimbM: number } {
   const w = Math.round(CLIMB_SMOOTH_RADIUS_M / ROUTE_STEP_M);
   const zC = zS.map((_, i) => {
     let s = 0;
@@ -202,6 +199,38 @@ function buildRoute(xs: number[], ys: number[], zGpx: number[], lengthM: number)
     }
     cumClimb[i] = Math.round((acc + (up ? peak - anchor : 0)) * 10) / 10;
   }
+  return { cumClimb, totalClimbM: Math.round((acc + (up ? peak - anchor : 0)) * 10) / 10 };
+}
+
+/** Net descent (start z - end z) over the samples with d in [a, b]. */
+function netDescent(zMdt: number[], d: number[], a: number, b: number): number {
+  let i0 = -1;
+  let i1 = -1;
+  for (let i = 0; i < zMdt.length; i++) {
+    if (i0 < 0 && (d[i] as number) >= a) i0 = i;
+    if ((d[i] as number) <= b) i1 = i;
+  }
+  if (i0 < 0 || i1 < 0) return 0;
+  return Math.round(((zMdt[i0] as number) - (zMdt[i1] as number)) * 10) / 10;
+}
+
+/** Rebuilds every Z-dependent series from the plan XY: Z from the DEM (never
+ *  from the candidate), uniform d over the given arc length, the R1 valley
+ *  bridge, and the watch-style accumulated climb. */
+function buildRoute(xs: number[], ys: number[], zGpx: number[], lengthM: number): RouteSeries {
+  const N = xs.length;
+  const n = N - 1;
+  const total = lengthM;
+  const d = xs.map((_, i) => round1((total * i) / n));
+  // Drawn Z: raw drape from the full-precision DEM (no offset yet).
+  const zS = xs.map((x, i) => dem.sampleBilinear(x, ys[i] as number));
+  // R1: bridge the profile valleys after the drape and BEFORE cumClimb.
+  const bridges = findBridges(zS, ROUTE_STEP_M);
+  const zB = applyBridges(zS, bridges);
+  const zMdt = zB.map((z) => round1(z + ROUTE_OFFSET_M));
+  const before = accumulateClimb(zS);
+  const after = accumulateClimb(zB);
+  const zMdtBefore = zS.map((z) => round1(z + ROUTE_OFFSET_M));
   return {
     xs,
     ys,
@@ -209,10 +238,25 @@ function buildRoute(xs: number[], ys: number[], zGpx: number[], lengthM: number)
     zMdt,
     zRaw: zMdt.slice(),
     d,
-    cumClimb,
-    totalClimbM: Math.round((acc + (up ? peak - anchor : 0)) * 10) / 10,
+    cumClimb: after.cumClimb,
+    totalClimbM: after.totalClimbM,
+    totalClimbMBefore: before.totalClimbM,
+    bridges,
+    net105BeforeM: netDescent(zMdtBefore, d, 10500, 18240),
     lengthM: round1(total),
   };
+}
+
+function logBridges(tag: string, s: RouteSeries): void {
+  console.log(
+    `R1 ${tag}: ${s.bridges.length} puenteo(s) · climb ${s.totalClimbMBefore} -> ${s.totalClimbM} m ` +
+      `· descenso neto km10.5-18.24 (antes) ${s.net105BeforeM} m`,
+  );
+  for (const b of s.bridges) {
+    console.log(
+      `   km ${((s.d[b.i] as number) / 1000).toFixed(3)} · profundidad ${b.depthM.toFixed(1)} m · ancho ${b.widthM.toFixed(0)} m`,
+    );
+  }
 }
 
 const meta = {
@@ -235,12 +279,28 @@ function serialize(s: RouteSeries, origin: string[]): string {
     z_gpx: s.zGpx.map(round1),
     d: s.d,
     cumClimb: s.cumClimb,
+    // R1: bridged valleys (audit) + the pre-bridge climb/descent baselines.
+    bridge: {
+      count: s.bridges.length,
+      totalClimbMBefore: s.totalClimbMBefore,
+      totalClimbMAfter: s.totalClimbM,
+      net105BeforeM: s.net105BeforeM,
+      list: s.bridges.map((b) => ({
+        i: b.i,
+        L: b.L,
+        R: b.R,
+        km: round1((s.d[b.i] as number) / 1000),
+        depthM: round1(b.depthM),
+        widthM: round1(b.widthM),
+      })),
+    },
     origin,
   });
 }
 
 // --- a) GPX legacy: ALWAYS written (the rollback) ---
 const legacySeries = buildRoute(smX, smY, smZGpx, gpxRes.total);
+logBridges("legacy", legacySeries);
 if (legacySeries.lengthM !== round1(legacySeries.lengthM)) {
   throw new Error("route: non-finite length");
 }
@@ -302,6 +362,7 @@ if (adopted) {
     return bz;
   });
   routeSeries = buildRoute(cand.x, cand.y, zGpxCand, cand.lengthM);
+  logBridges("adoptada", routeSeries);
   routeOrigin = cand.origin;
   console.log(
     `adopted OSM candidate: ${routeSeries.xs.length} pts, ${(routeSeries.lengthM / 1000).toFixed(2)} km ` +
