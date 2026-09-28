@@ -271,11 +271,14 @@ async function save(kind: string, buf: Buffer): Promise<void> {
 }
 
 // --- write corridor + sizes into meta.json (+ public copy) ---
+// MERGE, never rewrite: 20-build-ortho-tiles.ts owns the tile keys
+// (tiles-atlas + tile-c*-r* + block tiles); overwriting assets/sizesBytes
+// here would wipe them (same class of bug as 12 had to avoid).
 const meta = JSON.parse(readFileSync(META_FILE, "utf8"));
 meta.corridorBbox = corridorBbox;
 meta.corridorMetersPerPx = Number((corrW / 8192).toFixed(3));
-meta.assets = assets;
-meta.sizesBytes = sizesBytes;
+meta.assets = { ...(meta.assets ?? {}), ...assets };
+meta.sizesBytes = { ...(meta.sizesBytes ?? {}), ...sizesBytes };
 meta.corridorMarginM = Number(minMargin.toFixed(0));
 const sidecar = JSON.parse(readFileSync("data/source/ortho.json", "utf8"));
 meta.flight = sidecar.flight?.points?.[0]

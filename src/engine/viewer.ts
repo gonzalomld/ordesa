@@ -1593,26 +1593,42 @@ if (uWallProbe > 0.5) {
           const prevClear = renderer.getClearColor(new THREE.Color());
           const prevAlpha = renderer.getClearAlpha();
           const prevU = tileDiff.value;
+          // T1-c: UN SOLO render; las 16 lecturas van en el mismo bloque
+          // síncrono (el buffer sigue vivo en la misma tarea). Parche 32×32
+          // promediado en ambos canales: a 25 cm un punto suelto cae en
+          // huecos oscuros del dosel mientras el corredor con mipmaps da la
+          // media local — el punto sesgaba R hacia abajo sin nada roto.
+          const PS = 32;
+          const patch = new Uint8Array(PS * PS * 4);
           try {
             renderer.setClearColor(0x000000, 1);
             renderer.clear(true, true, false);
             tileDiff.value = 1;
             renderer.render(scene, camera);
-            const px = new Uint8Array(4);
             const pairs = tilediffSlots.map((s) => {
               const ex = (meta as unknown as { tiles: { originX: number; originY: number } }).tiles.originX + (s.c + 0.5) * 126;
               const ey = (meta as unknown as { tiles: { originY: number } }).tiles.originY + (s.r + 0.5) * 126;
               const v = new THREE.Vector3(ex - world.centerX, 2200, -(ey - world.centerY));
               v.project(camera);
-              const sx = Math.max(0, Math.min(cw - 1, Math.floor((v.x * 0.5 + 0.5) * cw)));
-              const sy = Math.max(0, Math.min(ch - 1, Math.floor((-v.y * 0.5 + 0.5) * ch)));
-              gl.readPixels(sx, sy, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-              const R = (px[0] as number) / 255;
-              const G = (px[1] as number) / 255;
+              const cx = Math.max(0, Math.min(cw - 1, Math.floor((v.x * 0.5 + 0.5) * cw)));
+              const cy = Math.max(0, Math.min(ch - 1, Math.floor((-v.y * 0.5 + 0.5) * ch)));
+              const x0 = Math.max(0, Math.min(cw - 1, cx - PS / 2));
+              const y0 = Math.max(0, Math.min(ch - 1, cy - PS / 2));
+              const w = Math.min(PS, cw - x0);
+              const h = Math.min(PS, ch - y0);
+              gl.readPixels(x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, patch);
+              let sR = 0, sG = 0;
+              const nn = w * h;
+              for (let i = 0; i < nn; i++) {
+                sR += (patch[i * 4] as number) / 255;
+                sG += (patch[i * 4 + 1] as number) / 255;
+              }
+              const R = sR / nn;
+              const G = sG / nn;
               const tol = Math.max(0.15 * G, 8 / 255);
               const d = Math.abs(R - G);
               const verdict = R < 4 / 255 ? "negro" : d <= tol ? "ok" : R < G * 0.5 ? "bajo" : "alto";
-              return { slot: s.slot, c: s.c, r: s.r, R: +R.toFixed(4), G: +G.toFixed(4), d: +d.toFixed(4), tol: +tol.toFixed(4), verdict };
+              return { slot: s.slot, c: s.c, r: s.r, R: +R.toFixed(4), G: +G.toFixed(4), d: +d.toFixed(4), tol: +tol.toFixed(4), verdict, n: nn };
             });
             return { pairs };
           } finally {

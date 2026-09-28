@@ -21,9 +21,10 @@
 //   + tiles index into data/build/meta.json (+ public copy)
 //   + src/generated/tiles.ts (grid + slots, travels inside the bundle)
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import sharp from "sharp";
-import { CORRIDOR_BLEND_M, META_FILE, WMS_LAYER, WMS_MAX_ATTEMPTS, WMS_MAX_CONCURRENCY, WMS_RETRY_BASE_MS, WMS_URL, WMS_VERSION } from "./geo-constants.ts";
+import { BBOX, CORRIDOR_BLEND_M, META_FILE, ORTHO_MOSAIC, WMS_LAYER, WMS_MAX_ATTEMPTS, WMS_MAX_CONCURRENCY, WMS_RETRY_BASE_MS, WMS_URL, WMS_VERSION } from "./geo-constants.ts";
+import { applyDeshadow } from "./lib/deshadow.ts";
 import { fetchWithRetry } from "./lib/http.ts";
 
 // --- scheme constants (the fixed scheme; mirrored to generated/tiles.ts) ---
@@ -86,6 +87,70 @@ function captureBbox(c: number, r: number): [number, number, number, number] {
   return [x0 - TILE_BORDER_M, y0 - TILE_BORDER_M, x1 + TILE_BORDER_M, y1 + TILE_BORDER_M];
 }
 
+// --- T1-c: illumination field + GLOBAL gain (read from meta.json, never
+// recomputed per tile — per-tile means would make brightness depend on
+// content and the corridor would come out patchy). Gate: mosaicHash must
+// match OUR local mosaic when it exists (G131 covers the WMS side).
+const meta20 = JSON.parse(readFileSync(META_FILE, "utf8")) as {
+  illumination?: {
+    file: string; width: number; height: number; min: number; max: number;
+    gain: number; mosaicHash: string; mosaicFile: string;
+    mask: { file: string; fraction: number };
+    encoding?: string;
+  };
+};
+const ill = meta20.illumination;
+if (!ill) throw new Error("20: meta.json has no illumination — run 12 first");
+if (!Number.isFinite(ill.gain) || ill.gain <= 0) throw new Error(`20: bad illumination.gain (${ill.gain})`);
+if (!existsSync(ill.file)) throw new Error(`20: ${ill.file} missing — run 12 first`);
+if (!existsSync(ill.mask.file)) throw new Error(`20: ${ill.mask.file} missing — run 12 first`);
+if (existsSync(ill.mosaicFile)) {
+  const mosaicNow = createHash("sha256").update(readFileSync(ill.mosaicFile)).digest("hex").slice(0, 8);
+  if (mosaicNow !== ill.mosaicHash) {
+    throw new Error(`20: mosaic changed since deshadow (now ${mosaicNow} vs field ${ill.mosaicHash}) — re-run 11+12`);
+  }
+} else {
+  console.log(`20: WARNING ${ill.mosaicFile} absent (CI?) — mosaic-gate skipped, G131 covers the WMS side`);
+}
+const GAIN = ill.gain as number;
+const ILL_W = ill.width;
+const ILL_H = ill.height;
+const { data: illRaw, info: illInfo } = await sharp(ill.file).raw().toBuffer({ resolveWithObject: true });
+if (illInfo.width !== ILL_W || illInfo.height !== ILL_H) {
+  throw new Error(`20: illum.png is ${illInfo.width}×${illInfo.height}, meta says ${ILL_W}×${ILL_H}`);
+}
+const illField = new Float32Array(ILL_W * ILL_H);
+{
+  const span = (ill.max as number) - (ill.min as number);
+  if (!(span > 0)) throw new Error("20: degenerate illumination range in meta");
+  for (let i = 0; i < ILL_W * ILL_H; i++) {
+    const v = ((illRaw[i * 3] as number) * 256 + (illRaw[i * 3 + 1] as number)) / 65535;
+    illField[i] = (ill.min as number) + v * span;
+  }
+}
+const { data: maskRaw, info: maskInfo } = await sharp(ill.mask.file).raw().toBuffer({ resolveWithObject: true });
+console.log(`illum field ${ILL_W}×${ILL_H} range ${(ill.min as number).toFixed(4)}…${(ill.max as number).toFixed(4)}, gain ${GAIN.toFixed(4)}, mosaic ${ill.mosaicHash}`);
+// Bilinear over the illum field in EPSG (same BBOX framing as 12); nearest
+// on the unreliable mask (binary: >=128 = unreliable).
+function illumAt(x: number, y: number): number {
+  const col = ((x - BBOX.minx) / (BBOX.maxx - BBOX.minx)) * ILL_W - 0.5;
+  const row = ((BBOX.maxy - y) / (BBOX.maxy - BBOX.miny)) * ILL_H - 0.5;
+  const c0 = Math.max(0, Math.min(ILL_W - 2, Math.floor(col)));
+  const r0 = Math.max(0, Math.min(ILL_H - 2, Math.floor(row)));
+  const fx = Math.min(1, Math.max(0, col - c0));
+  const fy = Math.min(1, Math.max(0, row - r0));
+  const a = illField[r0 * ILL_W + c0] as number;
+  const b = illField[r0 * ILL_W + c0 + 1] as number;
+  const c = illField[(r0 + 1) * ILL_W + c0] as number;
+  const d = illField[(r0 + 1) * ILL_W + c0 + 1] as number;
+  return a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy;
+}
+function maskAt(x: number, y: number): boolean {
+  const c = Math.max(0, Math.min(maskInfo.width - 1, Math.round((((x - BBOX.minx) / (BBOX.maxx - BBOX.minx)) * maskInfo.width) - 0.5)));
+  const r = Math.max(0, Math.min(maskInfo.height - 1, Math.round((((BBOX.maxy - y) / (BBOX.maxy - BBOX.miny)) * maskInfo.height) - 0.5)));
+  return (maskRaw[(r * maskInfo.width + c) * maskInfo.channels] as number) >= 128;
+}
+
 async function fetchTile(j: TileJob): Promise<Buffer> {
   const [minx, miny, maxx, maxy] = captureBbox(j.c, j.r);
   const url =
@@ -111,45 +176,68 @@ await Promise.all(
   Array.from({ length: Math.min(WMS_MAX_CONCURRENCY, jobs.length) }, () => worker()),
 );
 
-// --- tile files: JPEG → WebP q80, content-hashed names ---
+// --- tile files: JPEG → deshadow per pixel → WebP q80, content-hashed ---
+// T1-c: salida = applyDeshadow(entrada, illumPx, GAIN) por píxel — la MISMA
+// operación del corredor (lib/deshadow.ts), con el gain GLOBAL de meta.
+// El borde de 1 m se desombrea igual (cada píxel con su illum propio).
 interface TileRec { c: number; r: number; slot: number; file: string; bytes: number; }
 const recs: TileRec[] = [];
+let unrelTotal = 0;
 for (const j of jobs) {
   const jpg = jpegs.get(j.slot);
   if (!jpg) throw new Error(`missing tile slot ${j.slot}`);
-  const webp = await sharp(jpg).webp({ quality: TILE_QUALITY }).toBuffer();
+  const { data: raw, info } = await sharp(jpg).raw().toBuffer({ resolveWithObject: true });
+  if (info.width !== TILE_PX || info.height !== TILE_PX) {
+    throw new Error(`tile c${j.c} r${j.r}: WMS returned ${info.width}×${info.height}, need ${TILE_PX}×${TILE_PX}`);
+  }
+  const [capMinx, capMiny, capMaxx, capMaxy] = captureBbox(j.c, j.r);
+  const out = Buffer.alloc(TILE_PX * TILE_PX * 3);
+  const CH = info.channels;
+  let unrel = 0;
+  for (let py = 0; py < TILE_PX; py++) {
+    for (let px = 0; px < TILE_PX; px++) {
+      // norte arriba: filas de imagen van de capMaxy a capMiny
+      const x = capMinx + ((px + 0.5) / TILE_PX) * TILE_CAPTURE_M;
+      const y = capMaxy - ((py + 0.5) / TILE_PX) * TILE_CAPTURE_M;
+      const il = illumAt(x, y);
+      const o = (py * TILE_PX + px) * CH;
+      const q = (py * TILE_PX + px) * 3;
+      out[q] = Math.min(255, Math.max(0, Math.round(applyDeshadow(raw[o] as number, il, GAIN))));
+      out[q + 1] = Math.min(255, Math.max(0, Math.round(applyDeshadow(raw[o + 1] as number, il, GAIN))));
+      out[q + 2] = Math.min(255, Math.max(0, Math.round(applyDeshadow(raw[o + 2] as number, il, GAIN))));
+      // % máscara solo sobre región útil (el borde se solapa entre teselas)
+      if (px >= TILE_BORDER_PX && px < TILE_PX - TILE_BORDER_PX && py >= TILE_BORDER_PX && py < TILE_PX - TILE_BORDER_PX) {
+        if (maskAt(x, y)) unrel++;
+      }
+    }
+  }
+  unrelTotal += unrel;
+  const webp = await sharp(out, { raw: { width: TILE_PX, height: TILE_PX, channels: 3 } }).webp({ quality: TILE_QUALITY }).toBuffer();
   const h = hashOf(webp);
   const name = `tile-c${j.c}-r${j.r}.${h}.webp`;
   writeFileSync(`${OUT_DIR}/${name}`, webp);
   recs.push({ c: j.c, r: j.r, slot: j.slot, file: `assets/tiles/${name}`, bytes: webp.length });
+  console.log(`  deshadowed c${j.c} r${j.r} slot ${j.slot}: ${(webp.length / 1024).toFixed(1)} KB, unreliable ${(100 * (unrel / (TILE_CONTENT_PX * TILE_CONTENT_PX))).toFixed(2)}%`);
 }
 const totalBytes = recs.reduce((s, t) => s + t.bytes, 0);
 console.log(`tiles: ${recs.length} × ${(totalBytes / recs.length / 1024).toFixed(1)} KB mean, ${(totalBytes / 1024).toFixed(1)} KB total`);
 
-// --- T1-bis: atlas AUTODESCRIPTIVO — los 64 huecos pintados con su
-// propio número (R = (col+0,5)/8, G = (fila+0,5)/8, B = 0,5 fijo).
-// El color en pantalla dice literalmente qué columna/fila del atlas se ha
-// muestreado. Las fotos van DESPUÉS, cuando la rejilla salga en su sitio.
-// sharp compone top-down: hueco (col,row) en (col*512, row*512), row=0 =
-// fila SUPERIOR de la imagen. Con flipY=true esa fila es v≈1 (fila 7 GL).
+// --- T1-c: atlas de FOTOS desde las teselas desombreadas ya codificadas
+// (se decodifican los WebP finales, no los JPEG intermedios: el atlas es
+// lo que se publica). sharp compone top-down: hueco (col,row) en
+// (col*512, row*512), row=0 = fila SUPERIOR. Huecos 16-63 en negro
+// (correcto con 16 teselas). El bloque de diagnóstico T1-bis (colores
+// codificados) está borrado: fue lo que llegó a producción.
 {
-  const swatches: Array<{ input: Buffer; left: number; top: number }> = [];
-  for (let row = 0; row < ATLAS_COLS; row++) {
-    for (let col = 0; col < ATLAS_COLS; col++) {
-      const r = Math.round(((col + 0.5) / ATLAS_COLS) * 255);
-      const g = Math.round(((row + 0.5) / ATLAS_COLS) * 255);
-      const png = await sharp({
-        create: { width: TILE_PX, height: TILE_PX, channels: 3, background: { r, g, b: 128 } },
-      })
-        .png()
-        .toBuffer();
-      swatches.push({ input: png, left: col * TILE_PX, top: row * TILE_PX });
-    }
+  const parts: Array<{ input: Buffer; left: number; top: number }> = [];
+  for (const t of recs) {
+    const raw = await sharp(`${OUT_DIR}/${t.file.split("/").pop()}`).png().toBuffer();
+    parts.push({ input: raw, left: (t.slot % ATLAS_COLS) * TILE_PX, top: Math.floor(t.slot / ATLAS_COLS) * TILE_PX });
   }
   const atlasBuf = await sharp({
     create: { width: ATLAS_PX, height: ATLAS_PX, channels: 3, background: { r: 0, g: 0, b: 0 } },
   })
-    .composite(swatches)
+    .composite(parts)
     .webp({ quality: TILE_QUALITY })
     .toBuffer();
   const h = hashOf(atlasBuf);
@@ -207,4 +295,12 @@ console.log(`tiles: ${recs.length} × ${(totalBytes / recs.length / 1024).toFixe
 
 // --- report (brief §T1 a) ---
 console.log(`\nT1 tiles: total ${(totalBytes / 1024).toFixed(1)} KB, mean ${(totalBytes / recs.length / 1024).toFixed(1)} KB/tile (gate G122: mean ≤ 60 KB)`);
+{
+  const useful = recs.length * TILE_CONTENT_PX * TILE_CONTENT_PX;
+  const pct = (100 * (unrelTotal / useful)).toFixed(2);
+  console.log(`unreliable area: ${pct}% of useful tile area (${unrelTotal}/${useful} px)`);
+  if (Number(pct) > 10) throw new Error(`STOP: unreliable area ${pct}% > 10% — talk before continuing (T1-c.4)`);
+  if (Number(pct) < 3) console.log("unreliable < 3%: continue, treat in T2");
+  else console.log("unreliable 3-10%: grey zone, noted for T2");
+}
 console.log(`corridor blend edge still ${CORRIDOR_BLEND_M} m; full corridor would be ~${((COLS * ROWS * (totalBytes / recs.length)) / 1024 / 1024).toFixed(1)} MB at this rate`);

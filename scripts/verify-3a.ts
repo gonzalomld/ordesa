@@ -1458,7 +1458,8 @@ function elevFull36(): Float32Array {
   const fogSrc = readFileSync("src/engine/height-fog.ts", "utf8");
   const has = (s: string, k: string): boolean => s.includes(k);
   const checks: [string, boolean][] = [
-    ["read() renderiza+lee en bloque (tileDiff=1, render, readPixels, finally)", has(viewerSrc, "tileDiff.value = 1") && has(viewerSrc, "renderer.render(scene, camera)") && has(viewerSrc, "gl.readPixels(sx, sy, 1, 1") && has(viewerSrc, "tileDiff.value = prevU")],
+    ["read() renderiza+lee en bloque (tileDiff=1, render, readPixels parche, finally)", has(viewerSrc, "tileDiff.value = 1") && has(viewerSrc, "renderer.render(scene, camera)") && has(viewerSrc, "gl.readPixels(x0, y0, w, h") && has(viewerSrc, "tileDiff.value = prevU")],
+    ["parche 32×32 promediado en ambos canales (n trazable)", has(viewerSrc, "const PS = 32") && has(viewerSrc, "verdict, n: nn")],
     ["restaura clear + visibilidades (finally)", has(viewerSrc, "renderer.setClearColor(prevClear, prevAlpha)") && has(viewerSrc, "hideForTilediff")],
     ["canal de control G (luma corredor, gLumaC)", has(viewerSrc, "gLumaC = gluma(corr.rgb)") && has(viewerSrc, "uniform float uTileDiff")],
     ["magFilter sin mipmap (uCloud: LinearFilter)", fogSrc.includes("tex.magFilter = THREE_NS.LinearFilter") && !fogSrc.includes("tex.magFilter = THREE_NS.LinearMipmapLinearFilter")],
@@ -2296,6 +2297,133 @@ function elevFull36(): Float32Array {
     }
   }
   gate("G126-atlas-is-photo", ok, detail);
+}
+
+// --- G128-tile-deshadow (T1-c, medida en disco WebP contra WebP):
+// luma media del fichero de tesela entre 0,92 y 1,08 veces la del corredor
+// sobre el mismo suelo. Receta exacta (verificada: con el código actual da
+// 0,2904/0,3533 = 0,8221 — si da otra cosa, el fallo está en la puerta):
+//   TESELA: public/<assets tile-c3-r9>, útil 504×504 (fuera 4 px de borde).
+//   CORREDOR: public/<terrain-corridor 8192 COMPLETO, no el -4k>, suelo de
+//     c3-r9 (x0=originX+3*126, y0=originY+9*126, 126 m) a píxel con
+//     volteo norte-arriba (py0=(maxy-y1)/h*H).
+//   Luma Rec.709 sobre RGB 0..1 en ambos lados.
+{
+  const m = JSON.parse(readFileSync("data/build/meta.json", "utf8")) as {
+    assets?: Record<string, string>;
+    corridorBbox?: { minx: number; miny: number; maxx: number; maxy: number };
+    tiles?: { originX: number; originY: number; tileM: number };
+  };
+  const tileRel = m.assets?.["tile-c3-r9"];
+  const corrRel = Object.entries(m.assets ?? {}).find(([k, v]) =>
+    k === "terrain-corridor" && typeof v === "string" && !v.includes("-4k"))?.[1] as string | undefined;
+  let detail = "";
+  let ok = false;
+  let ratio = -1;
+  if (!tileRel || !existsSync(`public/${tileRel}`)) {
+    detail = `tile-c3-r9 ausente (${tileRel ?? "sin clave"})`;
+  } else if (!corrRel || !existsSync(`public/${corrRel}`)) {
+    detail = `terrain-corridor 8192 ausente (${corrRel ?? "sin clave"})`;
+  } else if (!m.corridorBbox || !m.tiles) {
+    detail = "meta sin corridorBbox/tiles";
+  } else {
+    const { data: td, info: ti } = await sharp(`public/${tileRel}`).raw().toBuffer({ resolveWithObject: true });
+    const { data: cd, info: ci } = await sharp(`public/${corrRel}`).raw().toBuffer({ resolveWithObject: true });
+    const luma = (d: Buffer, o: number): number =>
+      0.2126 * ((d[o] as number) / 255) + 0.7152 * ((d[o + 1] as number) / 255) + 0.0722 * ((d[o + 2] as number) / 255);
+    let sT = 0, nT = 0;
+    for (let y = 4; y < ti.height - 4; y++) {
+      for (let x = 4; x < ti.width - 4; x++) {
+        sT += luma(td, (y * ti.width + x) * ti.channels); nT++;
+      }
+    }
+    const lumaT = sT / nT;
+    const ox = m.tiles.originX, oy = m.tiles.originY, TM = m.tiles.tileM;
+    const x0 = ox + 3 * TM, x1 = x0 + TM, y0 = oy + 9 * TM, y1 = y0 + TM;
+    const cb = m.corridorBbox;
+    const px0 = ((x0 - cb.minx) / (cb.maxx - cb.minx)) * ci.width;
+    const px1 = ((x1 - cb.minx) / (cb.maxx - cb.minx)) * ci.width;
+    const py0 = ((cb.maxy - y1) / (cb.maxy - cb.miny)) * ci.height;
+    const py1 = ((cb.maxy - y0) / (cb.maxy - cb.miny)) * ci.height;
+    if (px0 < 0 || py0 < 0 || px1 > ci.width || py1 > ci.height) {
+      detail = `recorte fuera del corredor: ${px0.toFixed(0)},${py0.toFixed(0)}–${px1.toFixed(0)},${py1.toFixed(0)} en ${ci.width}×${ci.height} (volteo Y mal aplicado?)`;
+    } else {
+      let sC = 0, nC = 0;
+      for (let y = Math.floor(py0); y < Math.ceil(py1); y++) {
+        for (let x = Math.floor(px0); x < Math.ceil(px1); x++) {
+          sC += luma(cd, (y * ci.width + x) * ci.channels); nC++;
+        }
+      }
+      const lumaC = sC / nC;
+      ratio = lumaC > 0 ? lumaT / lumaC : -1;
+      ok = ratio >= 0.92 && ratio <= 1.08;
+      detail = ok
+        ? `tesela ${lumaT.toFixed(4)} / corredor ${lumaC.toFixed(4)} = ${ratio.toFixed(4)} (banda 0,92–1,08)`
+        : ratio < 0.92
+          ? `tesela ${lumaT.toFixed(4)} / corredor ${lumaC.toFixed(4)} = ${ratio.toFixed(4)} POR DEBAJO: campo no aplicado o invertido`
+          : `tesela ${lumaT.toFixed(4)} / corredor ${lumaC.toFixed(4)} = ${ratio.toFixed(4)} POR ARRIBA: doble división`;
+    }
+  }
+  gate("G128-tile-deshadow", ok, detail);
+}
+
+// --- G129-deshadow-shared (T1-c, estática): la OPERACIÓN de desombreado
+// vive en scripts/lib/deshadow.ts y SOLO allí. Los dos scripts importan de
+// él y ninguno contiene aritmética inline (/ Math.max( fuera de comentarios
+// = divergencia futura). Sin check de literales sueltos: 0.25 es también la
+// resolución de tesela y daría falsos positivos.
+{
+  const lib = readFileSync("scripts/lib/deshadow.ts", "utf8");
+  const s12 = readFileSync("scripts/12-build-des-shadow.ts", "utf8");
+  const s20 = readFileSync("scripts/20-build-ortho-tiles.ts", "utf8");
+  const noComments = (s: string): string =>
+    s.split("\n").filter((l) => !l.trimStart().startsWith("//")).join("\n");
+  const checks: [string, boolean][] = [
+    ["lib expone AMBIENT/FLOOR/applyDeshadow puros", lib.includes("export const AMBIENT") && lib.includes("export const FLOOR") && lib.includes("export function applyDeshadow") && !noComments(lib).includes("readFileSync") && !noComments(lib).includes("import ")],
+    ["12 importa del lib", s12.includes('from "./lib/deshadow.ts"')],
+    ["20 importa del lib", s20.includes('from "./lib/deshadow.ts"')],
+    ["12 sin aritmética inline", !noComments(s12).includes("/ Math.max(")],
+    ["20 sin aritmética inline", !noComments(s20).includes("/ Math.max(")],
+    ["12 llama a applyDeshadow", noComments(s12).includes("applyDeshadow(")],
+    ["20 llama a applyDeshadow", noComments(s20).includes("applyDeshadow(")],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G129-deshadow-shared", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — operación única en lib, ambos importan y llaman`);
+}
+
+// --- G130-gain-global (T1-c, estática+meta): el gain es UN escalar global
+// leído de meta.json (mismo para las 16 teselas). Si cada tesela calculase
+// su propia media, el brillo dependería del contenido y el corredor saldría
+// a parches. Además meta guarda gain + campo con el hash del mosaico de
+// origen, y 20 aborta si ese hash no coincide.
+{
+  const s20 = readFileSync("scripts/20-build-ortho-tiles.ts", "utf8");
+  const m = JSON.parse(readFileSync("data/build/meta.json", "utf8")) as {
+    illumination?: { gain: number; mosaicHash: string; file: string; min: number; max: number };
+  };
+  const noComments = (s: string): string =>
+    s.split("\n").filter((l) => !l.trimStart().startsWith("//")).join("\n");
+  const s20c = noComments(s20);
+  const gainRead = s20c.includes("illumination") && s20c.includes("GAIN");
+  const noOwnMeans = !s20c.includes("inMean") && !s20c.includes("relMean") && !s20c.includes("preGain");
+  const noLumaReduce = !/\.reduce\([^)]*lum/i.test(s20c);
+  const ill = m.illumination;
+  const metaOk = !!ill && Number.isFinite(ill.gain) && ill.gain > 0 &&
+    typeof ill.mosaicHash === "string" && /^[0-9a-f]{8}$/.test(ill.mosaicHash) &&
+    existsSync(ill.file) && Number.isFinite(ill.min) && Number.isFinite(ill.max) && ill.max > ill.min;
+  const abortIdx = s20c.indexOf("mosaic changed since deshadow");
+  const throwNear = abortIdx >= 0 && s20c.slice(Math.max(0, abortIdx - 600), abortIdx).includes("throw");
+  const checks: [string, boolean][] = [
+    ["20 lee gain global de meta (GAIN)", gainRead],
+    ["20 sin medias propias (inMean/relMean/preGain)", noOwnMeans],
+    ["20 sin reduce sobre luminancia", noLumaReduce],
+    ["meta.illumination completo (gain+hash+campo+rango)", metaOk],
+    ["20 aborta en mismatch de mosaico", throwNear],
+  ];
+  const bad = checks.filter(([, ok]) => !ok).map(([n]) => n);
+  gate("G130-gain-global", bad.length === 0,
+    bad.length ? `falta: ${bad.join(", ")}` : `${checks.length} checks — gain ${ill?.gain?.toFixed(4) ?? "?"} global, hash ${ill?.mosaicHash ?? "?"}, aborta en mismatch`);
 }
 
 if (failures > 0) {

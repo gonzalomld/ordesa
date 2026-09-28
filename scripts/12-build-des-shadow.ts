@@ -4,15 +4,19 @@
 // are infilled with the median albedo of their (slope,brightness) class.
 // Outputs: data/build/albedo.png (working albedo) + reports residual
 // correlation + deep-mask fraction into ortho.json + meta.json.
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import sharp from "sharp";
 import {
   BBOX,
   DEM_FILE,
+  META_FILE,
+  META_PUBLIC_COPY,
   ORTHO_MOSAIC,
   ORTHO_SIDECAR,
 } from "./geo-constants.ts";
+import { AMBIENT, FLOOR, applyDeshadow } from "./lib/deshadow.ts";
 import { readDem } from "./lib/tiff.ts";
 
 const W = 2160;
@@ -24,8 +28,6 @@ const fit = sidecar.solarFit as { az: number; alt: number };
 console.log(`flight sun: az ${fit.az} alt ${fit.alt}`);
 const AZ = fit.az;
 const ALT = fit.alt;
-const AMBIENT = 0.35;
-const FLOOR = 0.25;
 
 const dem = await readDem(DEM_FILE);
 
@@ -165,10 +167,9 @@ for (let i = 0; i < n; i++) {
     g = medG[c] as number;
     b = medB[c] as number;
   } else {
-    const dv = Math.max(illum[i] as number, FLOOR);
-    r = ((px[o] as number) / dv) * gain;
-    g = ((px[o + 1] as number) / dv) * gain;
-    b = ((px[o + 2] as number) / dv) * gain;
+    r = applyDeshadow(px[o] as number, illum[i] as number, gain);
+    g = applyDeshadow(px[o + 1] as number, illum[i] as number, gain);
+    b = applyDeshadow(px[o + 2] as number, illum[i] as number, gain);
   }
   out[i * 3] = Math.min(255, Math.max(0, Math.round(r)));
   out[i * 3 + 1] = Math.min(255, Math.max(0, Math.round(g)));
@@ -225,3 +226,64 @@ sidecar.albedo = {
 };
 writeFileSync(ORTHO_SIDECAR, JSON.stringify(sidecar, null, 2));
 console.log("updated ortho.json with albedo report");
+
+// --- persist the illumination field for 20-build-ortho-tiles.ts (T1-c) ---
+// Encoding RG 8+8, same convention as the heightmap (03): the field is
+// smooth by construction (5 m MDT, no finer content), so 16 bits are
+// plenty and sharp round-trips them exactly (a 1-channel u16 buffer gets
+// degraded to sRGB uchar by sharp — verified, do NOT "simplify" this to
+// grey16). Same BBOX framing as the working grid: row r ↔
+// y = maxy − ((r+0.5)/H)·(maxy−miny), col c ↔ x = minx + ((c+0.5)/W)·(maxx−minx).
+// v = round((illum−min)/(max−min)·65535); R = v>>8; G = v&255; B = 0.
+// meta.json is MERGED (read-modify-write like 20 does), never rewritten:
+// rewriting from scratch would wipe the tiles index (17 tile keys).
+{
+  let illumMin = Infinity;
+  let illumMax = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const v = illum[i] as number;
+    if (v < illumMin) illumMin = v;
+    if (v > illumMax) illumMax = v;
+  }
+  if (!(illumMax > illumMin)) throw new Error("12: degenerate illum field (max <= min)");
+  const span = illumMax - illumMin;
+  const rg = Buffer.alloc(n * 3);
+  for (let i = 0; i < n; i++) {
+    const v = Math.round((((illum[i] as number) - illumMin) / span) * 65535);
+    rg[i * 3] = v >> 8;
+    rg[i * 3 + 1] = v & 255;
+    rg[i * 3 + 2] = 0;
+  }
+  const ILLUM_FILE = "data/build/illum.png";
+  await sharp(rg, { raw: { width: W, height: H, channels: 3 } })
+    .png({ compressionLevel: 9, adaptiveFiltering: true, palette: false })
+    .toFile(ILLUM_FILE);
+  console.log(`saved: ${ILLUM_FILE} (range ${illumMin.toFixed(4)}…${illumMax.toFixed(4)})`);
+  if (!existsSync("data/build/albedo-mask.png")) throw new Error("12: albedo-mask.png missing");
+  const mosaicBytes = readFileSync(ORTHO_MOSAIC);
+  const mosaicHash = createHash("sha256").update(mosaicBytes).digest("hex").slice(0, 8);
+  const m12 = JSON.parse(readFileSync(META_FILE, "utf8")) as Record<string, unknown>;
+  m12.illumination = {
+    file: ILLUM_FILE,
+    width: W,
+    height: H,
+    bits: 16,
+    encoding: "v = round((illum-min)/(max-min)*65535); R = v>>8; G = v&255; B = 0",
+    min: illumMin,
+    max: illumMax,
+    gain,
+    mosaicHash,
+    mosaicFile: ORTHO_MOSAIC,
+    mask: { file: "data/build/albedo-mask.png", fraction: Number((darkCount / n).toFixed(4)) },
+  };
+  writeFileSync(META_FILE, JSON.stringify(m12, null, 2));
+  writeFileSync(META_PUBLIC_COPY, JSON.stringify(m12, null, 2));
+  console.log(`illumination: gain ${gain.toFixed(4)}, mosaic ${mosaicHash} (+ public copy)`);
+  // límite 2: meta.json debe conservar las 17 claves de teselas tras el merge
+  const tileKeys = Object.keys((m12.assets ?? {}) as Record<string, string>).filter(
+    (k) => k === "tiles-atlas" || k.startsWith("tile-c"),
+  );
+  if (tileKeys.length !== 17) {
+    throw new Error(`12: meta.json lost tile keys after merge (found ${tileKeys.length}, need 17)`);
+  }
+}
