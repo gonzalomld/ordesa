@@ -712,10 +712,11 @@ body {
   font-style: italic;
 }
 
-/* chips: mt 28px, pt 22px, border-top 1px --line, lh 2.2; li inline
-   10px 600 .14em uppercase; separador "·" gold con margin 0 10px.
-   3B-bis2: cada li nowrap (rompe SOLO la ficha que no quepa); el número
-   y su unidad van con &nbsp; desde el parser (G86: sin tokens <3). */
+/* chips: mt 28px, pt 22px, border-top 1px --line, lh 2.2; flex con wrap
+   entre fichas (sin join con espacios no había punto de ruptura y la fila
+   entera desbordaba cortada a la derecha); cada li nowrap + max-width 100%
+   (rompe SOLO la ficha que no quepa vía .allow-break desde fitChips); el
+   número y su unidad van con &nbsp; desde el parser (G86: sin tokens <3). */
 #panel.pcard .chips {
   list-style: none;
   margin-top: 28px;
@@ -723,6 +724,8 @@ body {
   border-top: 1px solid var(--line);
   line-height: 2.2;
   padding-left: 0;
+  display: flex;
+  flex-wrap: wrap;
 }
 
 #panel.pcard .chips li {
@@ -733,6 +736,8 @@ body {
   text-transform: uppercase;
   color: rgb(174 187 205 / 80%);
   white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 #panel.pcard .chips li.allow-break {
