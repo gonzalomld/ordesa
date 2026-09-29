@@ -16,7 +16,7 @@
   --gold-bright: #eacf9f;
   --gold-line: rgba(216, 183, 135, 0.32);
   --line: rgba(243, 246, 250, 0.1);
-  --disp: "Playfair Display", Georgia, serif;
+  --disp: "Space Grotesk", "Archivo", system-ui, sans-serif;
   --story: "Archivo", system-ui, sans-serif;
   --num: "Big Shoulders Display", "Archivo", system-ui, sans-serif;
   /* N3b: per-act scroll sections. scroll.ts writes --act-*-vh at boot
@@ -32,23 +32,23 @@
 }
 
 /* 3B-bis: fuentes abiertas autoalojadas en /fonts (woff2, swap).
-   NO son las de Everest: Playfair Display 600 + itálica 500 (título),
+   Título Space Grotesk 500/600 (sin itálica: sin contraste cursiva/redonda),
    Archivo 300 (cuerpo) / 600 (mayúsculas pequeñas), Big Shoulders 800
    (numeral fantasma). */
 @font-face {
-  font-family: "Playfair Display";
+  font-family: "Space Grotesk";
   font-style: normal;
-  font-weight: 600;
+  font-weight: 500;
   font-display: swap;
-  src: url("/fonts/playfair-600-latin.woff2") format("woff2");
+  src: url("/fonts/spacegrotesk-500-latin.woff2") format("woff2");
 }
 
 @font-face {
-  font-family: "Playfair Display";
-  font-style: italic;
-  font-weight: 500;
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 600;
   font-display: swap;
-  src: url("/fonts/playfair-500italic-latin.woff2") format("woff2");
+  src: url("/fonts/spacegrotesk-600-latin.woff2") format("woff2");
 }
 
 @font-face {
@@ -539,14 +539,15 @@ body {
   display: none;
 }
 
-/* h2: Playfair 600 · clamp(34px,3.9vw,46px) · lh 1.02 · .005em · pearl ·
-   balance · mb 12px · <em> itálica 500 gold-bright. <i> legacy igual. */
+/* h2: Space Grotesk 500 · clamp(34px,3.9vw,46px) · lh 1.02 · -.01em ·
+   pearl · balance · mb 12px · <em>/<i> sin itálica: mismo grotesk en
+   gold-bright (acento solo por color, sin contraste cursiva/redonda). */
 #panel.pcard h2 {
   font-family: var(--disp);
-  font-weight: 600;
+  font-weight: 500;
   font-size: clamp(34px, 3.9vw, 46px);
   line-height: 1.02;
-  letter-spacing: 0.005em;
+  letter-spacing: -0.01em;
   color: var(--pearl);
   text-wrap: balance;
   margin-bottom: 12px;
@@ -554,7 +555,7 @@ body {
 
 #panel.pcard h2 em,
 #panel.pcard h2 i {
-  font-style: italic;
+  font-style: normal;
   font-weight: 500;
   color: var(--gold-bright);
 }
@@ -711,10 +712,11 @@ body {
   font-style: italic;
 }
 
-/* chips: mt 28px, pt 22px, border-top 1px --line, lh 2.2; li inline
-   10px 600 .14em uppercase; separador "·" gold con margin 0 10px.
-   3B-bis2: cada li nowrap (rompe SOLO la ficha que no quepa); el número
-   y su unidad van con &nbsp; desde el parser (G86: sin tokens <3). */
+/* chips: mt 28px, pt 22px, border-top 1px --line, lh 2.2; flex con wrap
+   entre fichas (sin join con espacios no había punto de ruptura y la fila
+   entera desbordaba cortada a la derecha); cada li nowrap + max-width 100%
+   (rompe SOLO la ficha que no quepa vía .allow-break desde fitChips); el
+   número y su unidad van con &nbsp; desde el parser (G86: sin tokens <3). */
 #panel.pcard .chips {
   list-style: none;
   margin-top: 28px;
@@ -722,6 +724,8 @@ body {
   border-top: 1px solid var(--line);
   line-height: 2.2;
   padding-left: 0;
+  display: flex;
+  flex-wrap: wrap;
 }
 
 #panel.pcard .chips li {
@@ -732,6 +736,8 @@ body {
   text-transform: uppercase;
   color: rgb(174 187 205 / 80%);
   white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 #panel.pcard .chips li.allow-break {
@@ -1094,7 +1100,7 @@ html.intro-on .tele {
 }
 
 /* flotante (título sobre el 3D): OCULTO a petición del usuario (sep-2026).
-    Playfair 600 clamp(28px,3vw,40px), pearl con sombra; numeral fantasma
+    Space Grotesk 500 clamp(28px,3vw,40px), pearl con sombra; numeral fantasma
     Big Shoulders 800 240px op .08. 3B-bis2: a la derecha del panel sin
     número mágico (--panel-w del pcard real + 24 px de aire); plegado u
     oculto: clamp(24px,4vw,64px). El JS escribe left inline en cada
@@ -1121,7 +1127,7 @@ html.intro-on .tele {
 
 .flotante-t {
   font-family: var(--disp);
-  font-weight: 600;
+  font-weight: 500;
   font-size: clamp(28px, 3vw, 40px);
   color: var(--pearl);
   margin-top: -0.4em;
