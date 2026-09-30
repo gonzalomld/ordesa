@@ -3766,9 +3766,12 @@ if (uWallProbe > 0.5) {
     frames++;
     framesLive++;
     // Carga: primer frame pintado → la escena está entera (shaders compilados).
-    // Solo ahora se habilita la entrada; antes, el botón no responde.
+    // Solo ahora se habilita la entrada y se retira el velo: la imagen que se
+    // revela ES este frame del bucle (una sola pose, sin re-render que la
+    // recolóque). Antes, el botón no responde y la portada muestra el %.
     if (!gateEnabled) {
       gateEnabled = true;
+      gate.ready();
       gate.enable();
     }
     // P0/G20: late check (frame 60) — the terrain program compiles after
