@@ -7,6 +7,10 @@ export interface Sun {
   setSun(azimuthDeg: number, elevationDeg: number, extent: number): void;
 }
 
+// NOTA (§P14): createSun() NO lo importa nadie — la sombra viva de la pieza es
+// la que monta viewer.ts (sun.shadow.mapSize, ~línea 209). No se parametriza
+// aquí a propósito (código muerto no merece diff ni riesgo). Borrarlo, en una
+// limpieza aparte.
 export function createSun(scene: THREE.Scene): Sun {
   const light = new THREE.DirectionalLight(0xfff2e0, 2.6);
   light.castShadow = true;

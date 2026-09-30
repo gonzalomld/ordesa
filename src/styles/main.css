@@ -240,17 +240,25 @@ body {
 
 /* Carga: la portada no deja entrar hasta que la escena está entera. El avance
    tiene que VERSE: % en oro y etapa en faint, a plena opacidad. La misma
-   cadena sigue en .gate-sr (aria-live) para lectores de pantalla. */
+   cadena sigue en .gate-sr (aria-live) para lectores de pantalla. Va en
+   posición ABSOLUTA (fuera de la columna) para que retirarlo en enable() no
+   cambie la altura de la columna ni mueva el título al revelarse el cañón. */
 .gate-load {
+  position: absolute;
+  top: clamp(28px, 5vw, 72px);
+  right: clamp(28px, 5vw, 72px);
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: baseline;
   gap: 4px 10px;
-  margin-top: 20px;
+  max-width: min(70vw, 460px);
   font-family: var(--font-mono);
   font-size: 12px;
   letter-spacing: 0.24em;
   color: var(--faint);
+  text-align: right;
+  pointer-events: none;
 }
 
 .gate-load-pct {
@@ -1311,5 +1319,128 @@ html.intro-on .tele {
 @media (prefers-reduced-motion: reduce) {
   #flotante {
     transition: none;
+  }
+}
+
+/* §P14: aviso de pérdida de contexto WebGL. Barra baja y descartable, NUNCA
+   modal: tapar la pieza volvería a bloquear el gesto que estamos rescatando.
+   El texto de los actos sigue siendo legible por debajo. */
+.ctx-lost {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  background: rgb(8 10 13 / 88%);
+  border-top: 1px solid var(--gold-line);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold-bright);
+  backdrop-filter: blur(6px);
+}
+
+.ctx-lost-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ctx-lost-btn,
+.ctx-lost-close {
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  background: none;
+  color: inherit;
+}
+
+.ctx-lost-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--gold);
+  color: var(--gold-bright);
+}
+
+.ctx-lost-btn:focus-visible,
+.ctx-lost-close:focus-visible {
+  outline: 2px solid var(--gold-bright);
+  outline-offset: 2px;
+}
+
+.ctx-lost-close {
+  padding: 6px 4px;
+  border: none;
+  color: var(--faint);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* §P14: pista de arrastre en móvil. Aparece al inicio de la senda y se retira
+   al primer scroll real. `pointer-events: none` es obligatorio: la pista NUNCA
+   debe comerse el gesto que está invitando a hacer. Sutil y elegante: mono,
+   tracking amplio, chevron dorado con un flotado lento. */
+.scroll-hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+  z-index: 19;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  opacity: 0;
+  transform: translate(-50%, 10px);
+  transition: opacity 800ms ease, transform 800ms ease;
+  pointer-events: none;
+}
+
+.scroll-hint-on {
+  opacity: 0.78;
+  transform: translate(-50%, 0);
+}
+
+.scroll-hint-text {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.scroll-hint-arrow {
+  width: 18px;
+  height: 11px;
+  color: var(--gold-bright);
+  animation: scroll-hint-float 2.6s ease-in-out infinite;
+}
+
+@keyframes scroll-hint-float {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+
+  50% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scroll-hint {
+    transition: opacity 800ms ease;
+  }
+
+  .scroll-hint-arrow {
+    animation: none;
+    opacity: 0.85;
   }
 }
