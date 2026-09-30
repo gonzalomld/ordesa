@@ -1274,6 +1274,29 @@ if (uWallProbe > 0.5) {
   })();
   let introActive = false;
   let introStarted = false;
+  // P11 "Umbral": while the gate stands, the loop parks the camera on
+  // introSample(0, introTarget) every frame — the same write the intro
+  // block does, with t=0 fixed. What shows behind the transparent gate IS
+  // frame 0 of the flight, so the click starts the clock with no cut.
+  // Armed only when the intro will actually run (introOn already excludes
+  // ?cam=/?orbit=1/?s=/?act=/debug/reduced-motion: under those the rig —
+  // or the orbit override — owns the pose, never the sequence).
+  let introArmed = introOn;
+  // P12: la portada SE QUEDA SOLA. En cuanto el estado existe (mismo punto
+  // en que introArmed empieza a parquear la cámara), la interfaz de la pieza
+  // se apaga con la maquinaria de §P9 — intro-on (panel + tele, CSS) y
+  // setIntroHidden (etiquetas, inline) — y no vuelve hasta introFinish().
+  // Sin clase nueva, sin reglas duplicadas: el gate ES la fase previa del
+  // vuelo. La bandera es módulo (no depende del import diferido): también
+  // cubre panel/tele montados ANTES de que exista el rig, y las etiquetas
+  // quedan cubiertas porque su opacidad 0 vive en liveRts en cuanto se
+  // construyen (buildLabels corre con el flag ya puesto).
+  // introBegin() ya no enciende nada; el clic solo arranca el reloj y por
+  // eso no hay hueco en el que .tele reaparezca.
+  if (introArmed) {
+    document.documentElement.classList.add("intro-on");
+    setIntroHidden(true);
+  }
   // Accumulated, per-frame-CLAMPED clock (P7): the sequence never loses time
   // to a stall. introStartMs is gone on purpose — an absolute clock let one
   // slow frame (the gate's first render compiles shaders) swallow the dive.
@@ -1284,6 +1307,7 @@ if (uWallProbe > 0.5) {
     enabled: introOn,
     reduced: reducedMotionIntro,
     active: false,
+    armed: introArmed,
     done: false,
     skipped: false,
     durationS: INTRO_DURATION_S,
@@ -1325,6 +1349,8 @@ if (uWallProbe > 0.5) {
   function introFinish(): void {
     if (!introActive) return;
     introActive = false;
+    introArmed = false;
+    introDiag.armed = false;
     introDiag.active = false;
     introDiag.done = true;
     introDiag.t = INTRO_DURATION_S;
@@ -1348,16 +1374,16 @@ if (uWallProbe > 0.5) {
   }
   function introBegin(): void {
     introActive = true;
+    introArmed = false;
+    introDiag.armed = false;
     introStarted = false;
     introElapsedS = 0;
     introDiag.active = true;
     introDiag.done = false;
     introDiag.t = 0;
-    // Panel + telemetry out of the way from the first frame; the peaks and
-    // the Pradera labels and the beams stay (they are part of the landscape).
-    document.documentElement.classList.add("intro-on");
-    // §P9-B: las etiquetas TAMBIÉN se van (eran HUD durante el vuelo).
-    setIntroHidden(true);
+    // P12: la interfaz ya está fuera desde que la portada se montó (intro-on
+    // + setIntroHidden junto a introArmed, arriba); el clic solo arranca el
+    // reloj — ni un frame con .tele de vuelta. Solo se publica el estado.
     publishIntroUI();
     // Any gesture or key skips. Passive listeners: never block the gesture.
     window.addEventListener("pointerdown", introSkip, { passive: true });
@@ -2679,7 +2705,12 @@ if (uWallProbe > 0.5) {
       // The rail is sampled every frame (diag + sun target stay coherent);
       // during the intro the SEQUENCE directs the camera on top of it.
       rig.update(dt);
-      if (introActive) {
+      if (introArmed && !introActive) {
+        const sm0 = introSample(0, introTarget);
+        camera.position.set(sm0.pos[0], sm0.pos[1], sm0.pos[2]);
+        const q0 = quatYXZ(sm0.yaw, sm0.pitch);
+        camera.quaternion.set(q0[0], q0[1], q0[2], q0[3]);
+      } else if (introActive) {
         if (!introStarted) {
           // P1b: the clock starts on the FIRST RENDERED FRAME after the
           // click, never on the click — the shader-compile stall in between

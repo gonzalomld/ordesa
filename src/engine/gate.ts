@@ -1,6 +1,12 @@
-// gate.ts — D9: entry gate + real progress (70% bytes via meta sizes,
-// 30% build work with rAF yields) + AudioContext unlock. Never blocks the
-// network on the click; degrades with a concrete message on failure.
+// gate.ts — P11 "Umbral": entry gate over the live first frame of the
+// flight + real progress (70% bytes via meta sizes, 30% build work with
+// rAF yields) + AudioContext unlock. Never blocks the network on the click;
+// degrades with a concrete message on failure.
+//
+// The gate is transparent: the render loop parks the camera on
+// introSample(0) behind it (introArmed in viewer.ts), so the canyon visible
+// under the title IS frame 0 of the flight. .gate-veil covers the
+// not-yet-mounted scene and fades in ready(), not on click.
 export interface GateHooks {
   onEnter(silent: boolean): void;
 }
@@ -14,6 +20,39 @@ const STAGES = [
   "LEVANTANDO LA NIEBLA",
 ] as const;
 
+function routeJsonUrl(): string {
+  const m = (window as unknown as { __META?: { assets?: { route?: string } } }).__META;
+  return "/" + (m?.assets?.route ?? "assets/route.json");
+}
+
+/** Data line figures, read from route.json — never handwritten (P11). */
+async function loadGateData(line: HTMLElement): Promise<void> {
+  try {
+    const res = await fetch(routeJsonUrl());
+    if (!res.ok) return;
+    const j = (await res.json()) as {
+      lengthM: number;
+      totalClimbM: number;
+      z_mdt: number[];
+      offsetM?: number;
+    };
+    if (!Number.isFinite(j.lengthM) || !Number.isFinite(j.totalClimbM) || !Array.isArray(j.z_mdt)) return;
+    const km = (j.lengthM / 1000).toLocaleString("es-ES", {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    });
+    const climb = `+${Math.round(j.totalClimbM).toLocaleString("es-ES")} M`;
+    // Ground cota, same convention as progress.ts (st.z = drape − offset)
+    // and labels.json hitos (z_mdt − ROUTE_OFFSET_M): the drape floats 4 m
+    // over the terrain, the published cota is the ground under it.
+    const off = Number.isFinite(j.offsetM) ? (j.offsetM as number) : 4;
+    const maxZ = `${Math.round(Math.max(...j.z_mdt) - off).toLocaleString("es-ES")} M`;
+    line.textContent = `${km} KM · ${climb} · ${maxZ} · CINCO ACTOS`;
+  } catch {
+    /* without the figures the line stays empty — never a frozen literal */
+  }
+}
+
 export function buildGate(onEnter: (silent: boolean) => void): {
   el: HTMLElement;
   setProgress(frac: number, stage: number): void;
@@ -22,44 +61,91 @@ export function buildGate(onEnter: (silent: boolean) => void): {
 } {
   const el = document.createElement("div");
   el.className = "gate";
-  el.innerHTML = "";
+
+  // Opaque cover while the scene is not mounted yet; fades in ready().
+  const veil = document.createElement("div");
+  veil.className = "gate-veil";
+  veil.setAttribute("aria-hidden", "true");
+
+  const col = document.createElement("div");
+  col.className = "gate-col";
+
   const kicker = document.createElement("div");
   kicker.className = "gate-kicker";
   kicker.textContent = "PARQUE NACIONAL DE ORDESA Y MONTE PERDIDO";
+  // Two nodes, not a string: the <em> carries the first line.
   const title = document.createElement("h1");
   title.className = "gate-title";
-  title.textContent = "La senda de los cazadores";
-  const sub = document.createElement("div");
-  sub.className = "gate-sub";
-  sub.textContent = "Un recorrido 3D por el cañón del Arazas";
+  const titleA = document.createElement("em");
+  titleA.className = "gate-title-a";
+  titleA.textContent = "La senda de";
+  const titleB = document.createElement("span");
+  titleB.className = "gate-title-b";
+  titleB.textContent = "los cazadores";
+  title.append(titleA, titleB);
+  const data = document.createElement("div");
+  data.className = "gate-data";
+  data.setAttribute("aria-hidden", "true");
+
+  const action = document.createElement("div");
+  action.className = "gate-action";
   const btn = document.createElement("button");
   btn.className = "gate-btn";
   btn.type = "button";
-  btn.textContent = "COMENZAR EL ASCENSO";
   btn.disabled = true;
-  const sound = document.createElement("div");
-  sound.className = "gate-sound";
-  sound.textContent = "SE DISFRUTA MEJOR CON SONIDO";
-  const prog = document.createElement("div");
-  prog.className = "gate-prog";
-  const bar = document.createElement("div");
-  bar.className = "gate-bar";
-  const fill = document.createElement("div");
-  fill.className = "gate-fill";
-  const msg = document.createElement("div");
-  msg.className = "gate-msg";
-  msg.textContent = STAGES[0];
-  const pct = document.createElement("div");
-  pct.className = "gate-pct";
-  pct.textContent = "0 %";
-  bar.appendChild(fill);
-  prog.append(bar, pct);
+  const btnL = document.createElement("span");
+  btnL.className = "gate-btn-l";
+  btnL.textContent = "Comenzar el ascenso";
+  const btnI = document.createElement("span");
+  btnI.className = "gate-btn-i";
+  btnI.setAttribute("aria-hidden", "true");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 12 14");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M1 1 L11 7 L1 13 Z");
+  svg.appendChild(path);
+  btnI.appendChild(svg);
+  btn.append(btnL, btnI);
+  // Visible network errors live next to the button (screen-reader alert).
+  const err = document.createElement("div");
+  err.className = "gate-err";
+  err.setAttribute("role", "alert");
+  err.hidden = true;
+  const soundline = document.createElement("div");
+  soundline.className = "gate-soundline";
+  const soundNote = document.createElement("span");
+  soundNote.className = "gate-soundnote";
+  soundNote.textContent = "SE DISFRUTA MEJOR CON SONIDO · ";
   const silent = document.createElement("button");
   silent.className = "gate-silent";
   silent.type = "button";
   silent.textContent = "entrar en silencio";
-  el.append(kicker, title, sub, btn, sound, prog, msg, silent);
+  soundline.append(soundNote, silent);
+  action.append(btn, soundline);
+
+  col.append(kicker, title, data, action, err);
+
+  // 1 px load edge at the viewport bottom; same setProgress as before.
+  const prog = document.createElement("div");
+  prog.className = "gate-prog";
+  prog.setAttribute("aria-hidden", "true");
+  const bar = document.createElement("div");
+  bar.className = "gate-bar";
+  const fill = document.createElement("div");
+  fill.className = "gate-fill";
+  bar.appendChild(fill);
+  prog.appendChild(bar);
+
+  // % + stage stay in the DOM for screen readers, out of sight.
+  const sr = document.createElement("div");
+  sr.className = "gate-sr";
+  sr.setAttribute("aria-live", "polite");
+  sr.textContent = `0 % · ${STAGES[0]}`;
+
+  el.append(veil, col, prog, sr);
   document.body.appendChild(el);
+
+  void loadGateData(data);
 
   let audio: AudioContext | null = null;
   function unlock(): AudioContext | null {
@@ -81,6 +167,9 @@ export function buildGate(onEnter: (silent: boolean) => void): {
     if (entered) return;
     entered = true;
     unlock();
+    // Normally already 0 since ready(); an instant click may still find the
+    // veil up — it leaves with the same transition, never a black cut.
+    veil.style.opacity = "0";
     el.classList.add("gate-open");
     window.setTimeout(() => el.remove(), 900);
     onEnter(sil);
@@ -88,25 +177,28 @@ export function buildGate(onEnter: (silent: boolean) => void): {
   btn.addEventListener("click", () => enter(false));
   silent.addEventListener("click", () => enter(true));
 
-  let lastPct = "";
+  let lastSr = "";
   return {
     el,
     setProgress(frac, stage) {
-      const p = `${Math.round(Math.min(1, Math.max(0, frac)) * 100)} %`;
-      if (p !== lastPct) {
-        lastPct = p;
-        pct.textContent = p;
-        fill.style.transform = `scaleX(${Math.min(1, Math.max(0, frac))})`;
-      }
+      const c = Math.min(1, Math.max(0, frac));
+      fill.style.transform = `scaleX(${c})`;
       const s = STAGES[Math.min(STAGES.length - 1, stage)] as string;
-      if (msg.textContent !== s) msg.textContent = s;
+      const t = `${Math.round(c * 100)} % · ${s}`;
+      if (t !== lastSr) {
+        lastSr = t;
+        sr.textContent = t;
+      }
     },
     ready() {
+      // The reveal IS the cover: title first on black, canyon under it.
+      veil.style.opacity = "0";
       btn.disabled = false;
       btn.focus({ preventScroll: true });
     },
     fail(m) {
-      msg.textContent = m;
+      err.textContent = m;
+      err.hidden = false;
       btn.disabled = false;
     },
   };

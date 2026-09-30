@@ -151,19 +151,19 @@ body {
   pointer-events: none;
 }
 
-/* --- entry gate (D9) --- */
+/* --- entry gate (P11 "Umbral"): transparent cover over frame 0 of the
+   flight. Two gradients darken just enough to read the text; .gate-veil
+   hides the not-yet-mounted scene and fades in ready(), not on click. --- */
 .gate {
   position: fixed;
   inset: 0;
   z-index: 40;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  background: #000;
-  text-align: center;
-  padding: 24px;
+  display: grid;
+  align-items: end;
+  padding: clamp(28px, 5vw, 72px);
+  background:
+    linear-gradient(to top, rgba(4, 7, 12, 0.92) 0%, rgba(4, 7, 12, 0.55) 26%, rgba(4, 7, 12, 0) 58%),
+    linear-gradient(to right, rgba(4, 7, 12, 0.6) 0%, rgba(4, 7, 12, 0) 45%);
   transition: opacity 0.8s ease;
 }
 
@@ -172,35 +172,135 @@ body {
   pointer-events: none;
 }
 
+.gate-veil {
+  position: absolute;
+  inset: 0;
+  background: #05070f;
+  opacity: 1;
+  transition: opacity 900ms ease;
+  pointer-events: none;
+}
+
+/* P12: una sola columna abajo a la izquierda: kicker, título, datos,
+   botón (+ sonido a su derecha), error. La línea de sonido baja a su
+   propia fila bajo 700 px. */
+.gate-col {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  max-width: 100%;
+}
+
 .gate-kicker {
   font-family: var(--font-mono);
   font-size: 11px;
-  letter-spacing: 0.35em;
-  opacity: 0.6;
+  letter-spacing: 0.26em;
+  color: var(--faint);
+  margin-bottom: 18px;
 }
 
+/* Tipografía actual de la pieza (Space Grotesk vía --disp): sin itálica
+   sintética — el acento es solo por color, como los h2 de los actos
+   (#panel.pcard h2 em { font-style:normal; gold-bright }). El primer nodo
+   sigue siendo <em> (dos nodos, no una cadena), pero no fuerza cursiva. */
 .gate-title {
-  font-size: clamp(34px, 6vw, 72px);
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-family: var(--disp);
+  font-size: clamp(40px, 8.2vw, 104px);
+  line-height: 0.98;
+  letter-spacing: -0.01em;
 }
 
-.gate-sub {
-  font-size: 14px;
-  opacity: 0.7;
+.gate-title-a {
+  display: block;
+  font-style: normal;
+  font-weight: 500;
+  color: var(--pearl);
+}
+
+.gate-title-b {
+  display: block;
+  font-weight: 600;
+  color: var(--gold-bright);
+}
+
+.gate-data {
+  margin-top: 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.gate-data:empty {
+  display: none;
+}
+
+/* Fila de acción: botón + aviso de sonido a su derecha (≥40 px). */
+.gate-action {
+  margin-top: 26px;
+  display: flex;
+  align-items: center;
+  gap: 40px;
 }
 
 .gate-btn {
-  margin-top: 10px;
-  padding: 12px 34px;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  letter-spacing: 0.25em;
-  color: #000;
-  background: var(--color-paper);
-  border: none;
-  border-radius: 999px;
+  display: inline-flex;
+  align-items: stretch;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(216, 183, 135, 0.45);
+  background: rgba(4, 7, 12, 0.55);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
   cursor: pointer;
+  transition: background 240ms ease, border-color 240ms ease, box-shadow 240ms ease;
+}
+
+.gate-btn:not(:disabled):hover,
+.gate-btn:focus-visible {
+  flex-direction: row-reverse;
+  background: rgba(4, 7, 12, 0.86);
+  border-color: var(--gold);
+  box-shadow: 0 9px 28px rgba(0, 0, 0, 0.45);
+}
+
+.gate-btn:not(:disabled):hover .gate-btn-i,
+.gate-btn:focus-visible .gate-btn-i {
+  background: var(--gold);
+}
+
+.gate-btn-l {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  font-size: clamp(12px, 1.05vw, 17px);
+  letter-spacing: 0.24em;
+  color: var(--pearl);
+  display: flex;
+  align-items: center;
+  padding: clamp(11px, 0.9vw, 16px) clamp(16px, 1.5vw, 27px);
+  white-space: nowrap;
+}
+
+.gate-btn-i {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: clamp(34px, 2.7vw, 48px);
+  border-radius: 7px;
+  background: var(--gold-bright);
+  transition: background 240ms ease;
+}
+
+.gate-btn-i svg {
+  width: 12px;
+  height: 14px;
+}
+
+.gate-btn-i svg path {
+  fill: #04070c;
 }
 
 .gate-btn:disabled {
@@ -208,59 +308,97 @@ body {
   cursor: wait;
 }
 
-.gate-btn:focus-visible,
+.gate-btn:focus-visible {
+  outline: 2px solid var(--gold-bright);
+  outline-offset: 3px;
+}
+
 .gate-silent:focus-visible {
   outline: 2px solid #fff;
   outline-offset: 3px;
 }
 
-.gate-sound {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.3em;
-  opacity: 0.55;
-}
-
-.gate-prog {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: min(420px, 80vw);
-}
-
-.gate-bar {
-  flex: 1;
-  height: 2px;
-  background: rgb(244 241 234 / 20%);
-  overflow: hidden;
-}
-
-.gate-fill {
-  height: 100%;
-  background: var(--color-paper);
-  transform: scaleX(0);
-  transform-origin: left;
-}
-
-.gate-pct,
-.gate-msg {
+.gate-err {
+  margin-top: 16px;
   font-family: var(--font-mono);
   font-size: 11px;
-  letter-spacing: 0.25em;
+  letter-spacing: 0.12em;
+  color: var(--gold-bright);
+  max-width: 32ch;
 }
 
-.gate-msg {
-  opacity: 0.65;
+.gate-err[hidden] {
+  display: none;
+}
+
+.gate-soundline {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  color: var(--faint);
+  line-height: 2;
+}
+
+.gate-soundnote {
+  color: var(--faint);
 }
 
 .gate-silent {
   background: none;
   border: none;
-  color: var(--color-paper);
-  font-size: 12px;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  color: var(--faint);
   text-decoration: underline;
+  text-underline-offset: 3px;
   cursor: pointer;
-  opacity: 0.7;
+}
+
+/* 1 px load edge at the viewport bottom; same setProgress as before. */
+.gate-prog {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+}
+
+.gate-bar {
+  height: 100%;
+  background: rgba(243, 246, 250, 0.14);
+  overflow: hidden;
+}
+
+.gate-fill {
+  height: 100%;
+  background: var(--gold);
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+/* % + stage: out of sight, still in the DOM for screen readers. */
+.gate-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+@media (max-width: 700px) {
+  .gate-action {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gate-btn,
+  .gate-btn-i {
+    transition: none;
+  }
 }
 
 /* --- telemetry bar (D6): 7 cols --- */

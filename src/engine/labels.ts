@@ -45,6 +45,10 @@ export function buildLabels(
     .map((def) => {
       const el = document.createElement("div");
       el.className = def.tipo === "cumbre" ? "lbl lbl-peak" : "lbl lbl-hito";
+      // P12: si la portada está en pantalla, la etiqueta nace ya oculta —
+      // con el flag puesto (viewer lo enciende junto a introArmed, antes de
+      // que exista el rig) ningún updateLabels previo la deja a opacity 1.
+      if (introHidden) el.style.opacity = "0";
       const nm = document.createElement("span");
       nm.className = "lbl-name";
       nm.textContent = def.nombre as string;
@@ -63,7 +67,7 @@ export function buildLabels(
         hasBeam: def.tipo === "hito",
         lastX: -1,
         lastY: -1,
-        lastOpacity: "",
+        lastOpacity: introHidden ? "0" : "",
         lastHidden: false,
         occluded: false,
       };

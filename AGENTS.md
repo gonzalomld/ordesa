@@ -22,6 +22,7 @@
 - Quality gate: model max must read ≈3347 m ±3 (Monte Perdido, official 3348). If it drifts, georeferencing broke.
 - Content: Spanish (Spain) UI/text; code + commits in English, small commits. No placeholder data, no invented figures/dates — every fact needs a source in `content/sources.md`; leave visible gaps. IGN services failing = stop and report, never swap sources silently.
 - Licences (footer + README): elevation + ortho © IGN/CNIG (CC BY 4.0 compatible); track = own GPX (or © OSM contributors, ODbL if fallback).
+- Hitos de labels.json: pradera/cota-maxima/cola-caballo los DERIVA `scripts/14-build-labels-camera.ts` desde route.json (max-z sample − ROUTE_OFFSET_M para la z, NN a REF_POINTS para la XY). labels.json versionado es la foto; si la portada (lee route.json en vivo) y la etiqueta difieren >1 m, regenerar 14 (necesita dem.tif local) o alinear la z a mano al entero max(z_mdt)−offsetM.
 
 ## Senda de los Cazadores — phase 3A rules
 
