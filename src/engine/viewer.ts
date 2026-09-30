@@ -1479,6 +1479,31 @@ if (uWallProbe > 0.5) {
   }
   gate.setProgress(0.68, 1);
   gate.ready();
+  // El velo se retira, pero hasta aquí nadie ha pintado el lienzo principal
+  // (el bucle arranca al final de todo): la portada "revelaba" un negro. Se
+  // pinta UNA vez el fotograma 0 — la misma pose que parquea el bucle — para
+  // que el cañón aparezca mientras termina la cola. Bajo ?cam=/?orbit=/?s=
+  // manda el override y no se toca la cámara.
+  if (introArmed) {
+    const sm0 = introSample(0, introTarget);
+    camera.position.set(sm0.pos[0], sm0.pos[1], sm0.pos[2]);
+    const q0 = quatYXZ(sm0.yaw, sm0.pitch);
+    camera.quaternion.set(q0[0], q0[1], q0[2], q0[3]);
+  }
+  if (introOn || reducedMotionIntro) {
+    // El sol y su sombra siguen al objetivo del raíl (misma escritura que el
+    // bucle): sin esto el fotograma 0 saldría con la sombra centrada en el
+    // origen. applyLighting ya dejó sunDirV con el azimut/altura de la hora.
+    const tgt0 = rig.getTarget();
+    sun.target.position.set(tgt0[0], tgt0[1], tgt0[2]);
+    sun.target.updateMatrixWorld();
+    sun.position.set(
+      tgt0[0] + sunDirV.x * SHADOW_LIGHT_DIST_M,
+      tgt0[1] + sunDirV.y * SHADOW_LIGHT_DIST_M,
+      tgt0[2] + sunDirV.z * SHADOW_LIGHT_DIST_M,
+    );
+    renderer.render(scene, camera);
+  }
   skyCap?.refresh();
   await nextFrame();
 
@@ -1752,6 +1777,11 @@ if (uWallProbe > 0.5) {
     // Apagados: etiquetas al suelo (mismo anclaje que antes de §3).
     for (const rt of labelRts) releaseBeam(rt);
   }
+  // Carga: la cola de la carga (haces, sondas, telemetría) es síncrona y larga.
+  // Se anota el avance real y se cede un frame para que la portada lo pinte
+  // antes de bloquear el hilo con el montaje final.
+  gate.setProgress(0.9, 5);
+  await nextFrame();
   // T1-cierre (?debug=tilediff): lector de 16 pares (R = luma camino TESELA,
   // G = luma camino CORREDOR) por píxel del bloque. Proyecta cada centro de
   // tesela residente con la cámara viva y publica la tabla en
@@ -2690,6 +2720,10 @@ if (uWallProbe > 0.5) {
   // §4b FASE 3c-fix: frames rendered by the loop (checkGLPrograms needs
   // "after the first frame" — declared before it, bumped at loop end).
   let framesLive = 0;
+  // Carga: la portada no se abre hasta que el primer frame está PINTADO. Los
+  // shaders de nubes/haces/etiquetas compilan aquí, no en el clic: habilitar
+  // antes devolvía el tirón al visitante justo cuando pulsaba.
+  let gateEnabled = false;
   let prevMs = -1;
   renderer.setAnimationLoop(() => {
     tickFrame(); // S3: real rAF-delta frame clock
@@ -3703,6 +3737,12 @@ if (uWallProbe > 0.5) {
     }
     frames++;
     framesLive++;
+    // Carga: primer frame pintado → la escena está entera (shaders compilados).
+    // Solo ahora se habilita la entrada; antes, el botón no responde.
+    if (!gateEnabled) {
+      gateEnabled = true;
+      gate.enable();
+    }
     // P0/G20: late check (frame 60) — the terrain program compiles after
     // first render on the ?s= path, so frame 8 would false-positive on the
     // neutral 1x1 probe still in flight.

@@ -238,6 +238,37 @@ body {
   display: none;
 }
 
+/* Carga: la portada no deja entrar hasta que la escena está entera. El avance
+   tiene que VERSE: % en oro y etapa en faint, a plena opacidad. La misma
+   cadena sigue en .gate-sr (aria-live) para lectores de pantalla. */
+.gate-load {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin-top: 20px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.24em;
+  color: var(--faint);
+}
+
+.gate-load-pct {
+  color: var(--gold-bright);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 4ch;
+  text-align: right;
+}
+
+.gate-load-stage {
+  color: var(--faint);
+}
+
+.gate-load[hidden] {
+  display: none;
+}
+
 /* Fila de acción: botón + aviso de sonido a su derecha (≥40 px). */
 .gate-action {
   margin-top: 26px;
@@ -353,6 +384,11 @@ body {
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: pointer;
+}
+
+.gate-silent:disabled {
+  opacity: 0.35;
+  cursor: wait;
 }
 
 /* 1 px load edge at the viewport bottom; same setProgress as before. */

@@ -57,6 +57,7 @@ export function buildGate(onEnter: (silent: boolean) => void): {
   el: HTMLElement;
   setProgress(frac: number, stage: number): void;
   ready(): void;
+  enable(): void;
   fail(msg: string): void;
 } {
   const el = document.createElement("div");
@@ -89,6 +90,18 @@ export function buildGate(onEnter: (silent: boolean) => void): {
 
   const action = document.createElement("div");
   action.className = "gate-action";
+  // Visible load line: the entry is blocked until the scene is whole, so the
+  // visitor must SEE the progress. %.stage it mirrors in .gate-sr for AT.
+  const load = document.createElement("div");
+  load.className = "gate-load";
+  load.setAttribute("aria-hidden", "true");
+  const loadPct = document.createElement("span");
+  loadPct.className = "gate-load-pct";
+  loadPct.textContent = "0 %";
+  const loadStage = document.createElement("span");
+  loadStage.className = "gate-load-stage";
+  loadStage.textContent = STAGES[0];
+  load.append(loadPct, loadStage);
   const btn = document.createElement("button");
   btn.className = "gate-btn";
   btn.type = "button";
@@ -120,10 +133,11 @@ export function buildGate(onEnter: (silent: boolean) => void): {
   silent.className = "gate-silent";
   silent.type = "button";
   silent.textContent = "entrar en silencio";
+  silent.disabled = true;
   soundline.append(soundNote, silent);
   action.append(btn, soundline);
 
-  col.append(kicker, title, data, action, err);
+  col.append(kicker, title, data, load, action, err);
 
   // 1 px load edge at the viewport bottom; same setProgress as before.
   const prog = document.createElement("div");
@@ -163,8 +177,9 @@ export function buildGate(onEnter: (silent: boolean) => void): {
   void audio;
 
   let entered = false;
+  let enabled = false;
   function enter(sil: boolean): void {
-    if (entered) return;
+    if (entered || !enabled) return;
     entered = true;
     unlock();
     // Normally already 0 since ready(); an instant click may still find the
@@ -184,22 +199,39 @@ export function buildGate(onEnter: (silent: boolean) => void): {
       const c = Math.min(1, Math.max(0, frac));
       fill.style.transform = `scaleX(${c})`;
       const s = STAGES[Math.min(STAGES.length - 1, stage)] as string;
-      const t = `${Math.round(c * 100)} % · ${s}`;
+      const pct = `${Math.round(c * 100)} %`;
+      const t = `${pct} · ${s}`;
       if (t !== lastSr) {
         lastSr = t;
         sr.textContent = t;
+        loadPct.textContent = pct;
+        loadStage.textContent = s;
       }
     },
     ready() {
-      // The reveal IS the cover: title first on black, canyon under it.
+      // El velo se retira: el título se lee sobre el cañón mientras termina
+      // la carga. NO habilita el botón — eso es enable(), cuando la escena
+      // está entera (primer frame pintado). Ver viewer.ts.
       veil.style.opacity = "0";
+    },
+    enable() {
+      if (enabled) return;
+      enabled = true;
+      // La barra de carga se retira: solo queda la acción.
+      load.hidden = true;
       btn.disabled = false;
+      silent.disabled = false;
       btn.focus({ preventScroll: true });
     },
     fail(m) {
+      load.hidden = true;
       err.textContent = m;
       err.hidden = false;
+      // Un error de red no puede dejar la portada muda: el botón vuelve a
+      // responder para que el visitante pueda intentarlo igualmente.
+      enabled = true;
       btn.disabled = false;
+      silent.disabled = false;
     },
   };
 }
