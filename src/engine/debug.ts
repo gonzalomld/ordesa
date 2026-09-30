@@ -31,6 +31,11 @@ export interface Metrics {
   dpr: number;
   lod: number;
   texLevel: string;
+  /** §P14: "phone" | "desktop" (deviceTier). */
+  tier: string;
+  /** §P14: fotogramas renderizados por el bucle (distingue "va lento" de
+   * "no pinta nada"). */
+  frames: number;
   time: string;
   cam: string;
   // Phase 3A journey magnitudes (?debug=1 readable, no console needed).
@@ -235,6 +240,8 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     dpr: Math.min(window.devicePixelRatio, 2),
     lod: 2,
     texLevel: "",
+    tier: "",
+    frames: 0,
     time: "",
     cam: "",
     // G14: frozen shape — progress.update() mutates the live object, so the
@@ -290,7 +297,7 @@ export function mountDebug(): { metrics: Metrics; el: HTMLElement | null } {
     const s =
       `frame ${metrics.msFrame.toFixed(1)} ms (${metrics.fps.toFixed(0)} fps) · js terr ${metrics.jsTerrain.toFixed(1)} · js etiq ${metrics.jsLabels.toFixed(1)}\n` +
       `gpu terr ${gpu(metrics.msTerrain)} · nub ${gpu(metrics.msClouds)} · cobertura ${coverTxt}\n` +
-      `calls ${metrics.drawCalls} · tris ${(metrics.triangles / 1e6).toFixed(2)}M · pases ${metrics.passes} · maxTex ${metrics.maxTextureSize} · dpr ${metrics.dpr} · lod ${metrics.lod} · ${metrics.texLevel}\n` +
+      `calls ${metrics.drawCalls} · tris ${(metrics.triangles / 1e6).toFixed(2)}M · pases ${metrics.passes} · maxTex ${metrics.maxTextureSize} · dpr ${metrics.dpr} · lod ${metrics.lod} · ${metrics.texLevel} · tier ${metrics.tier} · fot ${metrics.frames}\n` +
       `${metrics.time} · cam ${metrics.cam} · cenit ${metrics.zenithHex} · niebla10km ${metrics.fog10km.toFixed(2)}\n` +
       // A10: yaw printed mod 360 (readable); unwrapped in parens for debug.
       // G16: corrH (damped H correction) rides along — nodding reads here.

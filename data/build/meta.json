@@ -24,17 +24,17 @@
   "encoding": "v = round(elev - minZ); R = v >> 8; G = v & 255; B = 0",
   "generatedAt": "2026-09-13T22:02:36.303Z",
   "corridorBbox": {
-    "minx": 740819,
+    "minx": 740810,
     "miny": 4723818,
-    "maxx": 747644,
-    "maxy": 4726749
+    "maxx": 747656,
+    "maxy": 4726740
   },
-  "corridorMetersPerPx": 0.833,
+  "corridorMetersPerPx": 0.836,
   "assets": {
     "terrain-base": "assets/terrain-base.2abf76f0.webp",
     "terrain-base-2048": "assets/terrain-base-2048.6a55be20.webp",
-    "terrain-corridor": "assets/terrain-corridor.c6bf0d5c.webp",
-    "terrain-corridor-4k": "assets/terrain-corridor-4k.b4f0bdc9.webp",
+    "terrain-corridor": "assets/terrain-corridor.f88058de.webp",
+    "terrain-corridor-4k": "assets/terrain-corridor-4k.a8c332ee.webp",
     "terrain-normal": "assets/terrain-normal.6c5606c0.webp",
     "clouds-atlas": "assets/clouds-atlas.0239d658.webp",
     "clouds-atlas-png": "assets/clouds-atlas.0239d658.png",
@@ -59,13 +59,14 @@
     "tile-c3-r12": "assets/tiles/tile-c3-r12.d4f98469.webp",
     "tile-c4-r12": "assets/tiles/tile-c4-r12.430df397.webp",
     "tile-c5-r12": "assets/tiles/tile-c5-r12.017fb0d2.webp",
-    "tile-c6-r12": "assets/tiles/tile-c6-r12.2e661b23.webp"
+    "tile-c6-r12": "assets/tiles/tile-c6-r12.2e661b23.webp",
+    "terrain-normal-2048": "assets/terrain-normal-2048.4809ff0b.webp"
   },
   "sizesBytes": {
     "terrain-base": 1660108,
     "terrain-base-2048": 715108,
-    "terrain-corridor": 1408628,
-    "terrain-corridor-4k": 593288,
+    "terrain-corridor": 1404734,
+    "terrain-corridor-4k": 591082,
     "terrain-normal": 528006,
     "clouds-atlas": 64076,
     "clouds-atlas-png": 321969,
@@ -90,7 +91,8 @@
     "tile-c3-r12": 35760,
     "tile-c4-r12": 36500,
     "tile-c5-r12": 34334,
-    "tile-c6-r12": 33296
+    "tile-c6-r12": 33296,
+    "terrain-normal-2048": 107494
   },
   "corridorMarginM": 400,
   "flight": {

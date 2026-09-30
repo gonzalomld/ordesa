@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Senda de los Cazadores — Ordesa 3D</title>
+    <meta
+      name="description"
+      content="Scroll narrativo en 3D sobre la Senda de los Cazadores, Parque Nacional de Ordesa y Monte Perdido."
+    />
+    <!-- Fuentes autoalojadas del primer pintado: sin preload, el título de la
+         portada cambia de métricas al cargar el woff2 (swap) y "recoloca". -->
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/spacegrotesk-500-latin.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/spacegrotesk-600-latin.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/archivo-300-600-latin.woff2" crossorigin />
+    <link rel="stylesheet" href="/src/styles/main.css" />
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <aside id="panel" aria-live="polite" aria-label="Acto en curso"></aside>
+    <div id="flotante" aria-hidden="true"></div>
+    <div id="scroll-track" aria-hidden="true">
+      <section data-act="0" id="acto-0"></section>
+      <section data-act="I" id="acto-I"></section>
+      <section data-act="II" id="acto-II"></section>
+      <section data-act="III" id="acto-III"></section>
+      <section data-act="IV" id="acto-IV"></section>
+      <section data-act="V" id="acto-V"></section>
+      <section data-act="EPI" id="acto-EPI"></section>
+    </div>
+    <div id="text-layers"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

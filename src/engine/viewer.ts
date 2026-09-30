@@ -66,7 +66,7 @@ import {
   GROUND_SPAN,
 } from "../narrative/choreography.ts";
 import { initProgress, type ProgressHandle } from "../narrative/progress.ts";
-import { createScroll, type ScrollHandle } from "../narrative/scroll.ts";
+import { createScroll, type LockState, type ScrollHandle } from "../narrative/scroll.ts";
 import { buildBeams, type BeamDef, type Beams } from "./beams.ts";
 import { buildClouds } from "./clouds.ts";
 import { cloudAmount, mistAmount } from "./sun.ts";
@@ -106,6 +106,7 @@ import {
   sampleGrid,
   worldFromMeta,
 } from "./terrain.ts";
+import { pickTextures, type TexLevel } from "./tex-budget.ts";
 
 function el(tag: string, cls: string, text = ""): HTMLElement {
   const e = document.createElement(tag);
@@ -123,6 +124,47 @@ function glowNear(s: number, milestoneS: number): number {
 function smoothstepJS(e0: number, e1: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
   return t * t * (3 - 2 * t);
+}
+
+/** §P14: tipo de aparato por CAPACIDAD percibida, no por maxTextureSize.
+ * El presupuesto de textura se elige con esto (un iPhone declara 8192/16384
+ * pero no tiene memoria). navigator.deviceMemory NO se usa: en iOS no existe.
+ * ?tier=phone|desktop fuerza el resultado para poder probarlo. */
+function deviceTier(): "phone" | "desktop" {
+  const q = new URLSearchParams(location.search).get("tier");
+  if (q === "phone" || q === "desktop") return q;
+  const coarse = matchMedia("(pointer: coarse)").matches;
+  const noHover = matchMedia("(hover: none)").matches;
+  const small = Math.min(screen.width, screen.height) <= 500;
+  return (coarse && noHover) || small ? "phone" : "desktop";
+}
+
+// §P14: posición de scroll guardada para sobrevivir a la muerte de la pestaña
+// (que en iPhone NO dispara webglcontextlost). Fracción, nunca píxeles: la
+// altura del documento depende de vh/altura de ventana. sessionStorage, no
+// localStorage: vive por pestaña y muere al cerrarla. Todo en try/catch.
+const SCROLL_STORE_KEY = "ordesa.scroll.fraction";
+const SCROLL_STORE_TS = "ordesa.scroll.savedAt";
+const SCROLL_STORE_FRESH_MS = 30 * 60 * 1000;
+function readSavedFraction(): number | null {
+  try {
+    const raw = sessionStorage.getItem(SCROLL_STORE_KEY);
+    const ts = Number(sessionStorage.getItem(SCROLL_STORE_TS));
+    if (raw === null || !Number.isFinite(ts)) return null;
+    if (Date.now() - ts > SCROLL_STORE_FRESH_MS) return null;
+    const f = Number(raw);
+    return Number.isFinite(f) && f > 0 && f < 1 ? f : null;
+  } catch {
+    return null;
+  }
+}
+function clearSavedFraction(): void {
+  try {
+    sessionStorage.removeItem(SCROLL_STORE_KEY);
+    sessionStorage.removeItem(SCROLL_STORE_TS);
+  } catch {
+    /* almacenamiento bloqueado: nada que limpiar */
+  }
 }
 
 async function fetchWithProgress(
@@ -167,6 +209,68 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   // G = effective weight, B = rock loaded) — ends the blind tuning.
   metrics.steep = boot.steep;
 
+  // §P14: estado del candado/contexto declarado ANTES de crear el renderer y
+  // de enganchar webglcontextlost. Si el contexto muere durante la carga, el
+  // manejador no debe tocar variables en TDZ (el fallo real del iPhone es que
+  // la pestaña se queda bloqueada para siempre).
+  const tier = deviceTier();
+  metrics.tier = tier;
+  let scroll: ScrollHandle | null = null;
+  let gateEntered = false;
+  let rigReady = false;
+  let introStateReady = false;
+  let introFinished = false;
+  let introWatchdogTimer: number | undefined;
+  const savedFraction = readSavedFraction();
+  let lastSavedFraction = savedFraction ?? -1;
+  function currentScrollFraction(): number {
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    return max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
+  }
+  function saveScrollFraction(force = false): void {
+    const f = currentScrollFraction();
+    if (!force && Math.abs(f - lastSavedFraction) < 0.002) return;
+    lastSavedFraction = f;
+    try {
+      sessionStorage.setItem(SCROLL_STORE_KEY, String(f));
+      sessionStorage.setItem(SCROLL_STORE_TS, String(Date.now()));
+    } catch {
+      /* almacenamiento bloqueado: la pieza arranca igual */
+    }
+  }
+  // Aviso honesto, en barra baja y descartable (nunca modal: tapar la pieza
+  // volvería a bloquear el gesto, que es el problema que arreglamos).
+  let ctxLostBar: HTMLElement | null = null;
+  function showContextLostBar(restored: boolean): void {
+    if (!ctxLostBar) {
+      const bar = document.createElement("div");
+      bar.id = "ctx-lost";
+      bar.className = "ctx-lost";
+      bar.setAttribute("role", "status");
+      const txt = document.createElement("span");
+      txt.className = "ctx-lost-text";
+      const reload = document.createElement("button");
+      reload.className = "ctx-lost-btn";
+      reload.type = "button";
+      reload.textContent = "recargar";
+      reload.addEventListener("click", () => location.reload());
+      const close = document.createElement("button");
+      close.className = "ctx-lost-close";
+      close.type = "button";
+      close.textContent = "cerrar";
+      close.addEventListener("click", () => {
+        bar.style.display = "none";
+      });
+      bar.append(txt, reload, close);
+      document.body.appendChild(bar);
+      ctxLostBar = bar;
+    }
+    const txt = ctxLostBar.querySelector(".ctx-lost-text") as HTMLElement;
+    txt.textContent = restored
+      ? "ya se puede recargar"
+      : "el navegador se ha quedado sin memoria de vídeo; el paisaje ha dejado de dibujarse";
+  }
+
   const meta = await loadMeta();
   const sizes = meta.sizesBytes ?? {};
   const world = worldFromMeta(meta);
@@ -174,7 +278,9 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
 
   // --- renderer / scene / camera ---
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const dpr = Math.min(window.devicePixelRatio, tier === "phone" ? 1.5 : 2);
+  renderer.setPixelRatio(dpr);
+  metrics.dpr = dpr;
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -185,6 +291,28 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   (window as unknown as { __renderer?: THREE.WebGLRenderer }).__renderer = renderer;
   const maxTex = renderer.capabilities.maxTextureSize;
   metrics.maxTextureSize = maxTex;
+
+  // §P14: pérdida de contexto WebGL. Hoy la pieza se quedaba congelada y
+  // muda. preventDefault() es obligatorio o el navegador nunca emitirá
+  // webglcontextrestored. Paramos el bucle: dibujar contra un contexto perdido
+  // solo gasta CPU/memoria en el aparato que acaba de quedarse sin ella. La
+  // PÁGINA sigue viva y desplazable: los actos se pueden leer aunque el 3D
+  // haya muerto.
+  canvas.addEventListener("webglcontextlost", (event) => {
+    event.preventDefault();
+    renderer.setAnimationLoop(null);
+    // Antes de retirar la portada no hay nada que leer: no soltamos el candado.
+    if (!gateEntered) {
+      showContextLostBar(false);
+      return;
+    }
+    saveScrollFraction(true);
+    introFinish("contextlost");
+    showContextLostBar(false);
+  });
+  // No se reconstruye nada a medias (render targets, programas parcheados y
+  // uniformes compartidos no vuelven fiables): solo cambia el aviso.
+  canvas.addEventListener("webglcontextrestored", () => showContextLostBar(true));
 
   const scene = new THREE.Scene();
   // S2.1: while the Sky dome paints, background stays a dark fallback only.
@@ -206,7 +334,8 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
     sun.shadow.camera.bottom = -s;
     sun.shadow.camera.near = SHADOW_NEAR_M;
     sun.shadow.camera.far = SHADOW_FAR_M;
-    sun.shadow.mapSize.set(2048, 2048);
+    const shadowSize = tier === "phone" ? 1024 : 2048;
+    sun.shadow.mapSize.set(shadowSize, shadowSize);
     sun.shadow.bias = -0.0002;
     sun.shadow.normalBias = 3;
     // §4b FASE 5 paso d: la sombra PROYECTADA nunca más oscura que la
@@ -492,7 +621,7 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   }
   // B7: while the gate stands, body scroll is locked and lenis is stopped.
   // On enter: scrollTo(0,0), lenis.start(), unlock — in that order.
-  let scroll: ScrollHandle | null = null;
+  // (la declaración de `scroll` vive arriba, §P14: antes de webglcontextlost)
   // P1: the gate hands off to the intro when it plays; otherwise it goes
   // straight in (reduced motion / pose-override flags). The holder is filled
   // once the rig + intro exist, below.
@@ -504,8 +633,30 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   const gate = buildGate((silent) => {
     if (!silent) audio = createAudioEngine();
     window.scrollTo(0, 0);
+    gateEntered = true;
     if (onGateEnter) onGateEnter();
-    else scroll?.start();
+    else {
+      scroll?.start();
+      // §P14: sin intro (reduced-motion / flags) la restauración también
+      // aplica; si no, esa rama nunca devolvía al visitante a su sitio.
+      if (savedFraction !== null) {
+        scroll?.jumpToFraction(savedFraction);
+        clearSavedFraction();
+      }
+    }
+  });
+  // §P14: seguro de posición de scroll. En iPhone el sistema mata la pestaña
+  // sin disparar ningún evento de WebGL: por eso no basta guardar en
+  // webglcontextlost. Cada 2 s como mucho (solo si la fracción cambió), al
+  // ocultar la pestaña y al salir de la página.
+  window.setInterval(() => {
+    if (gateEntered) saveScrollFraction(false);
+  }, 2000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && gateEntered) saveScrollFraction(true);
+  });
+  window.addEventListener("pagehide", () => {
+    if (gateEntered) saveScrollFraction(true);
   });
   window.addEventListener("pagehide", () => audio?.dispose());
   // Higiene: el vigilante se pausa con la pestaña oculta — acusar a la
@@ -547,15 +698,29 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   const group = new THREE.Group();
   scene.add(group);
 
-  // texture level by maxTextureSize (base never above 4096 → mobile-safe)
-  const texLevel = maxTex >= 8192 ? "full" : maxTex >= 4096 ? "mid" : "lite";
+  // §P14: cuatro niveles. maxTex < 4096 GANA al tier: es un límite DURO de
+  // capacidad (no puede subir un 4096), no una preferencia de presupuesto —
+  // ni un ?tier=phone forzado debe saltárselo. "phone" es el eje contrario:
+  // puede con 4096, pero no tiene memoria.
+  const texLevel: TexLevel =
+    maxTex < 4096 ? "lite" : tier === "phone" ? "phone" : maxTex >= 8192 ? "full" : "mid";
   metrics.texLevel = texLevel;
-  const baseAsset = texLevel === "lite" ? meta.assets?.["terrain-base-2048"] : meta.assets?.["terrain-base"];
-  const corrAsset = texLevel === "full"
+  // §P14: la selección de texturas vive en tex-budget.ts (fuente única que la
+  // puerta de presupuesto importa: imposible que se separen).
+  const texSet = new Set(pickTextures(texLevel));
+  const hasKey = (k: string): boolean => texSet.has(k);
+  const baseAsset = meta.assets?.[hasKey("terrain-base-2048") ? "terrain-base-2048" : "terrain-base"];
+  const corrAsset = hasKey("terrain-corridor")
     ? meta.assets?.["terrain-corridor"]
-    : texLevel === "mid"
+    : hasKey("terrain-corridor-4k")
       ? meta.assets?.["terrain-corridor-4k"]
       : undefined;
+  const normalAsset = hasKey("terrain-normal-2048")
+    ? meta.assets?.["terrain-normal-2048"]
+    : hasKey("terrain-normal")
+      ? meta.assets?.["terrain-normal"]
+      : undefined;
+  const rockOn = hasKey("rock-albedo") && hasKey("rock-normal");
 
   // --- load order: meta → heightmap(+mesh) → base → route → corridor/normal → clouds ---
   gate.setProgress(0.02, 0);
@@ -1244,6 +1409,7 @@ if (uWallProbe > 0.5) {
     metrics.warn = progress.getState().divergenceWarn as string;
   }
   const rig = createRig({ camera, route, world, elev, meta, progress });
+  rigReady = true;
   // C1: orientation plumbing — baked yaw/pitch the rig flies (diag mirror,
   // read-only; the deferred ?wheeltest=1 probe logs it per frame).
   scroll.setOriProbe(() => ({ yaw: rig.getDiag().yaw, pitch: rig.getDiag().pitch }));
@@ -1353,15 +1519,23 @@ if (uWallProbe > 0.5) {
     window.removeEventListener("touchstart", introSkip);
     window.removeEventListener("keydown", introSkip);
   }
-  function introFinish(): void {
-    if (!introActive) return;
-    introActive = false;
-    introArmed = false;
-    introDiag.armed = false;
-    introDiag.active = false;
-    introDiag.done = true;
-    introDiag.t = INTRO_DURATION_S;
-    introRemoveSkips();
+  // §P14: introFinish es la ÚNICA puerta de liberación del candado. La llaman
+  // las tres rutas (fin natural/gesto → "intro", vigilante de reloj de pared →
+  // "watchdog", pérdida de contexto → "contextlost"). Es idempotente y
+  // defensiva: puede invocarse antes de que existan rig o estado de intro.
+  function introFinish(by: LockState["releasedBy"] = "intro"): void {
+    if (introFinished) return;
+    introFinished = true;
+    window.clearTimeout(introWatchdogTimer);
+    if (introStateReady) {
+      introActive = false;
+      introArmed = false;
+      introDiag.armed = false;
+      introDiag.active = false;
+      introDiag.done = true;
+      introDiag.t = INTRO_DURATION_S;
+      introRemoveSkips();
+    }
     // UI (panel + telemetry) fades back in on landing — 400 ms via CSS.
     document.documentElement.classList.remove("intro-on");
     // §P9-B: las etiquetas vuelven con el mismo fundido que el panel
@@ -1369,9 +1543,12 @@ if (uWallProbe > 0.5) {
     setIntroHidden(false);
     // Land EXACTLY on the rail pose at s=0 (no intermediate point, no
     // accelerated version) and hand over the scroll.
-    const p = rig.poseAt(0);
-    camera.position.set(p.pos[0], p.pos[1], p.pos[2]);
-    camera.quaternion.set(p.quaternion[0], p.quaternion[1], p.quaternion[2], p.quaternion[3]);
+    if (rigReady) {
+      const p = rig.poseAt(0);
+      camera.position.set(p.pos[0], p.pos[1], p.pos[2]);
+      camera.quaternion.set(p.quaternion[0], p.quaternion[1], p.quaternion[2], p.quaternion[3]);
+    }
+    scroll?.markReleasedBy(by);
     scroll?.start();
   }
   function introSkip(): void {
@@ -1380,6 +1557,17 @@ if (uWallProbe > 0.5) {
     introFinish();
   }
   function introBegin(): void {
+    // §P14: si hay posición guardada, la restauración SUSTITUYE a la intro.
+    // El relevo de la portada ya hizo scrollTo(0,0) y la intro aterriza en
+    // s=0: restaurar antes o durante se pisaría. Y a quien se le murió el móvil
+    // en el km 12 no le apetece volver a ver siete segundos de dron.
+    if (savedFraction !== null) {
+      introDiag.skipped = true;
+      introFinish("intro");
+      scroll?.jumpToFraction(savedFraction);
+      clearSavedFraction();
+      return;
+    }
     introActive = true;
     introArmed = false;
     introDiag.armed = false;
@@ -1392,12 +1580,23 @@ if (uWallProbe > 0.5) {
     // + setIntroHidden junto a introArmed, arriba); el clic solo arranca el
     // reloj — ni un frame con .tele de vuelta. Solo se publica el estado.
     publishIntroUI();
+    // §P14: vigilante de RELOJ DE PARED. El fin natural depende de que haya
+    // fotogramas; sin fotogramas (contexto muerto, pestaña estrangulada) la
+    // intro nunca terminaría y el scroll quedaría bloqueado para siempre. El
+    // reloj no depende de rAF. Si salta a menudo en móviles reales, la
+    // respuesta es acortar/quitar la intro en "phone", NUNCA alargar esto.
+    introWatchdogTimer = window.setTimeout(
+      () => introFinish("watchdog"),
+      INTRO_DURATION_S * 1000 + 5000,
+    );
     // Any gesture or key skips. Passive listeners: never block the gesture.
     window.addEventListener("pointerdown", introSkip, { passive: true });
     window.addEventListener("wheel", introSkip, { passive: true });
     window.addEventListener("touchstart", introSkip, { passive: true });
     window.addEventListener("keydown", introSkip);
   }
+  // §P14: a partir de aquí introFinish ya puede tocar el estado de la intro.
+  introStateReady = true;
   if (introOn) onGateEnter = introBegin;
 
   // --- 3B panel de los actos (Everest reference): text shell, the JSON
@@ -1610,8 +1809,10 @@ if (uWallProbe > 0.5) {
   if (boot.tiles || boot.tilediff || boot.rawtile || boot.rawcorr) {
     void armTiles();
   }
-  if (meta.assets?.["terrain-normal"] && texLevel !== "lite") {
-    void armTex(meta.assets["terrain-normal"], false, (t) => {
+  // §P14: "phone" carga terrain-normal-2048 (sin normales el terreno se ve de
+  // plástico); "lite" no carga ninguno. normalAsset lo decide tex-budget.
+  if (normalAsset) {
+    void armTex(normalAsset, false, (t) => {
       normalUniform.value = t;
       hasNormal.value = 1;
     });
@@ -1635,7 +1836,7 @@ if (uWallProbe > 0.5) {
     neutralN.needsUpdate = true;
     rockNormalUniform.value = neutralN;
   }
-  if (meta.assets?.["rock-albedo"] && meta.assets?.["rock-normal"] && texLevel !== "lite") {
+  if (rockOn && meta.assets?.["rock-albedo"] && meta.assets?.["rock-normal"]) {
     const rockA = meta.assets["rock-albedo"];
     const rockN = meta.assets["rock-normal"];
     // Las DOS reales se suben por el mismo camino que corridor/normal:
@@ -3770,6 +3971,9 @@ if (uWallProbe > 0.5) {
     }
     frames++;
     framesLive++;
+    // §P14: contador de fotogramas para que ?debug=1 distinga "va lento" de
+    // "no pinta nada".
+    metrics.frames = frames;
     // Carga: primer frame pintado → la escena está entera (shaders compilados).
     // Solo ahora se habilita la entrada y se retira el velo: la imagen que se
     // revela ES este frame del bucle (una sola pose, sin re-render que la

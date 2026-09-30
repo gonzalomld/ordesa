@@ -8,6 +8,8 @@
 //   terrain-corridor-4k.<hash>.webp 4096-wide fallback
 //   terrain-normal.<hash>.webp    4096 px, high-pass luminance normals,
 //                                 slope-modulated, from the DESHADOWED albedo
+//   terrain-normal-2048.<hash>.webp  2048×1551, media 2×2 de VECTORES del
+//                                 normales 4096 (renormalizado), para "phone"
 //   clouds-atlas.<hash>.webp      1024², 4 noise puffs
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -171,6 +173,40 @@ for (let r = 0; r < NH; r++) {
   if (r % 600 === 0) console.log(`  normal row ${r}/${NH}`);
 }
 
+// --- terrain-normal-2048: reducción 2×2 en el ESPACIO DE VECTORES ---
+// Nunca reescalar los bytes ya codificados: promediar (R,G,B) sin
+// renormalizar deja el mapa sistemáticamente más plano y rompe la coherencia
+// de Z con X e Y. Se decodifica (X,Y *2-1; Z directa /255 — esta codificación
+// NO usa *0.5+0.5 en Z), se promedia el bloque 2×2, se renormaliza y se
+// recodifica igual. 4096×3102 → 2048×1551, factor exacto 2 en ambos ejes.
+const NW2 = NW >> 1;
+const NH2 = NH >> 1;
+const norm2 = Buffer.alloc(NW2 * NH2 * 3);
+for (let r = 0; r < NH2; r++) {
+  for (let c = 0; c < NW2; c++) {
+    let ax = 0;
+    let ay = 0;
+    let az = 0;
+    for (let dr = 0; dr < 2; dr++) {
+      for (let dc = 0; dc < 2; dc++) {
+        const j = ((r * 2 + dr) * NW + (c * 2 + dc)) * 3;
+        ax += ((normBuf[j] as number) / 255) * 2 - 1;
+        ay += ((normBuf[j + 1] as number) / 255) * 2 - 1;
+        az += (normBuf[j + 2] as number) / 255;
+      }
+    }
+    ax /= 4;
+    ay /= 4;
+    az /= 4;
+    const inv = 1 / Math.max(1e-6, Math.hypot(ax, ay, az));
+    const k = (r * NW2 + c) * 3;
+    norm2[k] = Math.round((ax * inv * 0.5 + 0.5) * 255);
+    norm2[k + 1] = Math.round((ay * inv * 0.5 + 0.5) * 255);
+    norm2[k + 2] = Math.round(az * inv * 255);
+  }
+}
+console.log(`normal-2048: ${NW2}x${NH2} (2×2 vector average)`);
+
 // --- emit assets ---
 async function emitWebp(
   input: Buffer | { raw: { width: number; height: number; channels: number }; data: Buffer },
@@ -246,6 +282,12 @@ async function save(kind: string, buf: Buffer): Promise<void> {
     .webp({ quality: 90 })
     .toBuffer();
   await save("terrain-normal", nb);
+  // Misma calidad que el 4096: "phone" es el que lo carga y no puede notarse
+  // un escalón de calidad respecto al escritorio.
+  const nb2 = await sharp(norm2, { raw: { width: NW2, height: NH2, channels: 3 } })
+    .webp({ quality: 90 })
+    .toBuffer();
+  await save("terrain-normal-2048", nb2);
 }
 // cloud atlas: §4b FASE 4b — procedural cumulus (make-cloud-atlas.ts).
 // Library import so `npm run data` reproduces the same bytes; the

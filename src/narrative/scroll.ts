@@ -42,6 +42,16 @@ export interface ScrollProbeState {
   total: number;
 }
 
+/** §P14: sonda del candado de scroll. La escriben los DOS únicos sitios que
+ * tocan el candado (stop/start) más markReleasedBy (viewer). Permite medir en
+ * navegador que ninguna ruta deja el candado echado: con WEBGL_lose_context
+ * durante la intro, stopped→false y releasedBy→"contextlost". */
+export interface LockState {
+  stopped: boolean;
+  sinceMs: number;
+  releasedBy: null | "intro" | "watchdog" | "contextlost";
+}
+
 export interface CamXYZ {
   x: number;
   y: number;
@@ -81,6 +91,12 @@ export interface ScrollHandle {
   setActBounds(b: number[] | null): void;
   stop(): void;
   start(): void;
+  /** §P14: marca la ruta que soltó el candado (viewer, dentro de introFinish). */
+  markReleasedBy(by: LockState["releasedBy"]): void;
+  /** §P14: salto inmediato a una fracción del recorrido. Usa Lenis para no
+   * desincronizarse de su posición interna; si no hay Lenis (reduced-motion)
+   * cae a window.scrollTo — seguro precisamente porque no hay Lenis. */
+  jumpToFraction(f: number): void;
   dispose(): void;
   /** N3b: ?act= scroll target (top of the act section, px). Null = none. */
   actJumpTarget(act: string): number | null;
@@ -136,6 +152,10 @@ export function createScroll(): ScrollHandle {
   } catch {
     /* non-fatal */
   }
+  // §P14: el candado tiene una sola sonda. stopped/sinceMs los escriben
+  // stop()/start(); releasedBy lo escribe el viewer vía markReleasedBy.
+  const lock: LockState = { stopped: false, sinceMs: 0, releasedBy: null };
+  (window as unknown as { __lock?: LockState }).__lock = lock;
   const q = new URLSearchParams(location.search);
   const frozenS = parseSParam(q.get("s"));
   const actParam = parseActParam(q.get("act"));
@@ -387,10 +407,13 @@ export function createScroll(): ScrollHandle {
     stop(): void {
       lenis?.stop();
       document.body.style.overflow = "hidden";
+      lock.stopped = true;
+      lock.sinceMs = performance.now();
     },
     start(): void {
       document.body.style.overflow = "";
       lenis?.start();
+      lock.stopped = false;
       // C1: ?wheeltest=1&wheelstart=S seeks to S first (immediate, then the
       // notch run starts from there — never frozen, the run scrolls freely).
       if (wheeltest && wheelStart !== null && frozen === null && lenis) {
@@ -420,6 +443,20 @@ export function createScroll(): ScrollHandle {
           }
         }
       }
+    },
+    markReleasedBy(by: LockState["releasedBy"]): void {
+      lock.releasedBy = by;
+    },
+    jumpToFraction(f: number): void {
+      const clamped = Math.min(1, Math.max(0, f));
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      if (max <= 0) return;
+      const px = clamped * max;
+      // Con Lenis, saltar por debajo dejaría su posición interna desfasada y
+      // el siguiente fotograma tiraría de vuelta. Sin Lenis (reduced-motion)
+      // window.scrollTo es correcto: no hay estado interno que romper.
+      if (lenis) lenis.scrollTo(px, { immediate: true });
+      else window.scrollTo(0, px);
     },
     dispose(): void {
       if (probeOn) window.removeEventListener("wheel", onWheel);

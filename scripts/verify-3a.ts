@@ -8,6 +8,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CAM_RAIL_SAMPLES, CORRIDOR_HALF_M, EPI_PITCH, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G23_COVERAGE, G23_Y_MAX, G23_Y_MIN, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_MAX_DEG, G66_ACCEL_MAX_DEG, G66_PITCH_MAX_DEG, G66_QUAT_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, GROUND_DARK, GROUND_DESAT, GROUND_SPAN, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_ALONG_MAX, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROCK_CORRIDOR_K, ROCK_FAR_M, ROCK_MIX, ROCK_NEAR_M, ROCK_SCALE_A, ROCK_SCALE_B, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
 import { alongTrackRun, bakeCamRail, bisectSunset, followAt, quatDistDeg, quatYXZ, resolveAnchors, resolveFollowProfile, ropeHeadingDeg, trackAt, zRawAt } from "../src/narrative/anchors.ts";
 import { introSample, INTRO_DURATION_S, INTRO_START_ALT_M, INTRO_MIN_CLEARANCE_M, type IntroTarget } from "../src/narrative/intro.ts";
+import { pickTextures, assetWebPath, TEX_HEIGHTMAP } from "../src/engine/tex-budget.ts";
 import { findBridges } from "./lib/route-bridge.ts";
 import { resolveFollowSafety } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
@@ -39,6 +40,7 @@ const meta = JSON.parse(readFileSync("data/build/meta.json", "utf8")) as {
   originX: number;
   originY: number;
   bbox: { minx: number; miny: number; maxx: number; maxy: number };
+  assets?: Record<string, string>;
 };
 const r = {
   n: route.x.length,
@@ -2704,7 +2706,9 @@ function elevFull36(): Float32Array {
     const introSrc = readFileSync("src/narrative/intro.ts", "utf8");
     const viewerSrcP = readFileSync("src/engine/viewer.ts", "utf8");
     const introRaf = introSrc.includes("requestAnimationFrame");
-    const loops = (viewerSrcP.match(/setAnimationLoop/g) ?? []).length;
+    // §P14: setAnimationLoop(null) (parar el bucle al perder el contexto) NO es
+    // un segundo bucle; solo cuenta la REGISTRACIÓN de un callback.
+    const loops = (viewerSrcP.match(/setAnimationLoop\(\s*(?!null)/g) ?? []).length;
     gate("P5-single-raf", !introRaf && loops === 1,
       `intro sin rAF=${!introRaf} · setAnimationLoop en viewer=${loops} (need 1)`);
   }
@@ -2841,6 +2845,137 @@ function elevFull36(): Float32Array {
     const ok = zeroes && restores && guarded && exposes;
     gate("P9-captura-aislada", ok,
       `uGroundF a 0=${zeroes} · restaura=${restores} · en finally=${guarded} · __groundF.capF=0=${exposes} — medir __groundF en prod`);
+  }
+}
+
+// --- §P14 — que la pieza funcione en móvil ---------------------------------
+// Cuatro niveles de textura (tex-budget.ts, fuente única). El presupuesto se
+// mide sobre pickTextures("phone"), NO sobre "lite": "lite" es el rescate de un
+// aparato sin 4096, no la rama de móvil.
+{
+  const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
+  const debugSrc = readFileSync("src/engine/debug.ts", "utf8");
+  const scrollSrc = readFileSync("src/narrative/scroll.ts", "utf8");
+
+  // P14-presupuesto-movil: abre cada webp del set "phone" y suma w·h·4.
+  // Umbral 85 MB, no 120: hoy son ~72,5 MB, así que 120 no mordería (una
+  // textura 4096×3102 de +50 MB pasaría). La suma NO incluye mipmaps; el
+  // consumo real de GPU es ≈1,33× esta cifra.
+  {
+    const keys = pickTextures("phone");
+    const parts: string[] = [];
+    let totalMB = 0;
+    let missing = "";
+    for (const k of keys) {
+      const web = assetWebPath(k, meta);
+      const file = `public/${web}`;
+      if (!web || !existsSync(file)) {
+        missing = k;
+        break;
+      }
+      const m = await sharp(file).metadata();
+      const w = m.width ?? 0;
+      const h = m.height ?? 0;
+      const mb = (w * h * 4) / 1048576;
+      totalMB += mb;
+      parts.push(`${k} ${w}x${h} ${mb.toFixed(1)}MB`);
+    }
+    gate("P14-presupuesto-movil", missing === "" && totalMB < 85,
+      missing !== ""
+        ? `FALTA la textura ${missing} de pickTextures("phone") — regenerar con \`npm run data\``
+        : `${totalMB.toFixed(1)} MB (need <85) SIN mipmaps · real ≈${(totalMB * 1.33).toFixed(1)} MB · ${parts.join(" · ")}`);
+  }
+
+  // P14-presupuesto-lite: en "lite" NINGUNA textura de GPU pasa de 2048 en
+  // ninguna dimensión. Es el rescate de hardware sin 4096; meterle una 4096 la
+  // rompería en silencio. El heightmap queda fuera: no es textura de GPU (se
+  // decodifica a elevaciones, nunca se sube al GL).
+  {
+    const keys = pickTextures("lite").filter((k) => k !== TEX_HEIGHTMAP);
+    let over = "";
+    for (const k of keys) {
+      const web = assetWebPath(k, meta);
+      const file = `public/${web}`;
+      if (!web || !existsSync(file)) {
+        over = `${k} (ausente)`;
+        break;
+      }
+      const m = await sharp(file).metadata();
+      if ((m.width ?? 0) > 2048 || (m.height ?? 0) > 2048) over = `${k} ${m.width}x${m.height}`;
+    }
+    gate("P14-presupuesto-lite", over === "",
+      over === "" ? `"lite" (GPU) sin textura >2048: ${keys.join(", ")}` : `"lite" con textura >2048: ${over}`);
+  }
+
+  // P14-normal-lite: terrain-normal-2048 en meta.assets, fichero existente,
+  // devuelto por pickTextures("phone"), y vector medio ∈ [0,98, 1,02] con la
+  // codificación del proyecto (X,Y *2-1; Z directa /255). Detecta el reescalado
+  // en espacio de bytes (relieve desinflado).
+  {
+    const normalKey = "terrain-normal-2048";
+    const web = meta.assets?.[normalKey] ?? "";
+    const file = web ? `public/${web}` : "";
+    const inSet = pickTextures("phone").includes(normalKey);
+    let mean = -1;
+    if (file && existsSync(file)) {
+      const { data, info } = await sharp(file).raw().toBuffer({ resolveWithObject: true });
+      const ch = info.channels;
+      const n = info.width * info.height;
+      let sum = 0;
+      for (let i = 0; i < n; i++) {
+        const x = ((data[i * ch] as number) / 255) * 2 - 1;
+        const y = ((data[i * ch + 1] as number) / 255) * 2 - 1;
+        const z = (data[i * ch + 2] as number) / 255;
+        sum += Math.hypot(x, y, z);
+      }
+      mean = sum / n;
+    }
+    gate("P14-normal-lite", inSet && file !== "" && existsSync(file) && mean >= 0.98 && mean <= 1.02,
+      `en meta=${file !== ""} · en pickTextures("phone")=${inSet} · vector medio ${mean < 0 ? "n/a" : mean.toFixed(4)} (need [0.98,1.02])`);
+  }
+
+  // P14-nunca-bloqueada: la sonda __lock existe y las tres rutas de liberación
+  // llaman al MISMO introFinish. La comprobación de verdad es en navegador:
+  // con WEBGL_lose_context.loseContext() durante la intro, __lock.stopped→false,
+  // __lock.releasedBy→"contextlost", bucle parado, aviso visible y página viva.
+  {
+    const probe = scrollSrc.includes("__lock") && viewerSrc.includes("markReleasedBy");
+    const watchdog = viewerSrc.includes('introFinish("watchdog")') && viewerSrc.includes("INTRO_DURATION_S * 1000 + 5000");
+    const ctx = viewerSrc.includes('"webglcontextlost"') && viewerSrc.includes('introFinish("contextlost")');
+    const relSites = (viewerSrc.match(/introFinish\(/g) ?? []).length;
+    const stopCalls = (viewerSrc.match(/scroll\.stop\(\)/g) ?? []).length;
+    const startCalls =
+      (viewerSrc.match(/scroll\?\.start\(\)/g) ?? []).length + (viewerSrc.match(/scroll\.start\(\)/g) ?? []).length;
+    gate("P14-nunca-bloqueada", probe && watchdog && ctx && relSites >= 3 && stopCalls >= 1 && startCalls >= 2,
+      `__lock=${probe} · vigilante reloj-de-pared=${watchdog} · webglcontextlost→introFinish=${ctx} · rutas introFinish=${relSites} (need ≥3) · scroll.stop/start=${stopCalls}/${startCalls} — medir en navegador con WEBGL_lose_context`);
+  }
+
+  // P14-dpr: con tier "phone", setPixelRatio acotado a 1,5.
+  {
+    const ok = viewerSrc.includes('tier === "phone" ? 1.5 : 2') && viewerSrc.includes("setPixelRatio");
+    gate("P14-dpr", ok, `setPixelRatio acotado a 1,5 en phone: ${ok}`);
+  }
+
+  // P14-tier-visible: metrics lleva tier, texLevel, maxTextureSize y el contador
+  // de fotogramas, y ?debug=1 los pinta.
+  {
+    const fields = debugSrc.includes("tier:") && debugSrc.includes("frames:") && debugSrc.includes("texLevel:");
+    const hud = debugSrc.includes("metrics.tier") && debugSrc.includes("metrics.frames") && debugSrc.includes("maxTex");
+    const writes = viewerSrc.includes("metrics.tier = tier") && viewerSrc.includes("metrics.frames = frames");
+    gate("P14-tier-visible", fields && hud && writes,
+      `Metrics tier/frames/texLevel=${fields} · HUD tier/frames/maxTex=${hud} · viewer escribe tier/frames=${writes}`);
+  }
+
+  // P14-restore: la posición se guarda (visibilitychange + pagehide + periódica),
+  // se restaura saltando con Lenis (fallback window.scrollTo) y la restauración
+  // SUSTITUYE a la intro. Medición en navegador: con fracción guardada a mano,
+  // la intro no se reproduce y s queda a <0,01 de la guardada.
+  {
+    const saves = viewerSrc.includes('"visibilitychange"') && viewerSrc.includes('"pagehide"') && viewerSrc.includes("saveScrollFraction");
+    const restore = viewerSrc.includes("jumpToFraction") && scrollSrc.includes("jumpToFraction") && scrollSrc.includes("window.scrollTo");
+    const replaces = viewerSrc.includes("if (savedFraction !== null)") && viewerSrc.includes('introFinish("intro")');
+    gate("P14-restore", saves && restore && replaces,
+      `guardado periódico/hidden/pagehide=${saves} · salto Lenis+fallback=${restore} · sustituye a la intro=${replaces}`);
   }
 }
 
