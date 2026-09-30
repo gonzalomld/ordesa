@@ -101,9 +101,12 @@ export interface TeleCells {
   act: HTMLElement;
 }
 
-/** Write-if-changed driver. Call every frame; touches DOM only on change. */
+/** Write-if-changed driver. Call every frame; touches DOM only on change.
+ * `cells` puede ser PARTIAL: §P15 reusa este mismo driver para la barra de
+ * asomo móvil, que solo lleva altitud, km y acto. Las claves ausentes se
+ * ignoran. */
 export function driveTelemetry(
-  cells: TeleCells,
+  cells: Partial<TeleCells>,
   last: Record<string, string>,
   st: ProgressState,
   hourLabel: string,
@@ -119,7 +122,7 @@ export function driveTelemetry(
     sun: `${fmt1.format(sunElev)}°`,
     act: `ACTO ${["0", "I", "II", "III", "IV", "V"][t.act] ?? t.act} · ${t.actName.toUpperCase()}`,
   };
-  const map: Record<string, HTMLElement> = {
+  const map: Record<string, HTMLElement | undefined> = {
     alt: cells.alt,
     climb: cells.climb,
     km: cells.km,
@@ -129,9 +132,11 @@ export function driveTelemetry(
     act: cells.act,
   };
   for (const k of Object.keys(vals)) {
+    const el = map[k];
+    if (!el) continue;
     if (last[k] !== vals[k]) {
       last[k] = vals[k] as string;
-      (map[k] as HTMLElement).textContent = vals[k] as string;
+      el.textContent = vals[k] as string;
     }
   }
 }

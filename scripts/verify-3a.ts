@@ -2979,6 +2979,101 @@ function elevFull36(): Float32Array {
   }
 }
 
+// --- §P15 — el módulo de actos en móvil -----------------------------------
+// Por debajo de 900 px el panel deja de ocultarse y se convierte en hoja
+// inferior de tres alturas (asomo/media/completa). Contrato estático aquí;
+// los gestos se miden en navegador (P15-scroll-no-secuestrado).
+{
+  const css = readFileSync("src/styles/main.css", "utf8");
+  const panelSrc = readFileSync("src/narrative/panel.ts", "utf8");
+  const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
+
+  // P15-panel-movil-existe: a 390 px #panel NO tiene display:none y su altura
+  // de reposo (asomo) es 112 px, dentro de [96, 140]. La regla de ocultación
+  // se ha ido. Si fallara: un cañón 3D sin una sola palabra.
+  {
+    const oldHide = css.includes("#panel.pcard {\n    display: none;");
+    const sheetMedia = css.includes("@media (max-width: 899px) and (min-height: 501px)");
+    const sheetRule = css.includes("#panel.pcard.sheet");
+    const mPeek = css.match(/height:\s*calc\((\d+)px \+ env\(safe-area-inset-bottom/);
+    const peekPx = mPeek ? Number(mPeek[1]) : NaN;
+    const inRange = peekPx >= 96 && peekPx <= 140;
+    gate("P15-panel-movil-existe", !oldHide && sheetMedia && sheetRule && inRange,
+      `sin display:none=${!oldHide} · media hoja vertical=${sheetMedia} · regla .sheet=${sheetRule} · asomo ${inRange ? `${peekPx}px` : "?"} (need 96–140)`);
+  }
+
+  // P15-lienzo-visible: a 390×664 la hoja en asomo deja libre >=70 % del alto
+  // y en media >=40 %. Lee los números reales del CSS. Si fallara: la pieza
+  // sería un documento con una foto de fondo.
+  {
+    const vh = 664;
+    const mPeek = css.match(/height:\s*calc\((\d+)px \+ env\(safe-area-inset-bottom/);
+    const mHalf = css.match(/sheet-half\s*\{[^}]*calc\((\d+)vh/);
+    const peekPx = mPeek ? Number(mPeek[1]) : NaN;
+    const halfVh = mHalf ? Number(mHalf[1]) : NaN;
+    const freePeek = (vh - peekPx) / vh;
+    const freeHalf = 1 - halfVh / 100;
+    gate("P15-lienzo-visible", freePeek >= 0.7 && freeHalf >= 0.4,
+      `asomo ${(freePeek * 100).toFixed(0)}% libre (need >=70) · media ${(freeHalf * 100).toFixed(0)}% (need >=40) — ${peekPx}px / ${halfVh}vh @${vh}px`);
+  }
+
+  // P15-scroll-no-secuestrado: en asomo/media el gesto sobre el lienzo mueve el
+  // recorrido (la hoja no intercepta fuera de su superficie, pan-y); en
+  // completa la hoja pausa el recorrido por el MISMO candado de §P14 —emite
+  // panel:sheet, el viewer hace scroll.stop/start + markReleasedBy— nunca una
+  // vía nueva. Si fallara: o no avanza con el dedo, o no se puede leer el texto.
+  {
+    const emit = panelSrc.includes('"panel:sheet"') && panelSrc.includes('h === "full"');
+    const handle =
+      viewerSrc.includes('"panel:sheet"') &&
+      viewerSrc.includes("scroll.stop()") &&
+      viewerSrc.includes('markReleasedBy("panel")') &&
+      viewerSrc.includes("scroll.start()");
+    const gestures = css.includes("touch-action: pan-y") && css.includes("touch-action: none");
+    const contain = css.includes("overscroll-behavior: contain") && panelSrc.includes("sheet-bar");
+    gate("P15-scroll-no-secuestrado", emit && handle && gestures && contain,
+      `hoja emite panel:sheet=${emit} · viewer candado §P14=${handle} · touch-action pan-y/none=${gestures} · overscroll contain=${contain} — medir gestos táctiles en navegador`);
+  }
+
+  // P15-auto-una-vez: la subida automática ocurre como mucho una vez por acto,
+  // nunca llega a completa, y no se repite si la persona la bajó a mano. Si
+  // fallara: la hoja se abriría sola una y otra vez tapando el paisaje.
+  {
+    const ms600 = panelSrc.includes("AUTO_RAISE_MS = 600");
+    const once = panelSrc.includes("autoRaised") && panelSrc.includes("userLowered");
+    const neverFull =
+      !/scheduleAutoRaise[\s\S]{0,600}setSheetHeight\("full"\)/.test(panelSrc) &&
+      /scheduleAutoRaise[\s\S]{0,600}setSheetHeight\("half"\)/.test(panelSrc);
+    const respected = panelSrc.includes("userLowered.has(act)");
+    const reduced = panelSrc.includes("reduceMotion");
+    gate("P15-auto-una-vez", ms600 && once && neverFull && respected && reduced,
+      `600 ms=${ms600} · autoRaised/userLowered=${once} · nunca completa=${neverFull} · respeta bajada manual=${respected} · reduced-motion=${reduced}`);
+  }
+
+  // P15-sin-backdrop-movil: por debajo de 900 px #panel no declara
+  // backdrop-filter (el blur base de escritorio sigue, para G82). Si fallara:
+  // desenfoque a pantalla completa sobre WebGL en cada fotograma → problema §P14.
+  {
+    const mobIdx = css.indexOf("@media (max-width: 899px)");
+    const window900 = mobIdx >= 0 ? css.slice(mobIdx, mobIdx + 900) : "";
+    const none = window900.includes("backdrop-filter: none");
+    const desktopKeeps = css.includes("blur(10px) saturate(150%)");
+    gate("P15-sin-backdrop-movil", none && desktopKeeps,
+      `móvil sin backdrop-filter=${none} · escritorio conserva blur=${desktopKeeps}`);
+  }
+
+  // P15-telemetria-unica: por debajo de 900 px .tele se oculta y sus datos
+  // (altitud/km/acto) se pintan en la barra de asomo, con el mismo driver.
+  // Un solo elemento anclado abajo. Si fallara: dos barras apiladas.
+  {
+    const hides = /@media \(max-width: 899px\)[\s\S]{0,120}?\.tele\s*\{[^}]*display:\s*none/.test(css);
+    const cells = panelSrc.includes(".sheet-act") && panelSrc.includes(".sheet-alt") && panelSrc.includes(".sheet-km");
+    const wired = viewerSrc.includes("sheetTele") && viewerSrc.includes("driveTelemetry(sheetTele");
+    gate("P15-telemetria-unica", hides && cells && wired,
+      `tele oculta <900=${hides} · celdas en la barra de asomo=${cells} · mismo driver=${wired}`);
+  }
+}
+
 // --- R1 — puentear las vaguadas del perfil (05-build-route + lib/route-bridge) ---
 {
   interface RJ {

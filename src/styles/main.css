@@ -667,13 +667,24 @@ body {
   display: none;
 }
 
+/* §P15: por debajo de 900 px la telemetría se muda a la hoja de asomo (una
+   sola barra inferior). El panel YA NO se oculta: en vertical es una hoja
+   anclada abajo; en horizontal, una tarjeta lateral estrecha.
+   Y §P15-sin-backdrop: en móvil se quita el backdrop-filter (desenfoque a
+   pantalla completa sobre WebGL vivo = carísimo); degradado sólido. */
 @media (max-width: 899px) {
-  #panel.pcard {
+  .tele {
     display: none;
   }
 
   #flotante {
     display: none;
+  }
+
+  #panel.pcard {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: linear-gradient(to top, rgb(7 11 19 / 97%), rgb(13 19 32 / 93%));
   }
 }
 
@@ -1388,7 +1399,8 @@ html.intro-on .tele {
 .scroll-hint {
   position: fixed;
   left: 50%;
-  bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+  /* §P15: por encima de la hoja de asomo (112 px), no de la telemetría. */
+  bottom: calc(124px + env(safe-area-inset-bottom, 0px));
   z-index: 19;
   display: flex;
   flex-direction: column;
@@ -1442,5 +1454,196 @@ html.intro-on .tele {
   .scroll-hint-arrow {
     animation: none;
     opacity: 0.85;
+  }
+}
+
+/* ============================================================
+   §P15 — el módulo de actos en móvil
+   Por debajo de 900 px de ancho y por encima de 500 px de alto
+   (teléfono en vertical), #panel deja de ser tarjeta lateral y
+   pasa a HOJA anclada al borde inferior, con tres alturas fijas:
+   asomo 112 px · media 58 vh · completa 92 vh. El lienzo 3D nunca
+   se tapa entero. La barra de asomo es siempre visible y pulsable.
+   ============================================================ */
+
+/* La barra de la hoja no existe en escritorio. */
+.sheet-bar {
+  display: none;
+}
+
+@media (max-width: 899px) and (min-height: 501px) {
+  #panel.pcard.sheet {
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 0;
+    width: auto;
+    /* asomo = 112 px + safe-area */
+    height: calc(112px + env(safe-area-inset-bottom, 0px));
+    display: flex;
+    flex-direction: column;
+    border: none;
+    border-top: 1px solid rgba(243, 246, 250, 0.1);
+    border-radius: 18px 18px 0 0;
+    /* §P14: cero backdrop-filter en móvil (un desenfoque a pantalla completa
+       sobre WebGL vivo es carísimo). Degradado sólido equivalente. */
+    background: linear-gradient(to top, rgb(7 11 19 / 97%), rgb(13 19 32 / 93%));
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: 0 -24px 80px rgb(2 5 10 / 40%);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    overflow: hidden;
+    touch-action: pan-y;
+    transition: height 420ms cubic-bezier(0.19, 0.7, 0.22, 1);
+  }
+
+  #panel.pcard.sheet.sheet-half {
+    height: calc(58vh + env(safe-area-inset-bottom, 0px));
+  }
+
+  #panel.pcard.sheet.sheet-full {
+    height: calc(92vh + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* El plegado de escritorio (scale .045) no aplica: las alturas lo sustituyen. */
+  #panel.pcard.sheet:not(.panel-collapsed) {
+    transform: none;
+  }
+
+  #panel.pcard.sheet.panel-collapsed {
+    transform: none;
+    opacity: 1;
+  }
+
+  #panel.pcard.sheet .pclose {
+    display: none;
+  }
+
+  /* --- barra de asomo (siempre visible) --- */
+  #panel.pcard.sheet .sheet-bar {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: stretch;
+    /* el asomo ES la barra: en reposo el cuerpo queda a 0 */
+    min-height: 112px;
+    padding: 0 22px;
+    cursor: grab;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  #panel.pcard.sheet .sheet-bar:active {
+    cursor: grabbing;
+  }
+
+  /* tirador 44×4, redondeado, centrado, 12 px arriba */
+  #panel.pcard.sheet .sheet-grab {
+    display: block;
+    margin: 12px auto 8px;
+    padding: 5px 0;
+    width: 44px;
+    border: none;
+    background: none;
+    cursor: inherit;
+    touch-action: none;
+  }
+
+  #panel.pcard.sheet .sheet-grab:focus-visible {
+    outline: 2px solid var(--gold);
+    outline-offset: 3px;
+    border-radius: 6px;
+  }
+
+  #panel.pcard.sheet .sheet-grab-bar {
+    display: block;
+    width: 44px;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(243, 246, 250, 0.28);
+  }
+
+  #panel.pcard.sheet .sheet-act {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    color: var(--gold);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #panel.pcard.sheet .sheet-title {
+    margin-top: 3px;
+    font-family: var(--disp);
+    font-weight: 500;
+    font-size: 19px;
+    line-height: 1.15;
+    color: var(--pearl);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #panel.pcard.sheet .sheet-meta {
+    display: flex;
+    align-items: baseline;
+    margin-top: 5px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    color: var(--faint);
+    white-space: nowrap;
+    overflow: hidden;
+    font-variant-numeric: tabular-nums;
+  }
+
+  #panel.pcard.sheet .sheet-meta > span + span::before {
+    content: "·";
+    color: var(--gold);
+    margin: 0 7px;
+  }
+
+  #panel.pcard.sheet .sheet-cifras {
+    color: var(--silver);
+  }
+
+  #panel.pcard.sheet .sheet-cifras:empty {
+    display: none;
+  }
+
+  #panel.pcard.sheet .sheet-cifras:empty + .sheet-alt::before {
+    display: none;
+  }
+
+  /* El cuerpo: el eyebrow y el h2 ya viven en la barra de asomo. */
+  #panel.pcard.sheet .pstage.act > .eyebrow,
+  #panel.pcard.sheet .pstage.act > h2 {
+    display: none;
+  }
+
+  #panel.pcard.sheet .pscroll {
+    position: relative;
+    inset: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 6px 22px calc(22px + env(safe-area-inset-bottom, 0px));
+    touch-action: pan-y;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #panel.pcard.sheet {
+      transition: none;
+    }
+  }
+}
+
+/* Teléfono en horizontal (alto <= 500): no hay sitio para una hoja; vuelve a
+   la tarjeta lateral, más estrecha y plegable como en escritorio. */
+@media (max-width: 899px) and (max-height: 500px) {
+  #panel.pcard {
+    width: min(360px, 52vw);
   }
 }

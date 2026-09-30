@@ -1617,14 +1617,24 @@ if (uWallProbe > 0.5) {
   // carries the words. Mounted unless the rig is excluded (?orbit=1 / ?cam=
   // override the pose explicitly — no panel framing then). URL comes from
   // the bundled meta (content hash, G57: nothing unhashed over the net).
-  let panel: { setAct(act: string, f: number): void } | null = null;
+  let panel: {
+    setAct(act: string, f: number): void;
+    sheetTelemetry: { act: HTMLElement; alt: HTMLElement; km: HTMLElement } | null;
+  } | null = null;
   let panelMountFailed = false;
+  // §P15: la barra de asomo móvil lleva altitud/km/acto. Mismo driver de
+  // telemetría (una sola fuente); el panel solo expone las celdas.
+  let sheetTele: Partial<TeleCells> | null = null;
+  const lastSheetTele: Record<string, string> = {};
   async function ensurePanel(): Promise<void> {
     if (panel || panelMountFailed || boot.orbit || boot.cam !== null) return;
     try {
       const { mountPanel } = await import("../narrative/panel.ts");
       const h = mountPanel({ actsUrl: `/${meta.assets?.["acts"] ?? "assets/acts.json"}` });
-      if (h) panel = { setAct: (a, f) => h.setAct(a as never, f) };
+      if (h) {
+        panel = { setAct: (a, f) => h.setAct(a as never, f), sheetTelemetry: h.sheetTelemetry };
+        sheetTele = h.sheetTelemetry;
+      }
     } catch {
       panelMountFailed = true;
     }
@@ -1632,6 +1642,18 @@ if (uWallProbe > 0.5) {
   // Mount early (fetch in flight while the gate stands); first setAct is a
   // no-op until the JSON arrives.
   void ensurePanel();
+  // §P15: la hoja móvil en completa pausa el recorrido. Usa el MISMO candado
+  // de §P14 (scroll.stop/start + __lock.releasedBy): nunca una vía nueva, para
+  // que P14-nunca-bloqueada siga cubriéndolo si la hoja falla.
+  window.addEventListener("panel:sheet", (e) => {
+    if (!scroll) return;
+    const locked = Boolean((e as CustomEvent<{ locked: boolean }>).detail?.locked);
+    if (locked) scroll.stop();
+    else {
+      scroll.markReleasedBy("panel");
+      scroll.start();
+    }
+  });
   if (boot.orbit || boot.cam !== null) {
     rig.setSubjectClosed(true);
   } else if (window.innerWidth < 900) {
@@ -3098,6 +3120,8 @@ if (uWallProbe > 0.5) {
       metrics.cam = boot.cam ?? (boot.orbit ? "orbit" : "rig");
     }
     driveTelemetry(cells, lastTele, st, hhmm(hour), st.sunElev);
+    // §P15: misma telemetría en la barra de asomo móvil (alt/km/acto).
+    if (sheetTele) driveTelemetry(sheetTele, lastSheetTele, st, hhmm(hour), st.sunElev);
     // N2c-fix: línea de sombra del HUD — desde shadowHud (lo SUBIDO a
     // uniformes este mismo frame), con ?debug=1 o ?debug=cloudshadow.
     if (boot.debug || boot.cloudshadow) {

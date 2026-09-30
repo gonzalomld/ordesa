@@ -49,7 +49,7 @@ export interface ScrollProbeState {
 export interface LockState {
   stopped: boolean;
   sinceMs: number;
-  releasedBy: null | "intro" | "watchdog" | "contextlost";
+  releasedBy: null | "intro" | "watchdog" | "contextlost" | "panel";
 }
 
 export interface CamXYZ {
