@@ -72,6 +72,7 @@ import { buildClouds } from "./clouds.ts";
 import { cloudAmount, mistAmount } from "./sun.ts";
 import { frameClock, mountDebug, parseBootQuery } from "./debug.ts";
 import { buildGate, nextFrame } from "./gate.ts";
+import { createAudioEngine, type AudioEngine } from "./audio.ts";
 import { createSkyCapture, type SkyCapture } from "./sky-capture.ts";
 import { fogUniforms, makeCloudShadowTexture, patchTerrainMaterial } from "./height-fog.ts";
 import {
@@ -496,11 +497,17 @@ export async function startViewer(canvas: HTMLCanvasElement): Promise<void> {
   // straight in (reduced motion / pose-override flags). The holder is filled
   // once the rig + intro exist, below.
   let onGateEnter: (() => void) | null = null;
-  const gate = buildGate(() => {
+  // SFX procedurales (audio.ts): un solo AudioContext, creado DENTRO del
+  // gesto del clic — dentro del callback que buildGate llama síncronamente.
+  // Con «entrar en silencio» no se crea nada: la pieza calla de verdad.
+  let audio: AudioEngine | null = null;
+  const gate = buildGate((silent) => {
+    if (!silent) audio = createAudioEngine();
     window.scrollTo(0, 0);
     if (onGateEnter) onGateEnter();
     else scroll?.start();
   });
+  window.addEventListener("pagehide", () => audio?.dispose());
   // Higiene: el vigilante se pausa con la pestaña oculta — acusar a la
   // conexión cuando nadie mira no tiene sentido. 45 s VISIBLES, no 45 s de
   // reloj: cada tramo oculto deja de descontar hasta volver a primer plano.
@@ -2724,6 +2731,11 @@ if (uWallProbe > 0.5) {
   // shaders de nubes/haces/etiquetas compilan aquí, no en el clic: habilitar
   // antes devolvía el tirón al visitante justo cuando pulsaba.
   let gateEnabled = false;
+  // audio.ts: acumulador de zancada y enfriamiento entre pasos (estado del
+  // bucle, no reactivo; cero allocs por frame).
+  let stepAccumM = 0;
+  let stepCooldownS = 0;
+  let lastAudioD = 0;
   let prevMs = -1;
   renderer.setAnimationLoop(() => {
     tickFrame(); // S3: real rAF-delta frame clock
@@ -2776,6 +2788,37 @@ if (uWallProbe > 0.5) {
       }
     }
     const st = progress.getState();
+    // --- audio (audio.ts): viento en la intro, pasos al andar ---------------
+    // Un solo motor creado en el clic; sin motor (entrar en silencio o sin
+    // Web Audio) este bloque es no-op. La cadencia de pasos sigue al avance
+    // d con tope: un scroll rápido no ametralla, parado no suena.
+    if (audio) {
+      if (introActive) {
+        // Envolvente suave del descenso: sube en el primer 12 % del vuelo y
+        // se apaga en el aterrizaje (el motor además lo suaviza).
+        const t = introElapsedS / INTRO_DURATION_S;
+        const env = Math.min(1, t / 0.12) * Math.min(1, (1 - t) / 0.22);
+        audio.setWind(0.75 * Math.max(0, env));
+      } else {
+        audio.setWind(0);
+      }
+      if (!introActive && st.s < EPILOGUE_S) {
+        const dd = st.d - lastAudioD;
+        lastAudioD = st.d;
+        if (dd > 0) {
+          stepAccumM = Math.min(stepAccumM + dd, 12);
+          stepCooldownS -= dt;
+          if (stepCooldownS <= 0 && stepAccumM >= 1.6) {
+            stepAccumM = 0;
+            stepCooldownS = 0.24;
+            audio.step(0.5 + Math.min(0.5, dd / 8));
+          }
+        }
+      } else {
+        lastAudioD = st.d;
+        stepAccumM = 0;
+      }
+    }
     const hour = st.hourDec;
     applyLighting(hour, dt);
     // E2: progressive cut at the walker (epilogue draws the whole loop).
@@ -3043,9 +3086,16 @@ if (uWallProbe > 0.5) {
       // al cruzar) + oclusión ×0,25. La etiqueta sigue costando lo mismo
       // (solo cambió wy a la base).
       if (beams) {
-        const { passed, next } = beams.setState(st.s);
+        const { passed, next, forward } = beams.setState(st.s);
         void passed;
         void next;
+        // Campanilla de hito: solo en el cruce hacia adelante. El índice 0 es
+        // la Pradera (punto de salida, ya pasado al empezar) y no suena;
+        // cota máxima (1) y Cola de Caballo (2) sí.
+        if (audio && forward.length) {
+          const fwd = forward.filter((i) => i > 0);
+          if (fwd.length) audio.milestone(fwd[fwd.length - 1] as number);
+        }
         beamDefs.forEach((d, i) => {
           beams?.setOccluded(i, (labelRts[d.rtIndex] as (typeof labelRts)[number]).occluded);
         });

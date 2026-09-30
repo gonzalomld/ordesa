@@ -1,7 +1,10 @@
 // gate.ts — P11 "Umbral": entry gate over the live first frame of the
 // flight + real progress (70% bytes via meta sizes, 30% build work with
-// rAF yields) + AudioContext unlock. Never blocks the network on the click;
-// degrades with a concrete message on failure.
+// rAF yields). Never blocks the network on the click; degrades with a
+// concrete message on failure. Entry is not enabled until enable() — the
+// viewer calls it on the first rendered frame, so the click never lands on
+// a half-built scene. The audio engine (audio.ts) is created inside the
+// onEnter gesture; the gate itself owns no AudioContext.
 //
 // The gate is transparent: the render loop parks the camera on
 // introSample(0) behind it (introArmed in viewer.ts), so the canyon visible
@@ -161,27 +164,13 @@ export function buildGate(onEnter: (silent: boolean) => void): {
 
   void loadGateData(data);
 
-  let audio: AudioContext | null = null;
-  function unlock(): AudioContext | null {
-    try {
-      const AC = window.AudioContext ??
-        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!AC) return null;
-      audio = new AC();
-      void audio.resume();
-      return audio;
-    } catch {
-      return null;
-    }
-  }
-  void audio;
-
   let entered = false;
   let enabled = false;
   function enter(sil: boolean): void {
     if (entered || !enabled) return;
     entered = true;
-    unlock();
+    // El AudioContext lo crea el motor de audio DENTRO de este gesto, en el
+    // callback de onEnter (ver viewer.ts): aquí no se duplica.
     // Normally already 0 since ready(); an instant click may still find the
     // veil up — it leaves with the same transition, never a black cut.
     veil.style.opacity = "0";

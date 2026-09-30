@@ -65,8 +65,9 @@ export interface Beams {
   /** índice de la instancia del caminante (= count) */
   walkerIndex: number;
   /** Estado por flanco: escribe aState + dispara el pulso SOLO al cruzar.
-   * Devuelve { passed, next } (next = -1 si todos pasados). */
-  setState(sNow: number): { passed: number; next: number };
+   * Devuelve { passed, next } (next = -1 si todos pasados) y los índices de
+   * hito que acaban de pasarse en este cruce (forward), una vez por flanco. */
+  setState(sNow: number): { passed: number; next: number; forward: number[] };
   /** oclusión (rayBlocked): el haz rinde ×0,25. Ciclo de 6 frames. */
   setOccluded(i: number, occluded: boolean): void;
   /** luz del día N1 (cloudDayF): de noche el haz sigue, más tenue. */
@@ -284,17 +285,19 @@ export function buildBeams(
     mesh,
     count: n,
     walkerIndex: n,
-    setState(sNow: number): { passed: number; next: number } {
+    setState(sNow: number): { passed: number; next: number; forward: number[] } {
       let k = 0;
       let next = -1;
       let dirty = false;
       const tMs = performance.now();
+      const forward: number[] = [];
       defs.forEach((d, i) => {
         const isPassed = sNow >= d.s - BEAM_PASS_EPS_S;
         if (isPassed) k++;
         else if (next < 0) next = i;
         if (isPassed !== passed[i]) {
           passed[i] = isPassed;
+          if (isPassed) forward.push(i);
           (geo.getAttribute("aState") as THREE.InstancedBufferAttribute).array[i] = isPassed ? 1 : 0;
           dirty = true;
           // Pulso: +45 % de altura durante 0,7 s, UNA vez por cruce.
@@ -302,7 +305,7 @@ export function buildBeams(
         }
       });
       if (dirty) (geo.getAttribute("aState") as THREE.InstancedBufferAttribute).needsUpdate = true;
-      return { passed: k, next };
+      return { passed: k, next, forward };
     },
     setOccluded(i: number, occluded: boolean): void {
       if (i < 0 || i >= n) return;
