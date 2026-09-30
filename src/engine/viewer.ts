@@ -1485,32 +1485,10 @@ if (uWallProbe > 0.5) {
     gate.fail("no se ha podido cargar la ortofoto base; sigo con relieve");
   }
   gate.setProgress(0.68, 1);
-  gate.ready();
-  // El velo se retira, pero hasta aquí nadie ha pintado el lienzo principal
-  // (el bucle arranca al final de todo): la portada "revelaba" un negro. Se
-  // pinta UNA vez el fotograma 0 — la misma pose que parquea el bucle — para
-  // que el cañón aparezca mientras termina la cola. Bajo ?cam=/?orbit=/?s=
-  // manda el override y no se toca la cámara.
-  if (introArmed) {
-    const sm0 = introSample(0, introTarget);
-    camera.position.set(sm0.pos[0], sm0.pos[1], sm0.pos[2]);
-    const q0 = quatYXZ(sm0.yaw, sm0.pitch);
-    camera.quaternion.set(q0[0], q0[1], q0[2], q0[3]);
-  }
-  if (introOn || reducedMotionIntro) {
-    // El sol y su sombra siguen al objetivo del raíl (misma escritura que el
-    // bucle): sin esto el fotograma 0 saldría con la sombra centrada en el
-    // origen. applyLighting ya dejó sunDirV con el azimut/altura de la hora.
-    const tgt0 = rig.getTarget();
-    sun.target.position.set(tgt0[0], tgt0[1], tgt0[2]);
-    sun.target.updateMatrixWorld();
-    sun.position.set(
-      tgt0[0] + sunDirV.x * SHADOW_LIGHT_DIST_M,
-      tgt0[1] + sunDirV.y * SHADOW_LIGHT_DIST_M,
-      tgt0[2] + sunDirV.z * SHADOW_LIGHT_DIST_M,
-    );
-    renderer.render(scene, camera);
-  }
+  // El velo NO se retira aquí: el lienzo principal no se pinta hasta el
+  // primer frame del bucle. Retirarlo ahora revelaría un negro (y cualquier
+  // re-render posterior se vería como un reajuste de la imagen). La portada
+  // muestra el % y el velo opaco; ready() se llama en el primer frame pintado.
   skyCap?.refresh();
   await nextFrame();
 
