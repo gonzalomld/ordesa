@@ -140,7 +140,10 @@ export function buildGate(onEnter: (silent: boolean) => void): {
   soundline.append(soundNote, silent);
   action.append(btn, soundline);
 
-  col.append(kicker, title, data, load, action, err);
+  // El avance va FUERA de la columna (posición absoluta): al retirarlo en
+  // enable() no altera la altura de la columna y la portada no se recoloca
+  // en el mismo instante en que se revela el cañón.
+  col.append(kicker, title, data, action, err);
 
   // 1 px load edge at the viewport bottom; same setProgress as before.
   const prog = document.createElement("div");
@@ -159,7 +162,7 @@ export function buildGate(onEnter: (silent: boolean) => void): {
   sr.setAttribute("aria-live", "polite");
   sr.textContent = `0 % · ${STAGES[0]}`;
 
-  el.append(veil, col, prog, sr);
+  el.append(veil, col, load, prog, sr);
   document.body.appendChild(el);
 
   void loadGateData(data);

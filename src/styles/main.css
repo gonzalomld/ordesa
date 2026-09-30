@@ -240,17 +240,25 @@ body {
 
 /* Carga: la portada no deja entrar hasta que la escena está entera. El avance
    tiene que VERSE: % en oro y etapa en faint, a plena opacidad. La misma
-   cadena sigue en .gate-sr (aria-live) para lectores de pantalla. */
+   cadena sigue en .gate-sr (aria-live) para lectores de pantalla. Va en
+   posición ABSOLUTA (fuera de la columna) para que retirarlo en enable() no
+   cambie la altura de la columna ni mueva el título al revelarse el cañón. */
 .gate-load {
+  position: absolute;
+  top: clamp(28px, 5vw, 72px);
+  right: clamp(28px, 5vw, 72px);
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: baseline;
   gap: 4px 10px;
-  margin-top: 20px;
+  max-width: min(70vw, 460px);
   font-family: var(--font-mono);
   font-size: 12px;
   letter-spacing: 0.24em;
   color: var(--faint);
+  text-align: right;
+  pointer-events: none;
 }
 
 .gate-load-pct {

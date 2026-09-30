@@ -2681,7 +2681,7 @@ if (uWallProbe > 0.5) {
   await nextFrame();
   applyLighting(progress.getState().hourDec);
 
-  window.addEventListener("resize", () => {
+  const onResize = (): void => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -2691,7 +2691,12 @@ if (uWallProbe > 0.5) {
       const lm = (m as { material: { resolution: THREE.Vector2 } }).material;
       lm.resolution.copy(res2);
     }
-  });
+  };
+  window.addEventListener("resize", onResize);
+  // Un resize pudo ocurrir durante la carga (todavía sin listener): fija
+  // tamaño y aspecto ANTES del primer frame para que la imagen no se reajuste
+  // al revelarse. El listener sola no basta porque el primer resize se perdió.
+  onResize();
 
   // E1: far-plane budget watch — drone views pull in more triangles. If
   // msFrame breaks 24, drop the far LOD before touching the camera.
