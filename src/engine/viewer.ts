@@ -1619,6 +1619,7 @@ if (uWallProbe > 0.5) {
   // the bundled meta (content hash, G57: nothing unhashed over the net).
   let panel: {
     setAct(act: string, f: number): void;
+    setJourneyS(s: number): void;
     sheetTelemetry: { act: HTMLElement; alt: HTMLElement; km: HTMLElement } | null;
   } | null = null;
   let panelMountFailed = false;
@@ -1630,9 +1631,17 @@ if (uWallProbe > 0.5) {
     if (panel || panelMountFailed || boot.orbit || boot.cam !== null) return;
     try {
       const { mountPanel } = await import("../narrative/panel.ts");
-      const h = mountPanel({ actsUrl: `/${meta.assets?.["acts"] ?? "assets/acts.json"}` });
+      // §P16: con posición restaurada la hoja arranca en asomo (sin entrada).
+      const h = mountPanel({
+        actsUrl: `/${meta.assets?.["acts"] ?? "assets/acts.json"}`,
+        restored: savedFraction !== null,
+      });
       if (h) {
-        panel = { setAct: (a, f) => h.setAct(a as never, f), sheetTelemetry: h.sheetTelemetry };
+        panel = {
+          setAct: (a, f) => h.setAct(a as never, f),
+          setJourneyS: (s) => h.setJourneyS(s),
+          sheetTelemetry: h.sheetTelemetry,
+        };
         sheetTele = h.sheetTelemetry;
       }
     } catch {
@@ -1654,6 +1663,9 @@ if (uWallProbe > 0.5) {
       scroll.start();
     }
   });
+  // §P16: un único disparador para retirar la pista — la entrada de la hoja a
+  // MEDIA. Los listeners de scroll-hint.ts quedan como red de seguridad.
+  window.addEventListener("panel:sheet-entered", () => scrollHint?.hide());
   if (boot.orbit || boot.cam !== null) {
     rig.setSubjectClosed(true);
   } else if (window.innerWidth < 900) {
@@ -3008,6 +3020,8 @@ if (uWallProbe > 0.5) {
       }
     }
     const st = progress.getState();
+    // §P16: s (fuente única) a la hoja móvil — único disparador de la entrada.
+    panel?.setJourneyS(st.s);
     // --- audio (audio.ts): viento en la intro, pasos al andar ---------------
     // Un solo motor creado en el clic; sin motor (entrar en silencio o sin
     // Web Audio) este bloque es no-op. La cadencia de pasos sigue al avance

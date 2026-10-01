@@ -13,6 +13,7 @@ import { findBridges } from "./lib/route-bridge.ts";
 import { resolveFollowSafety } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
 import { sunPosition } from "./lib/sun.ts";
+import { clampLabelX } from "../src/engine/labels.ts";
 
 let failures = 0;
 function gate(name: string, ok: boolean, detail: string): void {
@@ -3071,6 +3072,115 @@ function elevFull36(): Float32Array {
     const wired = viewerSrc.includes("sheetTele") && viewerSrc.includes("driveTelemetry(sheetTele");
     gate("P15-telemetria-unica", hides && cells && wired,
       `tele oculta <900=${hides} · celdas en la barra de asomo=${cells} · mismo driver=${wired}`);
+  }
+}
+
+// --- §P16 — el arranque en móvil -----------------------------------------
+// Contrato estático. Las dos puertas que dependen de lo que SE VE (hoja fuera
+// de pantalla al aterrizar y entrada única tras un gesto real) se miden en
+// navegador con `npm run verify:p16` (scripts/verify-p16.mjs).
+{
+  const css = readFileSync("src/styles/main.css", "utf8");
+  const panelSrc = readFileSync("src/narrative/panel.ts", "utf8");
+  const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
+  const labelsSrc = readFileSync("src/engine/labels.ts", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+
+  // P16-titulo-html: la barra usa titulo.html; ningún asterisco literal.
+  {
+    const usesHtml = has(panelSrc, "st.innerHTML = a.titulo.html");
+    const noRaw = !has(panelSrc, "titulo.raw");
+    const goldI = css.includes("#panel.pcard.sheet .sheet-title i") && has(css, "var(--gold-bright)");
+    gate("P16-titulo-html", usesHtml && noRaw && goldI,
+      `innerHTML titulo.html=${usesHtml} · sin titulo.raw=${noRaw} · i gold-bright=${goldI}`);
+  }
+
+  // P16-fichas-en-asomo: la línea de datos sale de `fichas`, no de cifra1/2.
+  {
+    const usesFichas = has(panelSrc, "a.fichas.join");
+    const noCifraLine = !has(panelSrc, "cifraLine");
+    const fallback = css.includes(".sheet-cifras:not(:empty) ~ .sheet-alt");
+    gate("P16-fichas-en-asomo", usesFichas && noCifraLine && fallback,
+      `a.fichas.join=${usesFichas} · cifraLine eliminado=${noCifraLine} · fallback telemetría oculto con fichas=${fallback}`);
+  }
+
+  // P16-arranque-limpio (estático): AUSENTE fuera de pantalla + sin gestos.
+  // El único elemento de interfaz permitido en este estado es .scroll-hint.
+  {
+    const enterS = has(panelSrc, "SHEET_ENTER_S = 0.004");
+    const absentClass = has(panelSrc, 'classList.toggle("sheet-absent"');
+    const inert = has(panelSrc, 'setAttribute("inert"');
+    const ariaHidden = has(panelSrc, 'setAttribute("aria-hidden"');
+    const cssAbsent =
+      css.includes("#panel.pcard.sheet.sheet-absent:not(.panel-collapsed)") &&
+      has(css, "translateY(100%)") &&
+      has(css, "pointer-events: none");
+    gate("P16-arranque-limpio", enterS && absentClass && inert && ariaHidden && cssAbsent,
+      `SHEET_ENTER_S=0.004=${enterS} · clase ausente=${absentClass} · inert=${inert} · aria-hidden=${ariaHidden} · css translateY(100%)+pointer-events none+especificidad (1,4,0)=${cssAbsent}`);
+  }
+
+  // P16-entrada-una-vez (estático): guarda única, acto marcado como subido,
+  // restauración→asomo, y un solo disparador de la pista desde la entrada.
+  {
+    const once = has(panelSrc, "sheetEntered") && has(panelSrc, "enterSheetOnce");
+    const markRaised = has(panelSrc, "autoRaised.add(cur)");
+    const restored = has(panelSrc, "opts.restored") && has(viewerSrc, "restored: savedFraction !== null");
+    const hintTrigger = has(viewerSrc, 'addEventListener("panel:sheet-entered"') && has(viewerSrc, "scrollHint?.hide()");
+    gate("P16-entrada-una-vez", once && markRaised && restored && hintTrigger,
+      `guarda única=${once} · autoRaised.add(cur)=${markRaised} · restauración→asomo=${restored} · hint desde la entrada=${hintTrigger}`);
+  }
+
+  // P16-etiquetas-dentro: función pura, matriz w/boxW/px.
+  {
+    const widths = [390, 900, 1440];
+    const boxes = [120, 220, 340, 420];
+    const M = 8;
+    let ok = true;
+    let detail = "";
+    for (const w of widths) {
+      for (const bw of boxes) {
+        const fits = bw + 2 * M <= w;
+        const probes = [-50, 0, 5, w / 2, w - 5, w + 50, -24, w + 24];
+        for (const px of probes) {
+          const out = clampLabelX(px, w, bw, M);
+          if (fits) {
+            const lo = bw / 2 + M - 1e-6;
+            const hi = w - bw / 2 - M + 1e-6;
+            const inside = out >= lo && out <= hi;
+            const idempotent = out >= bw / 2 + M && out <= w - bw / 2 - M
+              ? Math.abs(clampLabelX(out, w, bw, M) - out) < 1e-9
+              : true;
+            if (!inside || !idempotent) {
+              ok = false;
+              detail = `w=${w} bw=${bw} px=${px} → ${out} fuera de [${lo.toFixed(2)},${hi.toFixed(2)}]`;
+            }
+          } else if (Math.abs(out - (bw / 2 + M)) > 1e-6) {
+            ok = false;
+            detail = `w=${w} bw=${bw} px=${px} → ${out}, se esperaba borde izquierdo ${bw / 2 + M}`;
+          }
+        }
+      }
+    }
+    const usesBoxW = has(labelsSrc, "clampLabelX(px, w, rt.boxW)") && has(labelsSrc, "rt.boxW > 0");
+    const tolerance = has(labelsSrc, "px < -24 || px > w + 24");
+    const measuredAfterFonts = has(labelsSrc, "document.fonts.ready") && has(labelsSrc, 'addEventListener("resize", measureBoxes)');
+    const passed = ok && usesBoxW && tolerance && measuredAfterFonts;
+    gate("P16-etiquetas-dentro", passed,
+      passed
+        ? `${widths.length}×${boxes.length}: dentro con margen ${M} px · ancho real rt.boxW · tolerancia ±24 px · medida tras fuentes y en resize`
+        : `${ok ? "matriz OK" : detail} · ancho real=${usesBoxW} · tolerancia ±24=${tolerance} · medida tras fuentes/resize=${measuredAfterFonts}`);
+  }
+
+  // P16-escritorio-intacto: la tarjeta lateral de escritorio no cambia; las
+  // reglas de la hoja viven SOLO dentro de la media query vertical.
+  {
+    const desktopSize = css.includes("width: min(27rem, calc(100vw - 16px))");
+    const desktopFold = has(css, "#panel.pcard.panel-collapsed");
+    const mobIdx = css.indexOf("@media (max-width: 899px) and (min-height: 501px)");
+    const absentIdx = css.indexOf("sheet-absent");
+    const scoped = mobIdx >= 0 && absentIdx > mobIdx;
+    gate("P16-escritorio-intacto", desktopSize && desktopFold && scoped,
+      `ancho escritorio 27rem=${desktopSize} · plegado=${desktopFold} · sheet-absent solo en media móvil=${scoped}`);
   }
 }
 

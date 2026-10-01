@@ -27,6 +27,9 @@ export interface LabelRuntime {
   groundWy: number;
   /** §3: true si este hito lleva haz vertical (tipo hito, no cumbre). */
   hasBeam: boolean;
+  /** §P16: ancho real de la caja de la etiqueta, medido UNA vez (y re-medido
+   * en resize tras cargar las fuentes). 0 = aún sin medir (usa 170/220). */
+  boxW: number;
   lastX: number;
   lastY: number;
   lastOpacity: string;
@@ -65,6 +68,7 @@ export function buildLabels(
         wz: -(def.y - cy),
         groundWy: def.z,
         hasBeam: def.tipo === "hito",
+        boxW: 0,
         lastX: -1,
         lastY: -1,
         lastOpacity: introHidden ? "0" : "",
@@ -74,7 +78,29 @@ export function buildLabels(
     });
   liveRts.length = 0;
   liveRts.push(...rts);
+  // §P16: el ancho real se mide DESPUÉS de cargar las fuentes (@font-face con
+  // font-display: swap → en el arranque la etiqueta va con la fuente de
+  // reserva y el ancho difiere 10-15 %). Mientras boxW=0 se usa 170/220.
+  // Se re-mide en resize (también cambia si sirve otra cara).
+  const measureBoxes = (): void => {
+    for (const rt of rts) rt.boxW = rt.el.getBoundingClientRect().width;
+  };
+  if (typeof document !== "undefined" && document.fonts?.ready) {
+    document.fonts.ready.then(measureBoxes).catch(() => {});
+  } else {
+    measureBoxes();
+  }
+  window.addEventListener("resize", measureBoxes);
   return rts;
+}
+
+/** §P16: acota el centro X de una etiqueta para que su caja quede dentro de la
+ * ventana con margen `m` a cada lado. Si la etiqueta no cabe (boxW+2m > w) la
+ * deja pegada al borde izquierdo. Función pura (puerta P16-etiquetas-dentro). */
+export function clampLabelX(px: number, w: number, boxW: number, m = 8): number {
+  const half = boxW / 2;
+  if (boxW + 2 * m > w) return half + m;
+  return Math.min(Math.max(px, half + m), w - half - m);
 }
 
 /** §3b: fija la etiqueta a la BASE del haz (terreno + 2 m, Everest).
@@ -178,11 +204,18 @@ export function updateLabels(
       // overlap test and the change check (0.01 px epsilon).
       px = (o.nx * 0.5 + 0.5) * w;
       py = (-o.ny * 0.5 + 0.5) * h;
-      if (px < -100 || px > w + 100 || py < -40 || py > h + 40) hidden = true;
+      // §P16: acota al ancho de la ventana. Tolerancia de 24 px fuera de
+      // cuadro para que el ocultado (display, sin fundido) ocurra ya sin
+      // parpadeo en el borde. En vertical no se acota: fuera = oculta.
+      if (px < -24 || px > w + 24 || py < 0 || py > h) {
+        hidden = true;
+      } else {
+        px = clampLabelX(px, w, rt.boxW);
+      }
     }
     // overlap cull vs already-placed nearer labels
     if (!hidden) {
-      const bw = rt.def.tipo === "cumbre" ? 170 : 220;
+      const bw = rt.boxW > 0 ? rt.boxW : rt.def.tipo === "cumbre" ? 170 : 220;
       const bh = 34;
       for (const p of placed) {
         if (Math.abs(px - p.x) < (bw + p.w) / 2 && Math.abs(py - p.y) < (bh + p.h) / 2) {

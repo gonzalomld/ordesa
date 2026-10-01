@@ -1175,7 +1175,8 @@ body {
    para que nadie baje la base de 400 ms. */
 html.intro-on #panel.pcard,
 html.intro-on #panel.pcard:not(.panel-collapsed),
-html.intro-on .tele {
+html.intro-on .tele,
+html.intro-on .scroll-hint {
   opacity: 0;
   pointer-events: none;
   transition: none;
@@ -1491,10 +1492,14 @@ html.intro-on .tele {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
     box-shadow: 0 -24px 80px rgb(2 5 10 / 40%);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    /* §P16: el safe-area se baja a .sheet-bar (antes estaba aquí y se
+       contaba dos veces con el relleno inferior de la barra). */
     overflow: hidden;
     touch-action: pan-y;
-    transition: height 420ms cubic-bezier(0.19, 0.7, 0.22, 1);
+    transition:
+      height 420ms cubic-bezier(0.19, 0.7, 0.22, 1),
+      transform 420ms cubic-bezier(0.19, 0.7, 0.22, 1),
+      opacity 400ms ease;
   }
 
   #panel.pcard.sheet.sheet-half {
@@ -1508,6 +1513,14 @@ html.intro-on .tele {
   /* El plegado de escritorio (scale .045) no aplica: las alturas lo sustituyen. */
   #panel.pcard.sheet:not(.panel-collapsed) {
     transform: none;
+  }
+
+  /* §P16: AUSENTE — fuera de pantalla, sin capturar gestos. Especificidad
+     (1,4,0) con :not(): GANA siempre a :not(.panel-collapsed) (1,3,0) sin
+     depender del orden del fichero (lección de §P9 con intro-on). */
+  #panel.pcard.sheet.sheet-absent:not(.panel-collapsed) {
+    transform: translateY(100%);
+    pointer-events: none;
   }
 
   #panel.pcard.sheet.panel-collapsed {
@@ -1525,13 +1538,28 @@ html.intro-on .tele {
     flex: 0 0 auto;
     flex-direction: column;
     align-items: stretch;
-    /* el asomo ES la barra: en reposo el cuerpo queda a 0 */
-    min-height: 112px;
-    padding: 0 22px;
+    position: relative;
+    /* el asomo ES la barra: en reposo el cuerpo queda a 0. El safe-area vive
+       aquí (14 px + inset), no en el padding del panel (§P16). */
+    min-height: calc(112px + env(safe-area-inset-bottom, 0px));
+    padding: 0 22px calc(14px + env(safe-area-inset-bottom, 0px));
     cursor: grab;
     touch-action: none;
     -webkit-user-select: none;
     user-select: none;
+  }
+
+  /* §P16: «hay más arriba» — galón de 10 px a la derecha de la fila del
+     tirador, al 55 % de opacidad. Decorativo. */
+  #panel.pcard.sheet .sheet-more {
+    position: absolute;
+    top: 15px;
+    right: 22px;
+    width: 10px;
+    height: 10px;
+    opacity: 0.55;
+    color: var(--faint);
+    pointer-events: none;
   }
 
   #panel.pcard.sheet .sheet-bar:active {
@@ -1587,6 +1615,15 @@ html.intro-on .tele {
     text-overflow: ellipsis;
   }
 
+  /* §P16: el <i> de titulo.html en gold-bright y sin cursiva, como la ficha
+     de escritorio (#panel.pcard h2 i). */
+  #panel.pcard.sheet .sheet-title i,
+  #panel.pcard.sheet .sheet-title em {
+    font-style: normal;
+    font-weight: 500;
+    color: var(--gold-bright);
+  }
+
   #panel.pcard.sheet .sheet-meta {
     display: flex;
     align-items: baseline;
@@ -1607,7 +1644,12 @@ html.intro-on .tele {
   }
 
   #panel.pcard.sheet .sheet-cifras {
-    color: var(--silver);
+    color: var(--faint);
+    letter-spacing: 0.18em;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   #panel.pcard.sheet .sheet-cifras:empty {
@@ -1615,6 +1657,13 @@ html.intro-on .tele {
   }
 
   #panel.pcard.sheet .sheet-cifras:empty + .sheet-alt::before {
+    display: none;
+  }
+
+  /* §P16: con fichas en la barra, la telemetría viva (altitud · km) se oculta.
+     Sin fichas (EPI): cae a ella. */
+  #panel.pcard.sheet .sheet-cifras:not(:empty) ~ .sheet-alt,
+  #panel.pcard.sheet .sheet-cifras:not(:empty) ~ .sheet-km {
     display: none;
   }
 

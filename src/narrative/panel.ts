@@ -123,6 +123,9 @@ export interface SheetTelemetry {
 
 export interface PanelHandle {
   setAct(act: ActKey, f: number): void;
+  /** §P16: s de progress.ts (fuente única) bombeado por el viewer. La primera
+   * vez que supera SHEET_ENTER_S saca la hoja de AUSENTE (una sola vez). */
+  setJourneyS(s: number): void;
   setCollapsed(c: boolean): void;
   isCollapsed(): boolean;
   current(): ActKey;
@@ -130,7 +133,7 @@ export interface PanelHandle {
   sheetTelemetry: SheetTelemetry | null;
 }
 
-export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): PanelHandle | null {
+export function mountPanel(opts: { actsUrl: string; flotanteId?: string; restored?: boolean }): PanelHandle | null {
   const aside = document.getElementById("panel");
   if (!aside) return null;
   // a11y contract (G69-G73-wiring reads these literals): aside is the live
@@ -157,8 +160,14 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
   const AUTO_LOWER_FRAC = 0.12;
   const AUTO_LOWER_PX = 40;
   const FLING_PX_PER_MS = 0.5;
+  /** §P16: umbral de s que saca la hoja de AUSENTE (primer gesto real). */
+  const SHEET_ENTER_S = 0.004;
   let sheetMode = window.innerWidth < 900 && window.innerHeight > 500;
   let sheetHeight: SheetHeight = "peek";
+  // §P16: AUSENTE es el estado anterior a "asomo". Sin capturar gestos, fuera
+  // de pantalla. Se abandona UNA vez (sheetEntered) y no se vuelve nunca.
+  let sheetAbsent = false;
+  let sheetEntered = false;
   let sheetTele: SheetTelemetry | null = null;
   let lastF = 0;
   let raiseTimer = 0;
@@ -171,6 +180,9 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
   const userLowered = new Set<ActKey>();
 
   function setSheetHeight(h: SheetHeight, opts: { manual?: boolean } = {}): void {
+    // §P16: mientras AUSENTE la hoja no adopta alturas; enterSheetOnce limpia
+    // el flag antes de pedir MEDIA.
+    if (sheetAbsent) return;
     if (h === "peek" && opts.manual) userLowered.add(cur);
     sheetHeight = h;
     if (h === "half") {
@@ -192,6 +204,22 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
     }
   }
 
+  /** §P16: AUSENTE. Fuera de pantalla (translateY 100 % en CSS), sin capturar
+   * gestos ni foco (inert + aria-hidden) mientras no haya empezado el
+   * recorrido. En escritorio no aplica. */
+  function setAbsent(on: boolean): void {
+    sheetAbsent = on;
+    if (!sheetMode) return;
+    aside.classList.toggle("sheet-absent", on);
+    if (on) {
+      aside.setAttribute("aria-hidden", "true");
+      aside.setAttribute("inert", "");
+    } else {
+      aside.removeAttribute("aria-hidden");
+      aside.removeAttribute("inert");
+    }
+  }
+
   function applySheetMode(): void {
     if (sheetMode) {
       if (raiseTimer) {
@@ -201,6 +229,7 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
       aside.classList.remove("panel-collapsed");
       aside.classList.add("sheet");
       setSheetHeight(sheetHeight);
+      setAbsent(sheetAbsent);
       popen.hidden = true;
       // El sujeto se queda centrado (no hay tarjeta lateral).
       window.dispatchEvent(new CustomEvent("panel:collapsed", { detail: { collapsed: true } }));
@@ -211,7 +240,9 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
         sheetLocked = false;
         window.dispatchEvent(new CustomEvent("panel:sheet", { detail: { locked: false } }));
       }
-      aside.classList.remove("sheet", "sheet-peek", "sheet-half", "sheet-full");
+      aside.classList.remove("sheet", "sheet-peek", "sheet-half", "sheet-full", "sheet-absent");
+      aside.removeAttribute("aria-hidden");
+      aside.removeAttribute("inert");
       applyCollapsed();
     }
   }
@@ -245,6 +276,23 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
       }
       setSheetHeight("peek");
     }
+  }
+
+  /** §P16: UNA sola vez, del primo gesto real a MEDIA. Sustituye a la subida
+   * automática del acto 0: deja el acto marcado como ya subido para que
+   * scheduleAutoRaise no encadene un segundo movimiento. El acto I conserva su
+   * subida automática. */
+  function enterSheetOnce(): void {
+    if (!sheetMode || sheetEntered) return;
+    sheetEntered = true;
+    if (raiseTimer) {
+      window.clearTimeout(raiseTimer);
+      raiseTimer = 0;
+    }
+    autoRaised.add(cur);
+    setAbsent(false);
+    setSheetHeight("half");
+    window.dispatchEvent(new CustomEvent("panel:sheet-entered"));
   }
 
   const W = window as unknown as { __panelAct?: string };
@@ -308,9 +356,12 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
     if (scroller) scroller.innerHTML = actBody(a);
     popen.textContent = `+ ${a.key}`;
     const st = aside.querySelector<HTMLElement>(".sheet-title");
-    if (st) st.textContent = a.titulo.raw;
+    if (st) st.innerHTML = a.titulo.html;
     const sc = aside.querySelector<HTMLElement>(".sheet-cifras");
-    if (sc) sc.textContent = cifraLine(a);
+    // §P16: la línea de datos de la barra sale de `fichas` (no de cifra1/2).
+    // innerHTML: las fichas traen entidades (&nbsp; de hardenUnit, como .chips).
+    // Vacío en EPI: el CSS cae a la telemetría altitud · km.
+    if (sc) sc.innerHTML = a.fichas.join(" · ");
     fitEyebrow();
     fitChips();
     placeFlotante();
@@ -319,14 +370,6 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
     if (x) x.setAttribute("aria-expanded", collapsed ? "false" : "true");
     const dt = performance.now() - t0;
     (window as unknown as { __panelSwapMs?: number }).__panelSwapMs = dt;
-  }
-
-  /** §P15: las dos cifras de cabecera en una línea, "·"-separadas. Vacío si
-   * el acto no trae cifras (EPI): el CSS oculta el hueco y su separador. */
-  function cifraLine(a: ActJson): string {
-    const one = (c: ActJson["cifra1"]): string =>
-      c.valor ? `${c.valor}${c.unidad ? " " + c.unidad : ""}` : "";
-    return [one(a.cifra1), one(a.cifra2)].filter(Boolean).join(" · ");
   }
 
   // Error 3 (3B-bis): el cintillo en una sola línea; si no cabe, tracking
@@ -371,6 +414,8 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
     `<button class="pclose" type="button" aria-expanded="true" aria-controls="panel" aria-label="Plegar panel del acto"><svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true"><path d="M1 1l11 11M12 1L1 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>` +
     `<header class="sheet-bar">` +
     `<button class="sheet-grab" type="button" aria-expanded="false" aria-controls="panel" aria-label="Abrir o cerrar la ficha del acto"><span class="sheet-grab-bar"></span></button>` +
+    // §P16: galón decorativo «hay más arriba», a la derecha de la fila del tirador.
+    `<span class="sheet-more" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 12 7" aria-hidden="true"><path d="M1 6 L6 1 L11 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>` +
     `<div class="sheet-act"></div>` +
     `<div class="sheet-title"></div>` +
     `<div class="sheet-meta"><span class="sheet-cifras"></span><span class="sheet-alt"></span><span class="sheet-km"></span></div>` +
@@ -407,7 +452,7 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
   let suppressClick = false;
   const sheetBar = aside.querySelector<HTMLElement>(".sheet-bar");
   function sheetPointerDown(e: PointerEvent): void {
-    if (!sheetMode || e.button !== 0) return;
+    if (!sheetMode || sheetAbsent || e.button !== 0) return;
     drag = { startY: e.clientY, startT: performance.now() };
     try {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -434,7 +479,7 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
     if (target !== sheetHeight) setSheetHeight(target, { manual: true });
   }
   function sheetClick(): void {
-    if (!sheetMode) return;
+    if (!sheetMode || sheetAbsent) return;
     if (suppressClick) {
       suppressClick = false;
       return;
@@ -504,6 +549,9 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
     setCollapsed,
     isCollapsed: () => collapsed,
     current: () => cur,
+    setJourneyS(s: number): void {
+      if (sheetAbsent && s > SHEET_ENTER_S) enterSheetOnce();
+    },
     sheetTelemetry: sheetTele,
   };
 
@@ -528,6 +576,10 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string }): Pane
       console.error(`[ordesa] ${e instanceof Error ? e.message : e}`);
     });
 
+  // §P16: posición restaurada (§P14) → la hoja nace en ASOMO; sin ella, en
+  // AUSENTE. `restored` lo decide el viewer (savedFraction !== null).
+  sheetEntered = Boolean(opts.restored);
+  sheetAbsent = !sheetEntered;
   applySheetMode();
   return handle;
 }
