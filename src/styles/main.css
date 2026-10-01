@@ -295,6 +295,7 @@ body {
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
   cursor: pointer;
+  text-decoration: none;
   transition: background 240ms ease, border-color 240ms ease, box-shadow 240ms ease;
 }
 
@@ -1067,6 +1068,19 @@ body {
   border-top: 1px solid var(--line);
   border-left: 2px solid var(--gold);
   font-style: italic;
+}
+
+/* §P16-track: cierre del recorrido — botón principal de descarga del track
+   (mismo .gate-btn de la portada). */
+#panel.pcard .epi-dl {
+  margin-top: 26px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+#panel.pcard .epi-dl .gate-btn {
+  max-width: 100%;
 }
 
 #panel.pcard .pend {

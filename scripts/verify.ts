@@ -467,6 +467,20 @@ if (existsSync(DEM_FILE)) {
   }
 }
 
+// --- 16. track GPX descargable (versionado, saneado: sin Wikiloc) ---
+{
+  const trackPath = "public/assets/senda-cazadores.gpx";
+  if (!existsSync(trackPath)) {
+    gate("track-gpx", false, `missing ${trackPath} (run: npx tsx scripts/22-build-track-gpx.ts)`);
+  } else {
+    const x = readFileSync(trackPath, "utf8");
+    const trkpts = (x.match(/<trkpt/g) ?? []).length;
+    const clean = !/wikiloc/i.test(x);
+    gate("track-gpx", /<trk>/.test(x) && trkpts > 100 && clean,
+      `${trkpts} trkpts · <trk>=${/<trk>/.test(x)} · sin Wikiloc=${clean}`);
+  }
+}
+
 if (failures > 0) {
   console.error(`\nverify: ${failures} gate(s) FAILED`);
   process.exit(1);
