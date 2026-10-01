@@ -9,6 +9,38 @@
       name="description"
       content="Scroll narrativo en 3D sobre la Senda de los Cazadores, Parque Nacional de Ordesa y Monte Perdido."
     />
+    <!-- Open Graph / Twitter: la portada de la pieza como tarjeta al compartir.
+         og-senda.jpg vive en /assets/ (exento del rewrite SPA de vercel.json) y
+         se genera con `npm run og` capturando el gate real. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Senda de los Cazadores" />
+    <meta property="og:locale" content="es_ES" />
+    <meta property="og:url" content="https://sendadeloscazadores.vercel.app/" />
+    <meta property="og:title" content="Senda de los Cazadores — Ordesa 3D" />
+    <meta
+      property="og:description"
+      content="Scroll narrativo en 3D sobre la Senda de los Cazadores, Parque Nacional de Ordesa y Monte Perdido. 18,2 km, +780 m y cinco actos."
+    />
+    <meta property="og:image" content="https://sendadeloscazadores.vercel.app/assets/og-senda.jpg" />
+    <meta property="og:image:secure_url" content="https://sendadeloscazadores.vercel.app/assets/og-senda.jpg" />
+    <meta property="og:image:type" content="image/jpeg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="El cañón de Ordesa al amanecer con la traza de la Senda de los Cazadores y el título «La senda de los cazadores»."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Senda de los Cazadores — Ordesa 3D" />
+    <meta
+      name="twitter:description"
+      content="Scroll narrativo en 3D sobre la Senda de los Cazadores, Parque Nacional de Ordesa y Monte Perdido."
+    />
+    <meta name="twitter:image" content="https://sendadeloscazadores.vercel.app/assets/og-senda.jpg" />
+    <meta
+      name="twitter:image:alt"
+      content="El cañón de Ordesa al amanecer con la traza de la Senda de los Cazadores y el título «La senda de los cazadores»."
+    />
     <!-- Fuentes autoalojadas del primer pintado: sin preload, el título de la
          portada cambia de métricas al cargar el woff2 (swap) y "recoloca". -->
     <link rel="preload" as="font" type="font/woff2" href="/fonts/spacegrotesk-500-latin.woff2" crossorigin />
