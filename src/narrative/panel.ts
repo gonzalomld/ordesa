@@ -93,17 +93,11 @@ function actBody(a: ActJson): string {
       )
       .join("");
     const cierre = a.epiCierre ? `<p class="epi-cierre">${a.epiCierre.html}</p>` : "";
-    // CTA principal de fin de recorrido dentro del cuerpo (para cuando la hoja
-    // está abierta). mountPanel añade además un CTA FIJO (.epi-cta) visible con
-    // la hoja en asomo o sin desplazar el panel.
-    const dl =
-      `<a class="gate-btn epi-dl-btn" href="/assets/senda-cazadores.gpx" download="senda-de-los-cazadores.gpx" aria-label="Descargar el track de la senda en formato GPX">` +
-      `<span class="gate-btn-l">Descargar el track (.gpx)</span>` +
-      `<span class="gate-btn-i" aria-hidden="true"><svg viewBox="0 0 12 14" aria-hidden="true"><path d="M5 1h2v5h2.4L6 10.6 2.6 6H5V1z"/><path d="M1 12h10v1.5H1z"/></svg></span>` +
-      `</a>`;
+    // Fin del recorrido: la descarga del track es SOLO el CTA fijo (.epi-cta,
+    // montado por mountPanel fuera de #panel). No se duplica dentro del cuerpo.
     // Pie de fuentes (a.pieFuentes) fuera a petición del autor (sep-2026):
     // vive en el JSON/md para trazabilidad pero no se pinta.
-    return `<div class="pstage act"><div class="eyebrow">EPÍLOGO · <b>EL INVENTARIO</b></div><h2>${a.titulo.html}</h2><div class="tiles"><div class="tile"><div class="k">RECORRIDO</div><div class="v">18,1<small>km</small></div><div class="d">CIRCULAR</div></div><div class="tile"><div class="k">DESNIVEL</div><div class="v">+815<small>m</small></div><div class="d">ACUMULADO</div></div></div>${blocks}${cierre}<div class="epi-dl">${dl}</div></div>`;
+    return `<div class="pstage act"><div class="eyebrow">EPÍLOGO · <b>EL INVENTARIO</b></div><h2>${a.titulo.html}</h2><div class="tiles"><div class="tile"><div class="k">RECORRIDO</div><div class="v">18,1<small>km</small></div><div class="d">CIRCULAR</div></div><div class="tile"><div class="k">DESNIVEL</div><div class="v">+815<small>m</small></div><div class="d">ACUMULADO</div></div></div>${blocks}${cierre}</div>`;
   }
   const chips = a.fichas.length > 0 ? `<ul class="chips">${a.fichas.map((f) => `<li>${h(f)}</li>`).join("")}</ul>` : "";
   const pend = a.pendienteRaw ? `<p><span class="pend" title="pendiente de verificar">${h(a.pendienteRaw)}</span></p>` : "";

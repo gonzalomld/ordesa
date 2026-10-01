@@ -1070,19 +1070,6 @@ body {
   font-style: italic;
 }
 
-/* §P17-ter: botón de descarga DENTRO del cuerpo del epílogo (manda cuando la
-   hoja está abierta; el CTA fijo .epi-cta manda con la hoja en asomo). */
-#panel.pcard .epi-dl {
-  margin-top: 26px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-#panel.pcard .epi-dl .gate-btn {
-  max-width: 100%;
-}
-
 /* §P17-ter: CTA principal al final del recorrido. Mismo .gate-btn de la
    portada, pero FIXED y fuera de #panel: se ve aunque la hoja esté en asomo o
    el cuerpo del panel no se haya desplazado. z-index 17 (< #panel 18): con la
