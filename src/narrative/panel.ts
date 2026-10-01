@@ -211,6 +211,9 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string; restore
     sheetAbsent = on;
     if (!sheetMode) return;
     aside.classList.toggle("sheet-absent", on);
+    // §P16-bis: la pista de arrastre (fuera de #panel) necesita saber si la
+    // hoja está ausente para bajar al borde. El espejo va en <html>.
+    document.documentElement.classList.toggle("sheet-absent", on && sheetMode);
     if (on) {
       aside.setAttribute("aria-hidden", "true");
       aside.setAttribute("inert", "");
@@ -241,6 +244,9 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string; restore
         window.dispatchEvent(new CustomEvent("panel:sheet", { detail: { locked: false } }));
       }
       aside.classList.remove("sheet", "sheet-peek", "sheet-half", "sheet-full", "sheet-absent");
+      // §P16-bis: al salir del modo hoja (escritorio u horizontal) la clase de
+      // <html> no puede quedarse pegada, o la pista se bajaría donde no debe.
+      document.documentElement.classList.remove("sheet-absent");
       aside.removeAttribute("aria-hidden");
       aside.removeAttribute("inert");
       applyCollapsed();

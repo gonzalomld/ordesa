@@ -3177,10 +3177,54 @@ function elevFull36(): Float32Array {
     const desktopSize = css.includes("width: min(27rem, calc(100vw - 16px))");
     const desktopFold = has(css, "#panel.pcard.panel-collapsed");
     const mobIdx = css.indexOf("@media (max-width: 899px) and (min-height: 501px)");
-    const absentIdx = css.indexOf("sheet-absent");
+    const absentIdx = css.indexOf("#panel.pcard.sheet.sheet-absent");
     const scoped = mobIdx >= 0 && absentIdx > mobIdx;
     gate("P16-escritorio-intacto", desktopSize && desktopFold && scoped,
       `ancho escritorio 27rem=${desktopSize} · plegado=${desktopFold} · sheet-absent solo en media móvil=${scoped}`);
+  }
+}
+
+// --- §P16-bis — la pista no pisa la etiqueta y se lee --------------------
+// Contrato estático. La medida de lo que SE VE (que la pista no interseca
+// ninguna etiqueta, con la hoja ausente y con posición restaurada) va en
+// `npm run verify:p16` (scripts/verify-p16.mjs).
+{
+  const css = readFileSync("src/styles/main.css", "utf8");
+  const panelSrc = readFileSync("src/narrative/panel.ts", "utf8");
+  const hintSrc = readFileSync("src/engine/scroll-hint.ts", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+
+  // P16b-altura-por-estado: .scroll-hint usa var(--hint-lift); html.sheet-absent
+  // la redefine a 22px; panel.ts pone y quita la clase en <html> en el mismo
+  // sitio que en #panel, y la limpia al salir del modo hoja.
+  {
+    const usesVar = has(css, "bottom: calc(var(--hint-lift, 124px) + env(safe-area-inset-bottom, 0px))");
+    const redefines = css.includes("html.sheet-absent {") && /html\.sheet-absent\s*\{[^}]*--hint-lift:\s*22px/.test(css);
+    const setsHtml = has(panelSrc, 'document.documentElement.classList.toggle("sheet-absent", on && sheetMode)');
+    const clearsHtml = has(panelSrc, 'document.documentElement.classList.remove("sheet-absent")');
+    gate("P16b-altura-por-estado", usesVar && redefines && setsHtml && clearsHtml,
+      `var(--hint-lift, 124px)=${usesVar} · html.sheet-absent → 22px=${redefines} · <html> toggle=${setsHtml} · <html> remove=${clearsHtml}`);
+  }
+
+  // P16b-pista-legible: velo radial, texto en perla con text-shadow, flecha con
+  // drop-shadow y opacidad de encendido >= 0.88.
+  {
+    const veil = css.includes(".scroll-hint::before") && has(css, "radial-gradient(closest-side, rgba(4, 7, 12, 0.7)");
+    const text = /\.scroll-hint-text\s*\{[^}]*color:\s*var\(--pearl\)[^}]*text-shadow:/.test(css);
+    const arrow = /\.scroll-hint-arrow\s*\{[^}]*drop-shadow/.test(css);
+    const m = css.match(/\.scroll-hint-on\s*\{[^}]*opacity:\s*([\d.]+)/);
+    const onOp = m ? Number(m[1]) : NaN;
+    const bright = Number.isFinite(onOp) && onOp >= 0.88;
+    gate("P16b-pista-legible", veil && text && arrow && bright,
+      `velo radial=${veil} · texto pearl+shadow=${text} · flecha drop-shadow=${arrow} · opacidad .on=${onOp} (>=0.88=${bright})`);
+  }
+
+  // P16b-sin-tocar-el-modulo: la posición por estado vive en CSS/<html>, nunca
+  // en el módulo: scroll-hint.ts no conoce la hoja ni --hint-lift.
+  {
+    const clean = !has(hintSrc, "hint-lift") && !has(hintSrc, "sheet-absent") && !has(hintSrc, "--hint");
+    gate("P16b-sin-tocar-el-modulo", clean,
+      `scroll-hint.ts sin hint-lift/sheet-absent/--hint=${clean}`);
   }
 }
 

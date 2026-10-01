@@ -6,6 +6,10 @@
 //      gestos; ninguna .tele suelta en pantalla.
 //   2) P16-entrada-una-vez  — tras UN gesto táctil real la hoja llega a MEDIA,
 //      `sheet-absent` no reaparece y la pista está oculta en ese instante.
+//   3) P16b-pista-no-pisa   — §P16-bis: con la hoja AUSENTE la pista baja al
+//      borde (bottom <= 30 px) y no interseca ninguna .lbl visible. Con posición
+//      restaurada (hoja en asomo) vuelve a 124 px y queda apagada (sin solape
+//      visual posible: la restauración nunca la enciende).
 //
 // Requiere `npm run build` antes (sirve dist/). No entra en `npm run build`.
 import { createServer } from "node:http";
@@ -140,6 +144,40 @@ async function main() {
       `caja fuera (top=${A.top.toFixed(0)} >= ${A.innerH})=${boxOff} · pointer-events=${A.pointerEvents} · ausente=${A.absent} · aria-hidden=${A.ariaHidden} · inert=${A.inert} · .tele oculta=${A.teleHidden} · scrollY=${A.scrollY}${A.hintAllowed ? " · pista permitida" : ""}`,
     );
 
+    // --- Puerta 1b: §P16-bis — con la hoja AUSENTE la pista baja al borde y no
+    // pisa ninguna etiqueta visible (antes flotaba a 124 px sobre la Pradera). ---
+    const H = await page.evaluate(() => {
+      const hint = document.querySelector(".scroll-hint");
+      if (!(hint instanceof HTMLElement)) return { found: false };
+      const hr = hint.getBoundingClientRect();
+      const labels = [...document.querySelectorAll(".lbl")].filter((l) => {
+        const cs = getComputedStyle(l);
+        if (cs.display === "none" || Number(cs.opacity) < 0.05) return false;
+        const r = l.getBoundingClientRect();
+        return r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth && r.width > 0 && r.height > 0;
+      });
+      const hits = labels
+        .filter((l) => {
+          const r = l.getBoundingClientRect();
+          return hr.left < r.right && hr.right > r.left && hr.top < r.bottom && hr.bottom > r.top;
+        })
+        .map((l) => (l.textContent ?? "").trim().replace(/\s+/g, " "));
+      return {
+        found: true,
+        htmlAbsent: document.documentElement.classList.contains("sheet-absent"),
+        on: hint.classList.contains("scroll-hint-on"),
+        bottom: getComputedStyle(hint).bottom,
+        visibleLabels: labels.length,
+        hits,
+      };
+    });
+    const lowEnough = parseFloat(H.bottom) <= 30;
+    gate(
+      "P16b-pista-no-pisa",
+      H.found && H.htmlAbsent && H.on && lowEnough && H.hits.length === 0,
+      `hoja ausente en <html>=${H.htmlAbsent} · pista encendida=${H.on} · bottom=${H.bottom} (<=30px=${lowEnough}) · etiquetas visibles=${H.visibleLabels} · solapes=${H.hits.length}${H.hits.length ? ` [${H.hits.join(" | ")}]` : ""}`,
+    );
+
     // --- Puerta 2: entrada única tras un gesto táctil real ---
     // La entrada va de AUSENTE a MEDIA en una sola transición; §P15 puede
     // devolverla después a asomo al seguir avanzando (asomo es su reposo).
@@ -235,6 +273,41 @@ async function main() {
       "P16-restauracion-asomo",
       !restoredState.absent && restoredState.scrollY > 1,
       `ausente=${restoredState.absent} · asomo=${restoredState.peek} · scrollY=${restoredState.scrollY.toFixed(0)}`,
+    );
+
+    // --- Puerta 2c: §P16-bis — con la hoja en ASOMO la pista vuelve a 124 px
+    // (esquivándola) y sigue sin pisar ninguna etiqueta. ---
+    const HR = await page.evaluate(() => {
+      const hint = document.querySelector(".scroll-hint");
+      if (!(hint instanceof HTMLElement)) return { found: false };
+      const hr = hint.getBoundingClientRect();
+      const labels = [...document.querySelectorAll(".lbl")].filter((l) => {
+        const cs = getComputedStyle(l);
+        if (cs.display === "none" || Number(cs.opacity) < 0.05) return false;
+        const r = l.getBoundingClientRect();
+        return r.bottom > 0 && r.top < innerHeight && r.width > 0 && r.height > 0;
+      });
+      const hits = labels.filter((l) => {
+        const r = l.getBoundingClientRect();
+        return hr.left < r.right && hr.right > r.left && hr.top < r.bottom && hr.bottom > r.top;
+      });
+      return {
+        found: true,
+        htmlAbsent: document.documentElement.classList.contains("sheet-absent"),
+        on: hint.classList.contains("scroll-hint-on"),
+        bottom: getComputedStyle(hint).bottom,
+        visibleLabels: labels.length,
+        hits: hits.length,
+      };
+    });
+    const backUp = Math.abs(parseFloat(HR.bottom) - 124) <= 6;
+    // Con posición restaurada la pista NO se enciende (savedFraction !== null):
+    // solo se comprueba que vuelve a su altura de hoja presente, que es la que
+    // garantiza que si algún día se muestra no invade la barra de asomo.
+    gate(
+      "P16b-pista-altura-restaurada",
+      HR.found && !HR.htmlAbsent && backUp && !HR.on,
+      `hoja ausente en <html>=${HR.htmlAbsent} · bottom=${HR.bottom} (~124px=${backUp}) · pista encendida tras restaurar=${HR.on} (debe ser false) · etiquetas visibles=${HR.visibleLabels} · solapes=${HR.hits}`,
     );
 
     // --- Puerta 3: escritorio intacto (1440x900) ---

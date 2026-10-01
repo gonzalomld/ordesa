@@ -1400,37 +1400,63 @@ html.intro-on .scroll-hint {
 .scroll-hint {
   position: fixed;
   left: 50%;
-  /* §P15: por encima de la hoja de asomo (112 px), no de la telemetría. */
-  bottom: calc(124px + env(safe-area-inset-bottom, 0px));
+  /* §P16-bis: la altura depende de si la hoja está en pantalla. Con la hoja
+     presente (asomo/media/completa) sube a 124 px para esquivar su barra; con
+     la hoja AUSENTE al arrancar baja al borde (--hint-lift: 22px). */
+  bottom: calc(var(--hint-lift, 124px) + env(safe-area-inset-bottom, 0px));
   z-index: 19;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   opacity: 0;
   transform: translate(-50%, 10px);
   transition: opacity 800ms ease, transform 800ms ease;
   pointer-events: none;
 }
 
+/* §P16-bis: panel.ts pone/quita sheet-absent en <html> junto con #panel, así
+   que la pista sabe si la hoja existe sin selectores de hermanos frágiles. */
+html.sheet-absent {
+  --hint-lift: 22px;
+}
+
+/* §P16-bis: velo radial para que la pista se lea sobre la niebla clara del
+   amanecer. Queda detrás del texto y del glifo, delante del lienzo: .scroll-hint
+   ya crea contexto de apilado (fixed + z-index), así que -1 basta. */
+.scroll-hint::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 280px;
+  height: 160px;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(closest-side, rgba(4, 7, 12, 0.7), rgba(4, 7, 12, 0));
+}
+
 .scroll-hint-on {
-  opacity: 0.78;
+  opacity: 0.9;
   transform: translate(-50%, 0);
 }
 
 .scroll-hint-text {
   font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.28em;
+  font-size: 11px;
+  letter-spacing: 0.3em;
   text-transform: uppercase;
-  color: var(--faint);
+  color: var(--pearl);
   white-space: nowrap;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.85);
 }
 
 .scroll-hint-arrow {
-  width: 18px;
-  height: 11px;
-  color: var(--gold-bright);
+  width: 17px;
+  height: 10px;
+  color: var(--pearl);
+  filter: drop-shadow(0 1px 6px rgba(0, 0, 0, 0.8));
   animation: scroll-hint-float 2.6s ease-in-out infinite;
 }
 
