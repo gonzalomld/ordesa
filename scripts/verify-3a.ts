@@ -3228,6 +3228,94 @@ function elevFull36(): Float32Array {
   }
 }
 
+// --- §P17 — analítica de Vercel (vía "Other": inject, sin React) ----------
+// Contrato estático. No hay nada que medir en navegador: inject() no debe
+// bloquear ni cambiar la pieza (P17-no-bloquea lo cubre por orden/await).
+{
+  const mainSrc = readFileSync("src/main.ts", "utf8");
+  const pkg = JSON.parse(readFileSync("package.json", "utf8")) as {
+    dependencies?: Record<string, string>;
+  };
+  const has = (s: string, k: string): boolean => s.includes(k);
+
+  // Todos los fuentes de src/ (recursivo) para las comprobaciones "en src".
+  const srcFiles: string[] = [];
+  (function walk(dir: string): void {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = `${dir}/${e.name}`;
+      if (e.isDirectory()) walk(p);
+      else if (/\.(ts|tsx|js|mjs)$/.test(e.name)) srcFiles.push(p);
+    }
+  })("src");
+
+  // P17-inject-una-vez: import raíz (no /react ni /next), una sola llamada en
+  // main.ts, ninguna en el resto de src/, y dependencia declarada.
+  {
+    const importOk =
+      /from\s*"@vercel\/analytics"/.test(mainSrc) &&
+      !has(mainSrc, "@vercel/analytics/react") &&
+      !has(mainSrc, "@vercel/analytics/next");
+    let calls = 0;
+    let others = 0;
+    for (const f of srcFiles) {
+      const n = (readFileSync(f, "utf8").match(/(?<![.\w])inject\s*\(/g) ?? []).length;
+      if (f.endsWith("/main.ts")) calls += n;
+      else others += n;
+    }
+    const dep = Boolean(pkg.dependencies?.["@vercel/analytics"]);
+    gate("P17-inject-una-vez", importOk && calls === 1 && others === 0 && dep,
+      `import raíz=${importOk} · inject() en main.ts=${calls} (need 1) · inject() fuera=${others} (need 0) · dependencia=${dep}`);
+  }
+
+  // P17-tipos-vite: referencia a vite/client para import.meta.env.
+  {
+    const p = "src/vite-env.d.ts";
+    const ok = existsSync(p) && has(readFileSync(p, "utf8"), '/// <reference types="vite/client" />');
+    gate("P17-tipos-vite", ok, `src/vite-env.d.ts con vite/client=${ok}`);
+  }
+
+  // P17-modo-explicito: mode derivado de import.meta.env.PROD (la detección
+  // automática del paquete no es fiable en Vite).
+  {
+    const ok = has(mainSrc, 'mode: import.meta.env.PROD ? "production" : "development"');
+    gate("P17-modo-explicito", ok, `mode desde import.meta.env.PROD=${ok}`);
+  }
+
+  // P17-sin-auditorias: beforeSend descarta el evento (null) con cualquiera de
+  // las banderas de depuración/pose. Las de campaña NO están y sí se cuentan.
+  {
+    const hasBefore = has(mainSrc, "beforeSend");
+    const dropsNull = /if\s*\(FLAGS\.some\(\(k\)\s*=>\s*q\.has\(k\)\)\)\s*return null;/.test(mainSrc);
+    const flags = ["debug", "s", "cam", "orbit", "wheeltest", "wheelstart", "act", "tier", "ghost", "clouds", "skyfrac", "t", "slot"];
+    const allFlags = flags.every((f) => has(mainSrc, `"${f}"`));
+    const noCampaign = !has(mainSrc, '"utm_') && !has(mainSrc, '"ref"') && !has(mainSrc, '"gclid"') && !has(mainSrc, '"fbclid"');
+    gate("P17-sin-auditorias", hasBefore && dropsNull && allFlags && noCampaign,
+      `beforeSend=${hasBefore} · descarta con null=${dropsNull} · ${flags.length} banderas=${allFlags} · campaña no filtrada=${noCampaign}`);
+  }
+
+  // P17-no-bloquea: inject() antes de startViewer y sin await.
+  {
+    const iInject = mainSrc.indexOf("inject(");
+    const iStart = mainSrc.indexOf("startViewer(");
+    const ordered = iInject >= 0 && iStart >= 0 && iInject < iStart;
+    const noAwait = !has(mainSrc, "await inject");
+    gate("P17-no-bloquea", ordered && noAwait,
+      `inject antes de startViewer=${ordered} · sin await=${noAwait}`);
+  }
+
+  // P17-sin-track: plan Hobby. Ningún import de track() desde @vercel/analytics
+  // (sin import no puede haber llamada).
+  {
+    let namedTrack = false;
+    for (const f of srcFiles) {
+      for (const m of readFileSync(f, "utf8").matchAll(/import\s*\{([^}]*)\}\s*from\s*["']@vercel\/analytics["']/g)) {
+        if (/\btrack\b/.test(m[1] ?? "")) namedTrack = true;
+      }
+    }
+    gate("P17-sin-track", !namedTrack, `ningún import de track() desde @vercel/analytics=${!namedTrack}`);
+  }
+}
+
 // --- R1 — puentear las vaguadas del perfil (05-build-route + lib/route-bridge) ---
 {
   interface RJ {
