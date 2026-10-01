@@ -3316,6 +3316,24 @@ function elevFull36(): Float32Array {
   }
 }
 
+// --- §P17-ter — CTA de descarga del track al final del recorrido ----------
+// El botón no vive dentro del cuerpo del epílogo (quedaba enterrado y, en
+// móvil, bajo la hoja en asomo): es un CTA fijo, fuera de #panel.
+{
+  const panelSrc = readFileSync("src/narrative/panel.ts", "utf8");
+  const css = readFileSync("src/styles/main.css", "utf8");
+  const has = (s: string, k: string): boolean => s.includes(k);
+  const anchor =
+    has(panelSrc, '"gate-btn epi-cta"') &&
+    has(panelSrc, '"/assets/senda-cazadores.gpx"') &&
+    has(panelSrc, '"download", "senda-de-los-cazadores.gpx"');
+  const onlyEpi = has(panelSrc, 'setEpiCta(next === "EPI")');
+  const fixed = /\.epi-cta\s*\{[^}]*position:\s*fixed/.test(css) && has(css, ".epi-cta-on");
+  const belowPanel = /\.epi-cta\s*\{[^}]*z-index:\s*17/.test(css);
+  gate("P17-ter-cta-descarga", anchor && onlyEpi && fixed && belowPanel,
+    `anchor+download=${anchor} · solo en EPI=${onlyEpi} · fixed+on=${fixed} · z-index 17 (< #panel)=${belowPanel}`);
+}
+
 // --- R1 — puentear las vaguadas del perfil (05-build-route + lib/route-bridge) ---
 {
   interface RJ {

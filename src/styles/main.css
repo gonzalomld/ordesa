@@ -1070,8 +1070,8 @@ body {
   font-style: italic;
 }
 
-/* §P16-track: cierre del recorrido — botón principal de descarga del track
-   (mismo .gate-btn de la portada). */
+/* §P17-ter: botón de descarga DENTRO del cuerpo del epílogo (manda cuando la
+   hoja está abierta; el CTA fijo .epi-cta manda con la hoja en asomo). */
 #panel.pcard .epi-dl {
   margin-top: 26px;
   display: flex;
@@ -1081,6 +1081,41 @@ body {
 
 #panel.pcard .epi-dl .gate-btn {
   max-width: 100%;
+}
+
+/* §P17-ter: CTA principal al final del recorrido. Mismo .gate-btn de la
+   portada, pero FIXED y fuera de #panel: se ve aunque la hoja esté en asomo o
+   el cuerpo del panel no se haya desplazado. z-index 17 (< #panel 18): con la
+   hoja abierta queda tapado y manda el cuerpo; en asomo queda por encima de
+   la barra (112 px) porque se levanta con --hint-lift (124 px). */
+.epi-cta {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--hint-lift, 124px) + env(safe-area-inset-bottom, 0px) + 8px);
+  z-index: 17;
+  opacity: 0;
+  transform: translate(-50%, 12px);
+  transition: opacity 400ms ease, transform 400ms ease;
+  pointer-events: none;
+}
+
+.epi-cta-on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+
+@media (min-width: 900px) {
+  .epi-cta {
+    /* por encima de la franja de telemetría del HUD (abajo) */
+    bottom: calc(66px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .epi-cta {
+    transition: none;
+  }
 }
 
 #panel.pcard .pend {

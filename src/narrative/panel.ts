@@ -93,11 +93,11 @@ function actBody(a: ActJson): string {
       )
       .join("");
     const cierre = a.epiCierre ? `<p class="epi-cierre">${a.epiCierre.html}</p>` : "";
-    // Fin del recorrido: botón principal (mismo .gate-btn de la portada) que
-    // descarga el track. El GPX vive en /assets (exento del rewrite SPA) y se
-    // genera saneado con scripts/22-build-track-gpx.ts.
+    // CTA principal de fin de recorrido dentro del cuerpo (para cuando la hoja
+    // está abierta). mountPanel añade además un CTA FIJO (.epi-cta) visible con
+    // la hoja en asomo o sin desplazar el panel.
     const dl =
-      `<a class="gate-btn epi-dl-btn" href="/assets/senda-cazadores.gpx" download="senda-de-los-cazadores.gpx">` +
+      `<a class="gate-btn epi-dl-btn" href="/assets/senda-cazadores.gpx" download="senda-de-los-cazadores.gpx" aria-label="Descargar el track de la senda en formato GPX">` +
       `<span class="gate-btn-l">Descargar el track (.gpx)</span>` +
       `<span class="gate-btn-i" aria-hidden="true"><svg viewBox="0 0 12 14" aria-hidden="true"><path d="M5 1h2v5h2.4L6 10.6 2.6 6H5V1z"/><path d="M1 12h10v1.5H1z"/></svg></span>` +
       `</a>`;
@@ -457,6 +457,23 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string; restore
     setCollapsed(false);
   });
 
+  // §P17-ter: CTA principal al final del recorrido — el mismo .gate-btn de la
+  // portada, pero FIXED y fuera de #panel, para que se vea aunque la hoja esté
+  // en asomo o el cuerpo del panel no se haya desplazado. Se enciende al entrar
+  // en el epílogo y se apaga al salir.
+  const epiCta = document.createElement("a");
+  epiCta.className = "gate-btn epi-cta";
+  epiCta.href = "/assets/senda-cazadores.gpx";
+  epiCta.setAttribute("download", "senda-de-los-cazadores.gpx");
+  epiCta.setAttribute("aria-label", "Descargar el track de la senda en formato GPX");
+  epiCta.innerHTML =
+    `<span class="gate-btn-l">Descargar el track (.gpx)</span>` +
+    `<span class="gate-btn-i" aria-hidden="true"><svg viewBox="0 0 12 14" aria-hidden="true"><path d="M5 1h2v5h2.4L6 10.6 2.6 6H5V1z"/><path d="M1 12h10v1.5H1z"/></svg></span>`;
+  document.body.appendChild(epiCta);
+  function setEpiCta(on: boolean): void {
+    epiCta.classList.toggle("epi-cta-on", on);
+  }
+
   // --- §P15: gestos de la hoja ---
   // Tap en la barra: alterna asomo <-> media. Arrastre vertical sobre la
   // barra/tirador: cambia de altura con ajuste por velocidad (>0,5 px/ms
@@ -540,6 +557,8 @@ export function mountPanel(opts: { actsUrl: string; flotanteId?: string; restore
     // escalonados). Sin temporizadores: pinta y listo; con reduced-motion
     // el CSS anula las animaciones.
     paintAct(a);
+    // §P17-ter: el CTA de descarga solo en el epílogo (fin del recorrido).
+    setEpiCta(next === "EPI");
     // §P15: al entrar en un acto nuevo, de vuelta a asomo y, 600 ms después
     // (para no pisarse con el movimiento de cámara), subida automática a media.
     if (sheetMode && sheetHeight !== "peek") setSheetHeight("peek");
