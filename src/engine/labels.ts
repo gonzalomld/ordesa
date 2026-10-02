@@ -37,6 +37,24 @@ export interface LabelRuntime {
   occluded: boolean;
 }
 
+/** §M1-bis: caja de una etiqueta colocada en el último updateLabels.
+ * x,y = esquina superior izquierda; w,h = tamaño. `el` permite al marcador
+ * ceder el turno (D.3). */
+export interface PlacedBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  el: HTMLElement;
+}
+
+let lastPlaced: PlacedBox[] = [];
+
+/** Cajas colocadas en el último updateLabels (para el despeje de §M1-bis). */
+export function placedBoxes(): PlacedBox[] {
+  return lastPlaced;
+}
+
 export function buildLabels(
   defs: LabelDef[],
   cx: number,
@@ -183,7 +201,7 @@ export function updateLabels(
   // project all (S4: NDC and world position need SEPARATE vectors — the old
   // code overwrote _v with the world pos and read .x/.y as if they were NDC,
   // sending every label to absurd coordinates)
-  const placed: { x: number; y: number; w: number; h: number }[] = [];
+  const placed: PlacedBox[] = [];
   const wp = new THREE.Vector3();
   const order = rts
     .map((rt) => {
@@ -223,7 +241,7 @@ export function updateLabels(
           break;
         }
       }
-      if (!hidden) placed.push({ x: px, y: py, w: bw, h: bh });
+      if (!hidden) placed.push({ x: px, y: py, w: bw, h: bh, el: rt.el });
     }
     if (hidden !== rt.lastHidden) {
       rt.lastHidden = hidden;
@@ -246,4 +264,7 @@ export function updateLabels(
       rt.el.style.opacity = op;
     }
   }
+  // §M1-bis: cajas en esquina superior izquierda (la etiqueta está anclada por
+  // abajo: bottom = py, top = py − h) para el despeje de los marcadores.
+  lastPlaced = placed.map((p) => ({ x: p.x - p.w / 2, y: p.y - p.h, w: p.w, h: p.h, el: p.el }));
 }

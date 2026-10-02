@@ -201,6 +201,76 @@ async function main() {
       oneEvent && C.pd > 0 && C.sp > 0 && noScroll,
       `eventos=${C.count} [${C.ids.join(",")}] · preventDefault=${C.pd} · stopPropagation=${C.sp} · scroll ${C.scroll0}->${C.scroll1}`,
     );
+
+    // --- §M1-bis F: con ?s=0.34 la aguja de calcilarruego queda arriba a la
+    // izquierda (≈ −62°), no abajo a la derecha (≈ +118°). ---
+    const pagePose = await context.newPage();
+    await enter(pagePose, "?s=0.34");
+    await pagePose.waitForFunction(() => document.querySelectorAll(".marker").length === 8, {}, { timeout: 60_000 });
+    await pagePose.waitForTimeout(400);
+    const A = await pagePose.evaluate(() => {
+      const el = document.querySelector('.marker[data-id="calcilarruego"]');
+      if (!(el instanceof HTMLElement)) return { found: false };
+      const cs = getComputedStyle(el);
+      const needle = el.querySelector(".marker-needle");
+      const x2 = Number(needle?.getAttribute("x2") ?? NaN);
+      const y2 = Number(needle?.getAttribute("y2") ?? NaN);
+      const angle = (Math.atan2(x2 - 20, -(y2 - 20)) * 180) / Math.PI;
+      return { found: true, visible: cs.display !== "none" && Number(cs.opacity) > 0.05, x2, y2, angle };
+    });
+    await pagePose.close();
+    const okAngle = A.found && A.visible && Math.abs(A.angle + 61.7) <= 4;
+    gate(
+      "M1-aguja-calcilarruego",
+      okAngle,
+      A.found
+        ? `visible=${A.visible} · aguja=(${A.x2.toFixed(1)},${A.y2.toFixed(1)}) · ángulo=${A.angle.toFixed(1)}° (esperado -61.7±4)`
+        : "marcador calcilarruego no encontrado",
+    );
+
+    // --- §M1-bis D: ningún disco visible pisa una etiqueta visible (0.34 y 0.62). ---
+    const overlapAt = async (s) => {
+      const p = await context.newPage();
+      await enter(p, `?s=${s}`);
+      await p.waitForFunction(() => document.querySelectorAll(".marker").length === 8, {}, { timeout: 60_000 });
+      await p.waitForTimeout(400);
+      const r = await p.evaluate(() => {
+        const vis = (el) => {
+          const cs = getComputedStyle(el);
+          return cs.display !== "none" && Number(cs.opacity) > 0.05;
+        };
+        const markers = [...document.querySelectorAll(".marker")].filter(vis);
+        const labels = [...document.querySelectorAll(".lbl")].filter(vis);
+        let hits = 0;
+        let worst = 0;
+        const pairs = [];
+        for (const m of markers) {
+          const d = m.querySelector(".marker-disc").getBoundingClientRect();
+          for (const l of labels) {
+            const lr = l.getBoundingClientRect();
+            const iw = Math.min(d.right, lr.right) - Math.max(d.left, lr.left);
+            const ih = Math.min(d.bottom, lr.bottom) - Math.max(d.top, lr.top);
+            if (iw > 0 && ih > 0) {
+              hits++;
+              worst = Math.max(worst, iw * ih);
+              pairs.push(
+                `${m.dataset.id}${getComputedStyle(m).getPropertyValue("--stem-extra")} vs «${(l.textContent ?? "").trim().slice(0, 18)}» ${iw.toFixed(0)}x${ih.toFixed(0)}`,
+              );
+            }
+          }
+        }
+        return { hits, worst, discs: markers.length, labels: labels.length, pairs };
+      });
+      await p.close();
+      return r;
+    };
+    const ov34 = await overlapAt("0.34");
+    const ov62 = await overlapAt("0.62");
+    gate(
+      "M1-sin-solape-etiqueta",
+      ov34.hits === 0 && ov62.hits === 0,
+      `0.34: ${ov34.hits} solape(s) (máx ${ov34.worst.toFixed(0)} px², ${ov34.discs} discos/${ov34.labels} etiquetas) [${ov34.pairs.join(" | ")}] · 0.62: ${ov62.hits} (máx ${ov62.worst.toFixed(0)} px²)[${ov62.pairs.join(" | ")}]`,
+    );
   } finally {
     await browser.close();
     server.close();

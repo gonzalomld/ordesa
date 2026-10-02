@@ -562,7 +562,7 @@ body {
   left: 0;
   top: 0;
   width: var(--md, 44px);
-  height: calc(var(--md, 44px) * 1.62);
+  height: calc(var(--md, 44px) * 1.62 + var(--stem-extra, 0px));
   will-change: transform, opacity;
   /* Mismo fundido que el panel/etiquetas al volver de la intro (400 ms). */
   transition: opacity 400ms ease;
@@ -586,7 +586,7 @@ body {
   left: 50%;
   bottom: 0;
   width: 1px;
-  height: calc(var(--md, 44px) * 0.62);
+  height: calc(var(--md, 44px) * 0.62 + var(--stem-extra, 0px));
   margin-left: -0.5px;
   background: linear-gradient(to top, rgba(234, 207, 159, 0.95), rgba(234, 207, 159, 0.25));
 }
@@ -656,6 +656,11 @@ body {
 
 .marker-center {
   fill: #eacf9f;
+}
+
+/* §M1-bis D.3: etiqueta cedida al marcador (gana el objetivo de clic). */
+.lbl.lbl-marker-hidden {
+  display: none !important;
 }
 
 /* --- phase-2 tuning hud --- */

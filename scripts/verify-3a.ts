@@ -6,7 +6,8 @@
 // (C10: chunk-name based, the minifier mangles identifiers).
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { BRIEF_LENGTH_M, CAM_CLEARANCE_M, CAM_RAIL_SAMPLES, CORRIDOR_HALF_M, EPI_PITCH, EPILOGUE_S, FOLLOW_BACK_MULT, FOLLOW_D_MIN, FOLLOW_H_AIM, FOLLOW_H_MULT, G11_LUMA_MIN, G12_SKY_MAX, G12_SKY_MIN, G13_TOL_M, G18_TOL_DEG, G23_COVERAGE, G23_Y_MAX, G23_Y_MIN, G31_LUMA_SHADOW_MIN, G32_CHROMA_SHADOW_MAX, G33_JS_LABELS_MAX_MS, G4_MAX_DEG, G66_ACCEL_MAX_DEG, G66_PITCH_MAX_DEG, G66_QUAT_MAX_DEG, G9_PLAN_COVERAGE, G9_PLAN_FRAC, GROUND_DARK, GROUND_DESAT, GROUND_SPAN, HEMI_DAY, HEMI_GRAY_MIX, HEMI_LUMA_FLOOR, LUMA_GRID, PITCH_MAX_HARD, RIM_ABOVE_CAM_M, RIM_ALONG_MAX, RIM_CORRIDOR_HALF_M, RIM_HALF_ANGLE_DEG, RIM_MARGIN_M, RIM_RADIUS_M, ROCK_CORRIDOR_K, ROCK_FAR_M, ROCK_MIX, ROCK_NEAR_M, ROCK_SCALE_A, ROCK_SCALE_B, ROUTE_DIVERGE_PCT, SHADOW_INTENSITY, SLOPE_WINDOW_M, SUNSET_ELEV_DEG, WALKER_NDC_Y } from "../src/narrative/choreography.ts";
-import { alongTrackRun, bakeCamRail, bisectSunset, followAt, quatDistDeg, quatYXZ, resolveAnchors, resolveFollowProfile, ropeHeadingDeg, trackAt, zRawAt } from "../src/narrative/anchors.ts";
+import { alongTrackRun, bakeCamRail, bearingDeg, bisectSunset, followAt, quatDistDeg, quatYXZ, resolveAnchors, resolveFollowProfile, ropeHeadingDeg, trackAt, zRawAt } from "../src/narrative/anchors.ts";
+import { PerspectiveCamera } from "three";
 import { introSample, INTRO_DURATION_S, INTRO_START_ALT_M, INTRO_MIN_CLEARANCE_M, type IntroTarget } from "../src/narrative/intro.ts";
 import { pickTextures, assetWebPath, TEX_HEIGHTMAP } from "../src/engine/tex-budget.ts";
 import { findBridges } from "./lib/route-bridge.ts";
@@ -15,11 +16,13 @@ import { buildPchip } from "../src/narrative/curve.ts";
 import { sunPosition } from "./lib/sun.ts";
 import { clampLabelX } from "../src/engine/labels.ts";
 import {
+  alturaVastago,
   anguloRelativo,
   dialSimplificado,
   diametroMarcador,
   opacidadMarcador,
   rumboA,
+  rumboCamara,
   sectorEdges,
 } from "../src/engine/markers.ts";
 
@@ -3403,6 +3406,46 @@ function elevFull36(): Float32Array {
     const okRel = Math.abs((rel[0] as number) - 0) < 1e-9 && Math.abs((rel[1] as number) - 20) < 1e-9 && Math.abs((rel[2] as number) + 20) < 1e-9;
     gate("M1-rumbo-norte", okRum && okRel,
       `rumboA=${rum.map((v) => v.toFixed(0)).join(",")} (0,90,180,270) · rel=${rel.join(",")} (0,20,-20)`);
+  }
+
+  // M1-rumbo-camara — la cámara de three mira por −Z; rumboCamara debe dar el
+  // yaw del raíl posando con quatYXZ(yaw, pitch) exactamente.
+  {
+    const cam = new PerspectiveCamera(50, 1.6, 1, 1e5);
+    let worst = 0;
+    for (const yaw of [0, 29, 58, 90, 119.7, 180, 270, 330]) {
+      const q = quatYXZ(yaw, 6);
+      cam.quaternion.set(q[0] as number, q[1] as number, q[2] as number, q[3] as number);
+      cam.updateMatrixWorld(true);
+      const rel = Math.abs(anguloRelativo(rumboCamara(cam), yaw));
+      if (rel > worst) worst = rel;
+    }
+    gate("M1-rumbo-camara", worst < 1e-6,
+      `desvío máx |rel(rumboCamara, yaw)|=${worst.toExponential(1)}° (0,29,58,90,119.7,180,270,330)`);
+  }
+
+  // M1-rumbo-sin-deriva — rumboA y bearingDeg no pueden separarse nunca.
+  {
+    const samples: [number, number][] = [[0, -100], [100, 0], [0, 100], [-100, 0], [37, -81], [-5, -5]];
+    let worst = 0;
+    for (const [dx, dz] of samples) worst = Math.max(worst, Math.abs(rumboA(dx, dz) - bearingDeg(dx, dz)));
+    gate("M1-rumbo-sin-deriva", worst < 1e-9,
+      `máx |rumboA−bearingDeg|=${worst.toExponential(1)}° en ${samples.length} muestras`);
+  }
+
+  // M1-despeje-de-etiqueta — alturaVastago despeja con 6 px, cap +48.
+  {
+    const base = 0.62 * 44;
+    const disco = { x: 90, y: 50, w: 20, h: 20 };
+    const hLibre = alturaVastago(base, disco, [{ x: 400, y: 63, w: 40, h: 34 }]);
+    const hCorto = alturaVastago(base, disco, [{ x: 80, y: 63, w: 40, h: 34 }]);
+    const hTope = alturaVastago(base, disco, [{ x: 80, y: 20, w: 40, h: 34 }]);
+    // con hCorto, el borde inferior del disco queda exactamente 6 px sobre el
+    // borde superior de la etiqueta (cajas con esquina superior izquierda).
+    const discBottom = disco.y + disco.h - (hCorto - base);
+    const exacto = Math.abs(discBottom - (63 - 6)) < 1e-9;
+    gate("M1-despeje-de-etiqueta", hLibre === base && hCorto > base && hCorto < base + 48 && exacto && hTope === base + 48,
+      `sin corte=${hLibre === base} · despeje=${hCorto.toFixed(2)} (6px exactos=${exacto}) · tope=${hTope.toFixed(2)}=${(base + 48).toFixed(2)}`);
   }
 
   // M1-sector-simetrico — con fov=54 el sector abarca 54° y la aguja lo centra.

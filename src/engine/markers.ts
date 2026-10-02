@@ -3,7 +3,8 @@
 // redondear, escritura solo si cambia), módulo aparte. SOLO DOM + SVG inline:
 // cero texturas, cero materiales, cero geometrías. La oclusión REUTILIZA
 // rayBlocked de labels.ts (una sola implementación de trazado de rayos).
-import { rayBlocked, type LabelRuntime } from "./labels.ts";
+import { Vector3 } from "three";
+import { placedBoxes, rayBlocked, type LabelRuntime, type PlacedBox } from "./labels.ts";
 
 export interface MarkerEncuadre {
   sujeto: string;
@@ -23,9 +24,10 @@ export interface MarkerDef {
   encuadre: MarkerEncuadre;
 }
 
-/** Cámara vista estructuralmente: markers.ts no importa three. */
+/** Cámara vista estructuralmente: markers.ts no importa three salvo Vector3. */
 export interface CameraLike {
   updateWorldMatrix(updateParents: boolean, updateChildren: boolean): void;
+  getWorldDirection(target: Vector3): Vector3;
   matrixWorld: { elements: ArrayLike<number> };
   matrixWorldInverse: { elements: ArrayLike<number> };
   projectionMatrix: { elements: ArrayLike<number> };
@@ -58,6 +60,7 @@ export interface MarkerRuntime {
   lastDiam: number;
   lastRel: number;
   lastSimple: boolean;
+  lastExtra: number;
   occluded: boolean;
 }
 
@@ -86,13 +89,13 @@ export function rumboA(dx: number, dz: number): number {
   return (Math.atan2(dx, -dz) * 180 / Math.PI + 360) % 360;
 }
 
-/** Rumbo 0..360 de la dirección de vista de la cámara. */
+/** Rumbo 0..360 de la dirección de vista de la cámara. La cámara de three
+ * mira por su −Z: getWorldDirection ya devuelve (−col8,−col9,−col10). Leer la
+ * columna +Z sin negar daba el rumbo de la nuca (180° desviado). */
+const _fwd = new Vector3();
 export function rumboCamara(camera: CameraLike): number {
-  camera.updateWorldMatrix(true, false);
-  const e = camera.matrixWorld.elements;
-  const fx = e[8] as number;
-  const fz = e[10] as number;
-  return (Math.atan2(fx, -fz) * 180 / Math.PI + 360) % 360;
+  const f = camera.getWorldDirection(_fwd);
+  return rumboA(f.x, f.z);
 }
 
 /** Ángulo relativo -180..180 del sujeto respecto al rumbo de la cámara. */
@@ -132,11 +135,39 @@ export function dialSimplificado(d: number): boolean {
   return d >= SIMPLE_M;
 }
 
+/** Caja en pantalla: esquina superior izquierda (x,y) + tamaño (w,h), CSS px. */
+export interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const CLEAR_MARGIN = 6;
+const STEM_EXTRA_MAX = 48;
+
+/** §M1-bis D.2 — altura mínima de vástago que deja el disco 6 px por encima de
+ * la caja que estorba, acotada a base+48. Sin corte devuelve `base`. Pura. */
+export function alturaVastago(base: number, cajaDisco: Box, cajas: Box[]): number {
+  const discBottom = cajaDisco.y + cajaDisco.h;
+  const discCx = cajaDisco.x + cajaDisco.w / 2;
+  let extra = 0;
+  for (const caja of cajas) {
+    if (Math.abs(discCx - (caja.x + caja.w / 2)) >= (cajaDisco.w + caja.w) / 2) continue;
+    const need = discBottom - caja.y + CLEAR_MARGIN;
+    if (need > extra) extra = need;
+  }
+  if (extra <= 0) return base;
+  return base + Math.min(STEM_EXTRA_MAX, extra);
+}
+
 // ---------------------------------------------------------------------------
 // §7 intro — mismo contrato que labels.ts
 // ---------------------------------------------------------------------------
 let introHidden = false;
 const liveRts: MarkerRuntime[] = [];
+/** §M1-bis D.3: etiquetas cedidas al marcador en el último update. */
+let suppressedLabels = new Set<HTMLElement>();
 export function setMarkersHidden(on: boolean): void {
   introHidden = on;
   // Invalidar el cache de opacidad para que el próximo update reescriba.
@@ -259,6 +290,7 @@ export function buildMarkers(
       lastDiam: -1,
       lastRel: NaN,
       lastSimple: false,
+      lastExtra: -1,
       occluded: false,
     };
   });
@@ -314,6 +346,8 @@ export function updateMarkers(
   const cpx = camera.position.x;
   const cpy = camera.position.y;
   const cpz = camera.position.z;
+  const cajas: PlacedBox[] = placedBoxes();
+  const stillSuppressed = new Set<HTMLElement>();
   for (const rt of rts) {
     const dist = Math.hypot(rt.wx - cpx, rt.wy - cpy, rt.wz - cpz);
     let hidden = dist > HIDE_M;
@@ -352,9 +386,33 @@ export function updateMarkers(
       rt.lastY = py;
       rt.el.style.transform = `translate3d(${px}px,${py}px,0) translate(-50%,-100%)`;
     }
+    // §M1-bis D.2: el vástago crece lo justo para que el disco despeje las
+    // etiquetas de hito (mismo punto del mundo en 3 de los 8 marcadores).
+    const baseStem = diam * 0.62;
+    const discTop = py - baseStem - diam;
+    const stemH = cajas.length
+      ? alturaVastago(baseStem, { x: px - diam / 2, y: discTop, w: diam, h: diam }, cajas)
+      : baseStem;
+    const extra = stemH - baseStem;
+    if (extra !== rt.lastExtra) {
+      rt.lastExtra = extra;
+      rt.el.style.setProperty("--stem-extra", `${extra}px`);
+    }
+    // D.3: si aun con el tope sigue cortando, gana el marcador — la etiqueta
+    // cede (target de clic perdido = marcador inutilizable).
+    const grownTop = py - stemH - diam;
+    const gx0 = px - diam / 2;
+    const gx1 = gx0 + diam;
+    const gy1 = grownTop + diam;
+    for (const caja of cajas) {
+      if (gx0 < caja.x + caja.w && gx1 > caja.x && grownTop < caja.y + caja.h && gy1 > caja.y) {
+        stillSuppressed.add(caja.el);
+      }
+    }
     const simple = dialSimplificado(dist);
     if (simple !== rt.lastSimple) {
       rt.lastSimple = simple;
+      rt.lastRel = NaN; // E: fuerza redibujo al volver el dial completo
       rt.sectorEl.style.display = simple ? "none" : "";
       rt.needleEl.style.display = simple ? "none" : "";
     }
@@ -366,6 +424,10 @@ export function updateMarkers(
       }
     }
   }
+  // D.3: restituir las etiquetas que ya no cede ningún marcador.
+  for (const el2 of suppressedLabels) if (!stillSuppressed.has(el2)) el2.classList.remove("lbl-marker-hidden");
+  for (const el2 of stillSuppressed) el2.classList.add("lbl-marker-hidden");
+  suppressedLabels = stillSuppressed;
 }
 
 /** §6 oclusión reutilizando rayBlocked de labels.ts, misma cadencia (6 frames). */
