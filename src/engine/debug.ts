@@ -132,6 +132,8 @@ export interface BootQuery {
   lod: number | null;
   /** §3 haces: ?beams=0 los apaga (comparativa con la normal). */
   beams: boolean;
+  /** §M1 marcadores de foto: ?marcadores=0 los apaga (comparativa). */
+  markers: boolean;
   /** N2: ?debug=atlas — blitea el atlas de nubes ×0,5 abajo a la izquierda. */
   atlas: boolean;
   /** N2b: ?family=N (0-3) u off — filtro del medidor de nubes por familia. */
@@ -212,6 +214,7 @@ export function parseBootQuery(): BootQuery {
     cloudshadowOff: q.get("cloudshadow") === "0",
     lod: lodN !== null && Number.isFinite(lodN) && [1, 2, 3].includes(lodN) ? lodN : null,
     beams: q.get("beams") !== "0",
+    markers: q.get("marcadores") !== "0",
   };
 }
 

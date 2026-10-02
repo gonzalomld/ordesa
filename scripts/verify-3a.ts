@@ -14,6 +14,14 @@ import { resolveFollowSafety } from "../src/narrative/collision.ts";
 import { buildPchip } from "../src/narrative/curve.ts";
 import { sunPosition } from "./lib/sun.ts";
 import { clampLabelX } from "../src/engine/labels.ts";
+import {
+  anguloRelativo,
+  dialSimplificado,
+  diametroMarcador,
+  opacidadMarcador,
+  rumboA,
+  sectorEdges,
+} from "../src/engine/markers.ts";
 
 let failures = 0;
 function gate(name: string, ok: boolean, detail: string): void {
@@ -3379,6 +3387,85 @@ function elevFull36(): Float32Array {
     `${list.length} puenteo(s) en route.json: ${
       list.length ? list.map((b) => `km ${b.km} d${b.depthM} w${b.widthM}`).join(" | ") : "ninguno"
     } · climb ${rjson.bridge?.totalClimbMBefore} -> ${rjson.bridge?.totalClimbMAfter} m (legacy sin puentear)`);
+}
+
+// --- §M1 — marcadores de foto, fase 1: la chapa --------------------------
+{
+  const markersSrc = readFileSync("src/engine/markers.ts", "utf8");
+  const viewerSrc = readFileSync("src/engine/viewer.ts", "utf8");
+
+  // M1-rumbo-norte — rumbo y ángulo relativo puros.
+  {
+    const rum = [rumboA(0, -100), rumboA(100, 0), rumboA(0, 100), rumboA(-100, 0)];
+    const exp = [0, 90, 180, 270];
+    const okRum = rum.every((v, i) => Math.abs(v - (exp[i] as number)) < 1e-9);
+    const rel = [anguloRelativo(39, 39), anguloRelativo(10, 350), anguloRelativo(350, 10)];
+    const okRel = Math.abs((rel[0] as number) - 0) < 1e-9 && Math.abs((rel[1] as number) - 20) < 1e-9 && Math.abs((rel[2] as number) + 20) < 1e-9;
+    gate("M1-rumbo-norte", okRum && okRel,
+      `rumboA=${rum.map((v) => v.toFixed(0)).join(",")} (0,90,180,270) · rel=${rel.join(",")} (0,20,-20)`);
+  }
+
+  // M1-sector-simetrico — con fov=54 el sector abarca 54° y la aguja lo centra.
+  {
+    let worst = 0;
+    let spanWorst = 0;
+    for (let a = 0; a < 360; a += 15) {
+      const [e0, e1] = sectorEdges(a, 54);
+      const d0 = Math.abs(anguloRelativo(e0, a));
+      const d1 = Math.abs(anguloRelativo(e1, a));
+      worst = Math.max(worst, Math.abs(d0 - 27), Math.abs(d1 - 27));
+      spanWorst = Math.max(spanWorst, Math.abs((((e1 - e0) % 360) + 360) % 360 - 54));
+    }
+    gate("M1-sector-simetrico", worst < 1e-6 && spanWorst < 1e-6,
+      `|borde-aguja| desvía ${worst.toExponential(1)}° de 27 · apertura desvía ${spanWorst.toExponential(1)}° de 54`);
+  }
+
+  // M1-escalera-monotona — diámetro y opacidad decrecen y están acotados.
+  {
+    let mono = true;
+    let dPrev = Infinity;
+    let oPrev = Infinity;
+    let dBounds = true;
+    let oBounds = true;
+    for (let d = 0; d <= 7000; d += 5) {
+      const dia = diametroMarcador(d);
+      const op = opacidadMarcador(d);
+      if (dia > dPrev + 1e-9 || op > oPrev + 1e-9) mono = false;
+      if (dia > 44 + 1e-9 || dia < 20 - 1e-9) dBounds = false;
+      if (op > 1 + 1e-9 || op < 0.55 - 1e-9) oBounds = false;
+      dPrev = dia;
+      oPrev = op;
+    }
+    const near = diametroMarcador(0) === 44 && opacidadMarcador(0) === 1;
+    const far = diametroMarcador(1e9) === 20 && opacidadMarcador(1e9) === 0.55;
+    const simple = !dialSimplificado(2499) && dialSimplificado(2500);
+    gate("M1-escalera-monotona", mono && dBounds && oBounds && near && far && simple,
+      `monótona=${mono} · Ø∈[20,44]=${dBounds} · α∈[.55,1]=${oBounds} · extremos=${near && far} · simplifica a 2500 m=${simple}`);
+  }
+
+  // M1-oclusion-reutilizada — una sola implementación de trazado de rayos.
+  {
+    const imports = /import\s*\{[^}]*\brayBlocked\b[^}]*\}\s*from\s*["']\.\/labels\.ts["']/.test(markersSrc);
+    const definesOwn = /function\s+rayBlocked\s*\(/.test(markersSrc);
+    const applied = /rayBlocked\s*\(/.test(markersSrc) && /occludeMarkers/.test(markersSrc) && /occludeMarkers\(/.test(viewerSrc);
+    gate("M1-oclusion-reutilizada", imports && !definesOwn && applied,
+      `markers.ts importa rayBlocked=${imports} · no lo redefine=${!definesOwn} · viewer aplica occludeMarkers=${applied}`);
+  }
+
+  // M1-intro-ocultos — se enciende junto a introArmed, se apaga en introFinish.
+  {
+    const onWithArmed = /if\s*\(introArmed\)[\s\S]{0,200}setMarkersHidden\(true\)/.test(viewerSrc);
+    const offFinish = /setIntroHidden\(false\);\s*setMarkersHidden\(false\);/.test(viewerSrc);
+    const bornHidden = /if\s*\(introHidden\)\s*el\.style\.opacity\s*=\s*"0"/.test(markersSrc);
+    gate("M1-intro-ocultos", onWithArmed && offFinish && bornHidden,
+      `true junto a introArmed=${onWithArmed} · false en introFinish=${offFinish} · buildMarkers nace oculto=${bornHidden}`);
+  }
+
+  // M1-sin-texturas — sin THREE.Texture/TextureLoader/materiales/geometrías.
+  {
+    const bad = /Texture|TextureLoader|BufferGeometry|ShaderMaterial|new\s+THREE\.|\.Material\b/.test(markersSrc);
+    gate("M1-sin-texturas", !bad, `markers.ts libre de texturas/materiales/geometrías=${!bad}`);
+  }
 }
 
 if (failures > 0) {

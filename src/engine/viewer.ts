@@ -84,6 +84,14 @@ import {
   updateLabels,
   type LabelDef,
 } from "./labels.ts";
+import {
+  buildMarkers,
+  occludeMarkers,
+  setMarkersHidden,
+  updateMarkers,
+  type MarkerDef,
+  type MarkerRuntime,
+} from "./markers.ts";
 import { trackAt, quatYXZ } from "../narrative/anchors.ts";
 import {
   introSample,
@@ -1480,6 +1488,7 @@ if (uWallProbe > 0.5) {
   if (introArmed) {
     document.documentElement.classList.add("intro-on");
     setIntroHidden(true);
+    setMarkersHidden(true);
   }
   // Accumulated, per-frame-CLAMPED clock (P7): the sequence never loses time
   // to a stall. introStartMs is gone on purpose — an absolute clock let one
@@ -1552,6 +1561,7 @@ if (uWallProbe > 0.5) {
     // §P9-B: las etiquetas vuelven con el mismo fundido que el panel
     // (transition .lbl 400 ms en CSS); los haces se quedaron siempre.
     setIntroHidden(false);
+    setMarkersHidden(false);
     // Land EXACTLY on the rail pose at s=0 (no intermediate point, no
     // accelerated version) and hand over the scroll.
     if (rigReady) {
@@ -1969,6 +1979,21 @@ if (uWallProbe > 0.5) {
     labels: LabelDef[];
   };
   const labelRts = buildLabels(labelDefs.labels, world.centerX, world.centerY, labelLayer);
+
+  // §M1 — marcadores de foto (fase 1: la chapa). DOM + SVG, hermanos de las
+  // etiquetas: disco con dial de encuadre, anclaje al terreno, escalera de
+  // distancia y oclusión reutilizada. ?marcadores=0 los apaga (comparativa).
+  let markersLayer: HTMLElement | null = null;
+  let markerRts: MarkerRuntime[] = [];
+  if (boot.markers) {
+    markersLayer = el("div", "markers");
+    document.body.appendChild(markersLayer);
+    if (boot.steep) markersLayer.style.display = "none";
+    const markerDefs = (await fetch("/assets/markers.json").then((r) => r.json()).catch(() => ({ markers: [] }))) as {
+      markers: MarkerDef[];
+    };
+    markerRts = buildMarkers(markerDefs.markers, world.centerX, world.centerY, markersLayer);
+  }
 
   // --- §3b haces Everest en los hitos: UNA InstancedMesh de cilindros
   // (Ø24 m × 420 m) + instancia del caminante (Ø12 m × 260 m, naranja).
@@ -3318,6 +3343,10 @@ if (uWallProbe > 0.5) {
           rt as unknown as Parameters<typeof rayBlocked>[7],
         );
       }
+      // §M1: misma cadencia y misma función para los marcadores.
+      if (markerRts.length) {
+        occludeMarkers(markerRts, camera, elev, meta, world.centerX, world.centerY);
+      }
       // §3b: estado SOLO por flanco (setState escribe aState + pulso solo
       // al cruzar) + oclusión ×0,25. La etiqueta sigue costando lo mismo
       // (solo cambió wy a la base).
@@ -3380,6 +3409,9 @@ if (uWallProbe > 0.5) {
     // así que "js etiq" medía el render, no las etiquetas.
     const tl = performance.now();
     updateLabels(labelRts, camera, window.innerWidth, window.innerHeight, 30000);
+    if (markerRts.length) {
+      updateMarkers(markerRts, camera, window.innerWidth, window.innerHeight);
+    }
     metrics.jsLabels = performance.now() - tl;
     // §4b FASE 2b (?skymap=1): 384×192 CSS px bottom-left, NDC scene,
     // AFTER main render + labels. autoClear=false: composites, never wipes.

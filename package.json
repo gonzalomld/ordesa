@@ -14,6 +14,7 @@
     "verify": "npx tsx scripts/verify.ts",
     "verify:3a": "npx tsx scripts/verify-3a.ts",
     "verify:p16": "node scripts/verify-p16.mjs",
+    "verify:m1": "node scripts/verify-m1.mjs",
     "og": "node scripts/21-build-og.mjs",
     "doctor": "npx tsx scripts/doctor.ts",
     "lint": "oxlint",

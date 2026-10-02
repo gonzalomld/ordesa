@@ -547,6 +547,117 @@ body {
   border-style: dashed;
 }
 
+/* --- markers (§M1, fase 1: la chapa) --- */
+.markers {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+  overflow: hidden;
+  touch-action: manipulation;
+}
+
+.marker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--md, 44px);
+  height: calc(var(--md, 44px) * 1.62);
+  will-change: transform, opacity;
+  /* Mismo fundido que el panel/etiquetas al volver de la intro (400 ms). */
+  transition: opacity 400ms ease;
+}
+
+.marker-anchor {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 5px;
+  height: 5px;
+  margin-left: -2.5px;
+  margin-bottom: -2.5px;
+  border-radius: 50%;
+  background: var(--gold-bright);
+  box-shadow: 0 0 0 3px rgba(216, 183, 135, 0.14), 0 0 12px rgba(216, 183, 135, 0.7);
+}
+
+.marker-stem {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 1px;
+  height: calc(var(--md, 44px) * 0.62);
+  margin-left: -0.5px;
+  background: linear-gradient(to top, rgba(234, 207, 159, 0.95), rgba(234, 207, 159, 0.25));
+}
+
+.marker-disc {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--md, 44px);
+  height: var(--md, 44px);
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: rgba(6, 9, 15, 0.62);
+  border: 1px solid rgba(234, 207, 159, 0.5);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+/* Área de toque: SIEMPRE 44×44 aunque el disco mida 20 (móvil). */
+.marker-hit {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--md, 44px) / 2);
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.marker-hit:hover ~ .marker-disc,
+.marker-hit:active ~ .marker-disc,
+.marker.is-pressed .marker-disc {
+  border-color: rgba(234, 207, 159, 0.92);
+  box-shadow: 0 2px 18px rgba(0, 0, 0, 0.6), 0 0 26px rgba(216, 183, 135, 0.42);
+}
+
+.marker-dial {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.marker-ring {
+  fill: none;
+  stroke: rgba(243, 246, 250, 0.16);
+  stroke-width: 1;
+}
+
+.marker-sector {
+  fill: rgba(234, 207, 159, 0.42);
+  stroke: rgba(234, 207, 159, 0.55);
+  stroke-width: 0.8;
+}
+
+.marker-needle {
+  stroke: rgba(234, 207, 159, 0.95);
+  stroke-width: 1.1;
+  stroke-linecap: round;
+}
+
+.marker-north {
+  stroke: rgba(243, 246, 250, 0.45);
+  stroke-width: 1;
+}
+
+.marker-center {
+  fill: #eacf9f;
+}
+
 /* --- phase-2 tuning hud --- */
 .hud2 {
   position: fixed;

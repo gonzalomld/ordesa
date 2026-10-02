@@ -1,0 +1,20 @@
+{
+  "markers": [
+    { "id": "pradera",       "nombre": "Pradera de Ordesa",             "km": 0.00,  "x": 741210.1, "y": 4726031.4, "z": 1320,
+      "encuadre": { "sujeto": "Tozal del Mallo", "az": 29,  "el": 41.8, "km": 1.0, "fov": 54 } },
+    { "id": "calcilarruego", "nombre": "Mirador de Calcilarruego",      "km": 2.35,  "x": 741770.4, "y": 4724983.3, "z": 1994,
+      "encuadre": { "sujeto": "Monte Perdido",   "az": 58,  "el": 9.5,  "km": 8.1, "fov": 54 } },
+    { "id": "faja-pelay",    "nombre": "Faja de Pelay",                 "km": 5.80,  "x": 744544.3, "y": 4724269.7, "z": 1941,
+      "encuadre": { "sujeto": "Monte Perdido",   "az": 39,  "el": 12.3, "km": 6.4, "fov": 54 } },
+    { "id": "soaso",         "nombre": "Circo de Soaso y Cola de Caballo", "km": 9.71, "x": 747194.3, "y": 4726336.3, "z": 1762,
+      "encuadre": { "sujeto": "Monte Perdido",   "az": 26,  "el": 25.9, "km": 3.3, "fov": 54 } },
+    { "id": "gradas",        "nombre": "Gradas de Soaso",               "km": 11.70, "x": 745978.0, "y": 4725000.0, "z": 1709,
+      "encuadre": { "sujeto": "Monte Perdido",   "az": 32,  "el": 18.1, "km": 5.0, "fov": 54 } },
+    { "id": "estrecho",      "nombre": "Cascada del Estrecho",          "km": 15.24, "x": 743522.6, "y": 4724903.4, "z": 1481,
+      "encuadre": { "sujeto": "Tozal del Mallo", "az": 318, "el": 15.8, "km": 2.7, "fov": 54 } },
+    { "id": "cueva",         "nombre": "Cascada de la Cueva",           "km": 16.04, "x": 743047.9, "y": 4725151.8, "z": 1396,
+      "encuadre": { "sujeto": "Tozal del Mallo", "az": 323, "el": 21.0, "km": 2.2, "fov": 54 } },
+    { "id": "arripas",       "nombre": "Cascada de Arripas",            "km": 16.83, "x": 742469.8, "y": 4725607.1, "z": 1350,
+      "encuadre": { "sujeto": "Tozal del Mallo", "az": 330, "el": 30.4, "km": 1.5, "fov": 54 } }
+  ]
+}
