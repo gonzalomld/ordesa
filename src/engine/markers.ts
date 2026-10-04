@@ -201,6 +201,8 @@ export function buildMarkers(
     // Área de toque 44×44, SIEMPRE 44 aunque el disco mida 20 (móvil).
     const hit = document.createElement("div");
     hit.className = "marker-hit";
+    // §M2: enfocable para devolver el foco al cerrar el carrete.
+    hit.tabIndex = 0;
 
     const disc = document.createElement("div");
     disc.className = "marker-disc";

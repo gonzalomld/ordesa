@@ -663,6 +663,302 @@ body {
   display: none !important;
 }
 
+/* §M1-bis §M2: chapa del marcador abierto en su estado encendido. */
+.marker.is-on .marker-disc {
+  border-color: rgba(234, 207, 159, 0.92);
+  box-shadow: 0 2px 18px rgba(0, 0, 0, 0.6), 0 0 26px rgba(216, 183, 135, 0.42);
+}
+
+/* --- carrete (§M2: la galería del marcador) — DOM, por debajo del panel --- */
+.carrete {
+  position: fixed;
+  inset: 0;
+  z-index: 17;
+  pointer-events: none;
+}
+
+.carrete[hidden] {
+  display: none;
+}
+
+.carrete.is-in {
+  pointer-events: auto;
+}
+
+.carrete-veil {
+  position: absolute;
+  inset: 0;
+  background: rgba(5, 8, 14, 0.62);
+  opacity: 0;
+  transition: opacity 320ms ease;
+  pointer-events: auto;
+}
+
+.carrete.is-in .carrete-veil {
+  opacity: 1;
+}
+
+.carrete-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 24px;
+  pointer-events: none;
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+.carrete-fan {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  max-width: 100%;
+  padding: 18px 0;
+  perspective: 900px;
+  overflow: hidden;
+}
+
+.carrete-card {
+  position: relative;
+  flex: 0 0 auto;
+  width: calc(min(38vw, 560px) * 0.575);
+  pointer-events: auto;
+  transition:
+    transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 280ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    filter 280ms ease,
+    width 280ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.carrete-card.is-active {
+  width: min(38vw, 560px);
+  z-index: 2;
+}
+
+.carrete-card.is-left {
+  transform: rotateY(16deg);
+}
+
+.carrete-card.is-right {
+  transform: rotateY(-16deg);
+}
+
+.carrete-card.is-pre {
+  opacity: 0;
+  transform: translate(var(--ex, 0), var(--ey, 0)) scale(0.88);
+}
+
+.carrete-card.is-out {
+  opacity: 0;
+  transform: translate(var(--ex, 0), var(--ey, 0)) scale(0.88);
+  transition: transform 220ms ease, opacity 220ms ease;
+}
+
+.cc-frame {
+  position: relative;
+  aspect-ratio: 3 / 2;
+  background: #05070c;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.cc-frame > * {
+  position: absolute;
+}
+
+.cc-img {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.cc-img-err {
+  opacity: 0.2;
+}
+
+.carrete-card:not(.is-active) .cc-img,
+.carrete-card:not(.is-active) .cc-demo {
+  filter: brightness(0.52) saturate(0.8);
+}
+
+.cc-demo {
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 18px;
+  text-align: center;
+  font-family: var(--font-mono);
+  color: var(--faint);
+}
+
+.cc-demo b {
+  font-family: var(--disp);
+  font-weight: 500;
+  font-size: 15px;
+  color: var(--pearl);
+}
+
+.cc-demo span {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.cc-corner {
+  width: 14px;
+  height: 14px;
+  border: 1.6px solid var(--gold-bright);
+  z-index: 3;
+}
+
+.cc-corner--tl { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+.cc-corner--tr { top: 0; right: 0; border-left: 0; border-bottom: 0; }
+.cc-corner--bl { bottom: 0; left: 0; border-right: 0; border-top: 0; }
+.cc-corner--br { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+
+.cc-label {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--gold-bright);
+  white-space: nowrap;
+}
+
+.cc-credit {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: var(--pearl);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0));
+}
+
+.cc-credit a {
+  color: var(--gold-bright);
+  text-decoration: underline;
+}
+
+.carrete-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  pointer-events: auto;
+}
+
+.carrete-titulo {
+  font-family: var(--disp);
+  font-weight: 500;
+  font-size: 16px;
+  color: var(--pearl);
+}
+
+.carrete-meta {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  color: var(--faint);
+}
+
+.carrete-meta a {
+  color: var(--gold-bright);
+  text-decoration: underline;
+}
+
+.carrete-dots {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.carrete-dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(234, 207, 159, 0.5);
+  background: transparent;
+  cursor: pointer;
+}
+
+.carrete-dot.is-on {
+  background: var(--gold-bright);
+  border-color: var(--gold-bright);
+}
+
+.carrete-close {
+  position: absolute;
+  top: calc(16px + env(safe-area-inset-top, 0px));
+  right: 16px;
+  z-index: 3;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  color: var(--gold-bright);
+  background: rgba(5, 8, 14, 0.72);
+  border: 1px solid rgba(234, 207, 159, 0.5);
+  border-radius: 9px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  pointer-events: auto;
+}
+
+.carrete-close-x {
+  display: none;
+  font-size: 22px;
+  line-height: 1;
+}
+
+/* §M2 §3: mientras el carrete está abierto, panel y telemetría se van (mismo
+   gesto que la intro). */
+html.carrete-on #panel.pcard,
+html.carrete-on #panel.pcard:not(.panel-collapsed),
+html.carrete-on .tele,
+html.carrete-on .epi-cta {
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .carrete-veil {
+    transition: opacity 160ms ease;
+  }
+
+  .carrete-card {
+    transition: opacity 160ms ease;
+  }
+
+  .carrete-card.is-pre,
+  .carrete-card.is-out {
+    transform: none;
+  }
+}
+
 /* --- phase-2 tuning hud --- */
 .hud2 {
   position: fixed;
@@ -1872,5 +2168,44 @@ html.sheet-absent {
 @media (max-width: 899px) and (max-height: 500px) {
   #panel.pcard {
     width: min(360px, 52vw);
+  }
+}
+
+/* §M2 §6 móvil (vertical): central 86vw, laterales asomando ~7vw, sin rotación;
+   × de cerrar 44×44 sobre el área segura; pie debajo del abanico. */
+@media (max-width: 899px) {
+  .carrete-stage {
+    padding: 12px;
+    gap: 16px;
+  }
+
+  .carrete-fan {
+    gap: 0;
+  }
+
+  .carrete-card {
+    width: 52vw;
+  }
+
+  .carrete-card.is-active {
+    width: 86vw;
+  }
+
+  .carrete-card.is-left,
+  .carrete-card.is-right {
+    transform: none;
+  }
+
+  .carrete-close-t {
+    display: none;
+  }
+
+  .carrete-close-x {
+    display: block;
+  }
+
+  .carrete-close {
+    padding: 0;
+    justify-content: center;
   }
 }

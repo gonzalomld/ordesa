@@ -134,6 +134,8 @@ export interface BootQuery {
   beams: boolean;
   /** §M1 marcadores de foto: ?marcadores=0 los apaga (comparativa). */
   markers: boolean;
+  /** §M2 carrete: ?fotos=demo rellena los 8 con marcos de relleno (nunca prod). */
+  fotosDemo: boolean;
   /** N2: ?debug=atlas — blitea el atlas de nubes ×0,5 abajo a la izquierda. */
   atlas: boolean;
   /** N2b: ?family=N (0-3) u off — filtro del medidor de nubes por familia. */
@@ -215,6 +217,7 @@ export function parseBootQuery(): BootQuery {
     lod: lodN !== null && Number.isFinite(lodN) && [1, 2, 3].includes(lodN) ? lodN : null,
     beams: q.get("beams") !== "0",
     markers: q.get("marcadores") !== "0",
+    fotosDemo: q.get("fotos") === "demo",
   };
 }
 

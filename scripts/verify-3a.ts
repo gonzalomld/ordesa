@@ -25,6 +25,7 @@ import {
   rumboCamara,
   sectorEdges,
 } from "../src/engine/markers.ts";
+import { vectorEntrada } from "../src/engine/carrete.ts";
 
 let failures = 0;
 function gate(name: string, ok: boolean, detail: string): void {
@@ -3508,6 +3509,42 @@ function elevFull36(): Float32Array {
   {
     const bad = /Texture|TextureLoader|BufferGeometry|ShaderMaterial|new\s+THREE\.|\.Material\b/.test(markersSrc);
     gate("M1-sin-texturas", !bad, `markers.ts libre de texturas/materiales/geometrías=${!bad}`);
+  }
+}
+
+// --- §M2 — carrete: la galería del marcador ------------------------------
+{
+  // M2-entrada-por-rumbo — vectorEntrada puro (§4).
+  {
+    const approx = (a: number, b: number): boolean => Math.abs(a - b) < 1e-6;
+    const d0 = vectorEntrada(0, 0, 0); // degenerado → (0,-1)
+    const e = vectorEntrada(90, 0, 0); // mira al este, cámara al norte
+    const u = vectorEntrada(0, 90, 0); // mira arriba
+    const w = vectorEntrada(270, 0, 0); // oeste
+    const x = vectorEntrada(0, 0, 90); // az=0, cámara al este → rel −90
+    const v = vectorEntrada(37, 12, 100);
+    const unit = Math.abs(Math.hypot(v.ux, v.uy) - 1) < 1e-9;
+    const ok =
+      approx(d0.ux, 0) && approx(d0.uy, -1) &&
+      approx(e.ux, 1) && approx(e.uy, 0) &&
+      approx(u.ux, 0) && approx(u.uy, -1) &&
+      approx(w.ux, -1) && approx(w.uy, 0) &&
+      approx(x.ux, -1) && approx(x.uy, 0) && unit;
+    gate("M2-entrada-por-rumbo", ok,
+      `deg=${d0.ux},${d0.uy} E=${e.ux},${e.uy} arriba=${u.ux},${u.uy} O=${w.ux},${w.uy} rel−90=${x.ux},${x.uy} unitario=${unit}`);
+  }
+
+  // M2-scroll-devuelto — ninguna ruta deja el scroll parado (static).
+  {
+    const src = readFileSync("src/engine/carrete.ts", "utf8");
+    const viewer = readFileSync("src/engine/viewer.ts", "utf8");
+    const noPhotosGuard = /if\s*\(defs\.length\s*===\s*0\)\s*return false/.test(src);
+    const guardOpen = /try\s*\{[\s\S]*?mount\([\s\S]*?\}\s*finally\s*\{[\s\S]*?onClose\(\)/.test(src);
+    const guardClose = /finally\s*\{[\s\S]*?onClose\(\)/.test(src);
+    const openStop = /onOpen:\s*\(\)\s*=>\s*\{[\s\S]*?scroll\?\.stop\(\)/.test(viewer);
+    const closeStart = /onClose:\s*\(\)\s*=>\s*\{[\s\S]*?scroll\?\.start\(\)/.test(viewer);
+    gate("M2-scroll-devuelto", noPhotosGuard && guardOpen && guardClose && openStop && closeStart,
+      `sin fotos no llama a stop=${noPhotosGuard} · try/finally montaje=${guardOpen} · finally cierre=${guardClose} · viewer stop/start=${openStop && closeStart}`);
   }
 }
 

@@ -87,11 +87,13 @@ import {
 import {
   buildMarkers,
   occludeMarkers,
+  rumboCamara,
   setMarkersHidden,
   updateMarkers,
   type MarkerDef,
   type MarkerRuntime,
 } from "./markers.ts";
+import { buildCarrete, type CarreteHandle, type Foto } from "./carrete.ts";
 import { trackAt, quatYXZ } from "../narrative/anchors.ts";
 import {
   introSample,
@@ -1985,14 +1987,42 @@ if (uWallProbe > 0.5) {
   // distancia y oclusión reutilizada. ?marcadores=0 los apaga (comparativa).
   let markersLayer: HTMLElement | null = null;
   let markerRts: MarkerRuntime[] = [];
+  let markerDefs: MarkerDef[] = [];
+  let carrete: CarreteHandle | null = null;
   if (boot.markers) {
     markersLayer = el("div", "markers");
     document.body.appendChild(markersLayer);
     if (boot.steep) markersLayer.style.display = "none";
-    const markerDefs = (await fetch("/assets/markers.json").then((r) => r.json()).catch(() => ({ markers: [] }))) as {
+    const markerData = (await fetch("/assets/markers.json").then((r) => r.json()).catch(() => ({ markers: [] }))) as {
       markers: MarkerDef[];
     };
-    markerRts = buildMarkers(markerDefs.markers, world.centerX, world.centerY, markersLayer);
+    markerDefs = markerData.markers;
+    markerRts = buildMarkers(markerDefs, world.centerX, world.centerY, markersLayer);
+
+    // §M2 — carrete: abre al pulsar una chapa con fotos. photos.json ausente o
+    // roto = { fotos: {} }: los marcadores se comportan como en §M1.
+    const photoData = (await fetch("/assets/photos.json").then((r) => r.json()).catch(() => ({ fotos: {} }))) as {
+      fotos?: Record<string, Foto[]>;
+    };
+    carrete = buildCarrete({
+      fotos: photoData.fotos ?? {},
+      demo: boot.fotosDemo,
+      markers: markerDefs,
+      reduced: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      getRumbo: () => rumboCamara(camera),
+      onOpen: () => {
+        scroll?.stop();
+        document.documentElement.classList.add("carrete-on");
+      },
+      onClose: () => {
+        document.documentElement.classList.remove("carrete-on");
+        scroll?.start();
+      },
+    });
+    window.addEventListener("marcador:abrir", (e) => {
+      const id = (e as CustomEvent<{ id?: string }>).detail?.id;
+      if (typeof id === "string") carrete?.open(id);
+    });
   }
 
   // --- §3b haces Everest en los hitos: UNA InstancedMesh de cilindros
