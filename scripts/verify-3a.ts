@@ -18,14 +18,18 @@ import { clampLabelX } from "../src/engine/labels.ts";
 import {
   alturaVastago,
   anguloRelativo,
+  descartarPorSeparacion,
   dialSimplificado,
   diametroMarcador,
   opacidadMarcador,
   rumboA,
   rumboCamara,
   sectorEdges,
+  separacionMinima,
+  tapado,
+  type MarkerDef,
 } from "../src/engine/markers.ts";
-import { vectorEntrada } from "../src/engine/carrete.ts";
+import { fotosDemo, vectorEntrada } from "../src/engine/carrete.ts";
 
 let failures = 0;
 function gate(name: string, ok: boolean, detail: string): void {
@@ -3545,6 +3549,78 @@ function elevFull36(): Float32Array {
     const closeStart = /onClose:\s*\(\)\s*=>\s*\{[\s\S]*?scroll\?\.start\(\)/.test(viewer);
     gate("M2-scroll-devuelto", noPhotosGuard && guardOpen && guardClose && openStop && closeStart,
       `sin fotos no llama a stop=${noPhotosGuard} · try/finally montaje=${guardOpen} · finally cierre=${guardClose} · viewer stop/start=${openStop && closeStart}`);
+  }
+}
+
+// --- §M3 — despejar las chapas y poder juzgar el abanico ------------------
+{
+  // M3-separacion-minima
+  {
+    const umbral = separacionMinima(26, 20); // 37
+    const noTapado = !tapado(42, 26, 20, false);
+    const tapado30 = tapado(30, 26, 20, false);
+    // caso real medido: dos chapas al mismo palmo (diámetros en la banda
+    // 20-39 px, aquí 39 y 39) a 42 px de centro a centro → una se oculta.
+    const realTapado = tapado(42, 39, 39, false);
+    gate("M3-separacion-minima", umbral === 37 && noTapado && tapado30 && realTapado,
+      `umbral(26,20)=${umbral} (=37) · sep42 no tapado=${noTapado} · sep30 tapado=${tapado30} · 39/39@42 tapado=${realTapado}`);
+  }
+
+  // M3-gana-el-cercano
+  {
+    const near = { dist: 100, px: 100, py: 100, diam: 26, culled: false };
+    const far = { dist: 5000, px: 100, py: 100, diam: 26, culled: false };
+    const a = descartarPorSeparacion([far, near]);
+    const b = descartarPorSeparacion([near, far]);
+    gate("M3-gana-el-cercano", a[0] === true && a[1] === false && b[0] === false && b[1] === true,
+      `[lejos,cerca] → lejos tapado=${a[0]}, cerca=${a[1]} · [cerca,lejos] → cerca=${b[0]}, lejos=${b[1]}`);
+  }
+
+  // M3-sin-parpadeo
+  {
+    const dA = 26;
+    const dB = 26;
+    const u = separacionMinima(dA, dB);
+    let flips = 0;
+    let prev = tapado(u * 0.9, dA, dB, true);
+    for (let f = 0.9; f <= 1.2 + 1e-9; f += 0.01) {
+      const t = tapado(u * f, dA, dB, true);
+      if (t !== prev) flips++;
+      prev = t;
+    }
+    for (let f = 1.2; f >= 0.9 - 1e-9; f -= 0.01) {
+      const t = tapado(u * f, dA, dB, true);
+      if (t !== prev) flips++;
+      prev = t;
+    }
+    gate("M3-sin-parpadeo", flips === 0 && prev === true,
+      `recorrido 0,90·u→1,20·u y vuelta: ${flips} cambio(s) de estado (con yaOculto)`);
+  }
+
+  // M3-demo-tres
+  {
+    const mk = (az: number): MarkerDef => ({
+      id: "x",
+      nombre: "Punto",
+      km: 1,
+      x: 0,
+      y: 0,
+      z: 0,
+      encuadre: { sujeto: "S", az, el: 5, km: 1, fov: 54 },
+    });
+    let ok = true;
+    let msg = "";
+    for (const az of [0, 29, 137, 300]) {
+      const f = fotosDemo(mk(az));
+      const distinct = new Set(f.map((fo) => fo.az)).size === 3;
+      const expected = f[0]?.az === az && f[1]?.az === (az + 95) % 360 && f[2]?.az === (az + 240) % 360;
+      const allDemo = f.length === 3 && f.every((fo) => fo.demo);
+      if (!(f.length === 3 && distinct && expected && allDemo)) {
+        ok = false;
+        msg = `az=${az} n=${f.length}`;
+      }
+    }
+    gate("M3-demo-tres", ok, ok ? "4 marcadores de prueba × 3 fotos con az / az+95 / az+240 distintas y demo=true" : msg);
   }
 }
 

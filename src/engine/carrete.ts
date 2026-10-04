@@ -55,6 +55,37 @@ export function vectorEntrada(az: number, el: number, rumboCam: number): { ux: n
   return { ux, uy };
 }
 
+/** §M3 — demo: TRES marcos de relleno por marcador, con tres rumbos distintos
+ * (para poder juzgar el abanico y la entrada escalonada). Nunca foto real. */
+export function fotosDemo(m: MarkerDef): Foto[] {
+  const e = m.encuadre;
+  return [
+    { src: "", w: 0, h: 0, titulo: m.nombre, sujeto: e.sujeto, az: e.az, el: e.el, km: e.km, demo: true },
+    {
+      src: "",
+      w: 0,
+      h: 0,
+      titulo: m.nombre,
+      sujeto: "Valle de Ordesa",
+      az: (e.az + 95) % 360,
+      el: -4,
+      km: e.km,
+      demo: true,
+    },
+    {
+      src: "",
+      w: 0,
+      h: 0,
+      titulo: m.nombre,
+      sujeto: "Pared norte",
+      az: (e.az + 240) % 360,
+      el: 18,
+      km: e.km,
+      demo: true,
+    },
+  ];
+}
+
 /** §M2 — monta el carrete (una sola instancia, DOM persistente oculto). */
 export function buildCarrete(opts: CarreteOpts): CarreteHandle {
   const byId = new Map(opts.markers.map((m) => [m.id, m]));
@@ -92,20 +123,7 @@ export function buildCarrete(opts: CarreteOpts): CarreteHandle {
   function fotosDe(id: string): Foto[] {
     if (opts.demo) {
       const m = byId.get(id);
-      if (!m) return [];
-      return [
-        {
-          src: "",
-          w: 0,
-          h: 0,
-          titulo: m.nombre,
-          sujeto: m.encuadre.sujeto,
-          az: m.encuadre.az,
-          el: m.encuadre.el,
-          km: m.encuadre.km,
-          demo: true,
-        },
-      ];
+      return m ? fotosDemo(m) : [];
     }
     const arr = opts.fotos[id];
     return Array.isArray(arr) ? arr.filter((f) => f && (f.src || f.demo)) : [];

@@ -200,6 +200,9 @@ async function main() {
       });
       gate("M2-sin-fotos-no-abre", !S.visible && S.stopped === false && S.imgs === 0,
         `carrete visible=${S.visible} · existe shell=${S.exists} · scroll parado=${S.stopped} · imgs=${S.imgs}`);
+      const cards = await page.evaluate(() => document.querySelectorAll(".carrete-card").length);
+      gate("M3-produccion-intacta", !S.visible && cards === 0,
+        `sin bandera y photos.json vacío → carrete visible=${S.visible} · .carrete-card=${cards}`);
       await page.close();
     }
 
@@ -376,10 +379,19 @@ async function main() {
       await dp.waitForTimeout(150);
       const D = await dp.evaluate(() => {
         const demo = document.querySelector(".carrete-card.is-active .cc-demo");
-        return { text: demo?.textContent ?? "", corners: document.querySelectorAll(".carrete-card.is-active .cc-corner").length };
+        const cards = document.querySelectorAll(".carrete-card").length;
+        const azs = new Set(
+          [...document.querySelectorAll(".cc-label")].map((l) => (l.textContent ?? "").split("·")[1]?.trim() ?? ""),
+        );
+        return {
+          text: demo?.textContent ?? "",
+          corners: document.querySelectorAll(".carrete-card.is-active .cc-corner").length,
+          cards,
+          azs: azs.size,
+        };
       });
-      gate("M2-demo-abre", D.text.includes("sin foto todavía") && D.corners === 4,
-        `demo «${D.text.replace(/\s+/g, " ").trim()}» · escuadras=${D.corners}`);
+      gate("M2-demo-abre", D.text.includes("sin foto todavía") && D.corners === 4 && D.cards === 3 && D.azs === 3,
+        `demo «${D.text.replace(/\s+/g, " ").trim()}» · escuadras=${D.corners} · tarjetas=${D.cards} · azimuts=${D.azs}`);
       await dp.close();
     }
   } finally {

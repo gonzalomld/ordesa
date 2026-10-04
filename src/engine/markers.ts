@@ -61,7 +61,19 @@ export interface MarkerRuntime {
   lastRel: number;
   lastSimple: boolean;
   lastExtra: number;
+  /** §M3: descartado por separación en pantalla (histéresis). */
+  lastCulled: boolean;
   occluded: boolean;
+}
+
+/** §M3: marcador proyectado en el pase de descarte. */
+interface MarkerEntry {
+  rt: MarkerRuntime;
+  dist: number;
+  px: number;
+  py: number;
+  diam: number;
+  baseHidden: boolean;
 }
 
 // --- §5 escalera de distancia (metros) ---
@@ -159,6 +171,53 @@ export function alturaVastago(base: number, cajaDisco: Box, cajas: Box[]): numbe
   }
   if (extra <= 0) return base;
   return base + Math.min(STEM_EXTRA_MAX, extra);
+}
+
+// ---------------------------------------------------------------------------
+// §M3 — descarte por separación en pantalla (mismo espíritu que las etiquetas)
+// ---------------------------------------------------------------------------
+const SEPARACION_MARGIN = 14;
+
+/** Distancia mínima entre dos discos para no pisarse. Pura. */
+export function separacionMinima(diamA: number, diamB: number): number {
+  return (diamA + diamB) / 2 + SEPARACION_MARGIN;
+}
+
+/** ¿El candidato queda tapado por el ya colocado? `yaOculto` añade histéresis
+ * (un oculto no reaparece hasta superar umbral×1,25). Pura. */
+export function tapado(sep: number, diamA: number, diamB: number, yaOculto: boolean): boolean {
+  const umbral = separacionMinima(diamA, diamB);
+  return yaOculto ? sep < umbral * 1.25 : sep < umbral;
+}
+
+export interface Marker2D {
+  dist: number;
+  px: number;
+  py: number;
+  diam: number;
+  /** estado de descarte del frame anterior (histéresis). */
+  culled: boolean;
+}
+
+/** Coloca de más cerca a más lejos y devuelve, en el orden de entrada, qué
+ * candidatos quedan ocultos por separación. Gana siempre el más cercano. Pura. */
+export function descartarPorSeparacion(items: Marker2D[]): boolean[] {
+  const order = items.map((it, i) => ({ it, i })).sort((a, b) => a.it.dist - b.it.dist);
+  const placed: { x: number; y: number; diam: number }[] = [];
+  const out = items.map(() => false);
+  for (const { it, i } of order) {
+    let culled = false;
+    for (const p of placed) {
+      const sep = Math.hypot(it.px - p.x, it.py - p.y);
+      if (tapado(sep, it.diam, p.diam, it.culled)) {
+        culled = true;
+        break;
+      }
+    }
+    out[i] = culled;
+    if (!culled) placed.push({ x: it.px, y: it.py, diam: it.diam });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +352,7 @@ export function buildMarkers(
       lastRel: NaN,
       lastSimple: false,
       lastExtra: -1,
+      lastCulled: false,
       occluded: false,
     };
   });
@@ -350,29 +410,47 @@ export function updateMarkers(
   const cpz = camera.position.z;
   const cajas: PlacedBox[] = placedBoxes();
   const stillSuppressed = new Set<HTMLElement>();
+  // §M3 — dos pases: proyectar todo y luego descartar por separación en
+  // pantalla, de más cerca a más lejos (gana siempre el más cercano).
+  const entries: MarkerEntry[] = [];
   for (const rt of rts) {
     const dist = Math.hypot(rt.wx - cpx, rt.wy - cpy, rt.wz - cpz);
-    let hidden = dist > HIDE_M;
+    let baseHidden = dist > HIDE_M;
     let px = 0;
     let py = 0;
-    if (!hidden) {
+    if (!baseHidden) {
       project(rt.wx, rt.wy, rt.wz, view, proj, _out);
       if (_out.viewZ > -1) {
-        hidden = true;
+        baseHidden = true;
       } else {
         px = (_out.x * 0.5 + 0.5) * w;
         py = (-_out.y * 0.5 + 0.5) * h;
-        if (px < -40 || px > w + 40 || py < -40 || py > h + 40) hidden = true;
+        if (px < -40 || px > w + 40 || py < -40 || py > h + 40) baseHidden = true;
       }
     }
     // §6 oclusión: tapado por el terreno = oculto.
-    if (!hidden && rt.occluded) hidden = true;
+    if (!baseHidden && rt.occluded) baseHidden = true;
+    entries.push({ rt, dist, px, py, diam: diametroMarcador(dist), baseHidden });
+  }
+  const visible = entries.filter((e) => !e.baseHidden);
+  const flags = descartarPorSeparacion(
+    visible.map((e) => ({ dist: e.dist, px: e.px, py: e.py, diam: e.diam, culled: e.rt.lastCulled })),
+  );
+  visible.forEach((e, i) => {
+    e.rt.lastCulled = flags[i] as boolean;
+  });
+  for (const e of entries) {
+    const rt = e.rt;
+    const dist = e.dist;
+    const px = e.px;
+    const py = e.py;
+    const diam = e.diam;
+    const hidden = e.baseHidden || rt.lastCulled;
     if (hidden !== rt.lastHidden) {
       rt.lastHidden = hidden;
       rt.el.style.display = hidden ? "none" : "block";
     }
     if (hidden) continue;
-    const diam = diametroMarcador(dist);
     if (diam !== rt.lastDiam) {
       rt.lastDiam = diam;
       rt.el.style.setProperty("--md", `${diam}px`);
