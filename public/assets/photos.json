@@ -1,3 +1,87 @@
 {
-  "fotos": {}
+  "fotos": {
+    "pradera": [
+      { "src": "https://images.mnstatic.com/Tools/files/7d6e37d64ff4d2ab357182335723dd2cc2ebba7e015c96d4af687d36fee1b859.png",
+        "titulo": "La pared del Tozal desde el prado", "sujeto": "Tozal del Mallo", "az": 29, "el": 41.8, "km": 1.0,
+        "autor": "minube", "licencia": "Archivo de minube" },
+      { "src": "https://images.mnstatic.com/Tools/files/eb96e0903715cd4378638418fc7d747cebc4ef28ec63c1fc98824684c1f69806.png",
+        "titulo": "El Tozal del Mallo sobre la Pradera", "sujeto": "Tozal del Mallo", "az": 29, "el": 41.8, "km": 1.0,
+        "autor": "minube", "licencia": "Archivo de minube" },
+      { "src": "https://images.mnstatic.com/Tools/files/4b54ff62fd8ea9cff431d8db8d172d87434265fdfe5836ee7fe689cbb631e15a.png",
+        "titulo": "Donde empieza el camino", "sujeto": "Tozal del Mallo", "az": 29, "el": 41.8, "km": 1.0,
+        "autor": "minube", "licencia": "Archivo de minube" }
+    ],
+    "cazadores": [
+      { "src": "https://images.mnstatic.com/7b/9e/7b9e3468331262e77853a9a370a864c6.jpg",
+        "titulo": "La Fraucata desde el tramo alto", "sujeto": "La Fraucata", "az": 345, "el": 14, "km": 3.0,
+        "autor": "minube", "licencia": "Archivo de minube" }
+    ],
+    "calcilarruego": [
+      { "src": "https://images.mnstatic.com/d6/e4/d6e4b59b6cee0eb774e2a4d105b1017b.jpg",
+        "titulo": "El cañón entero desde el balcón", "sujeto": "Monte Perdido", "az": 58, "el": 9.5, "km": 8.1,
+        "autor": "minube", "licencia": "Archivo de minube" },
+      { "src": "https://images.mnstatic.com/a6/a7/a6a7d02509a90cd98d91913d30bb7ced.jpg",
+        "titulo": "La Fraucata, Cotatuero y el Gallinero", "sujeto": "La Fraucata", "az": 345, "el": 9, "km": 4.5,
+        "autor": "minube", "licencia": "Archivo de minube" },
+      { "src": "https://images.mnstatic.com/13/b5/13b5dd83c3791aa870f9b0c6540960e6.jpg",
+        "titulo": "Ordesa a lo largo", "sujeto": "Monte Perdido", "az": 58, "el": 9.5, "km": 8.1,
+        "autor": "minube", "licencia": "Archivo de minube" }
+    ],
+    "faja-pelay": [
+      { "src": "https://images.mnstatic.com/b7/60/b760cc9b53c5a3489f3eac969fa9eca6.jpg",
+        "titulo": "La U glaciar con Monte Perdido al fondo", "sujeto": "Monte Perdido", "az": 39, "el": 12.3, "km": 6.4,
+        "autor": "minube", "licencia": "Archivo de minube" },
+      { "src": "https://images.mnstatic.com/7f/50/7f5059fd9a767e60024de340b2f48537.jpg",
+        "titulo": "El Arazas, valle abajo", "sujeto": "Valle de Ordesa", "az": 298, "el": -9.4, "km": 3.8,
+        "autor": "minube", "licencia": "Archivo de minube" },
+      { "src": "https://images.mnstatic.com/b9/4f/b94f405b5f80e1d29c53c21ed4ddefa6.jpg",
+        "titulo": "Desde la faja", "sujeto": "Monte Perdido", "az": 39, "el": 12.3, "km": 6.4,
+        "autor": "minube", "licencia": "Archivo de minube" }
+    ],
+    "sorores": [
+      { "src": "https://images.mnstatic.com/5d/ff/5dff60eefecc71d86f673383746cd3ab7268749493f820fa3d186f1dd146e636.jpg",
+        "titulo": "Cilindro, Monte Perdido y Soum de Ramond", "sujeto": "Las Tres Sorores", "az": 32, "el": 14.5, "km": 5.5,
+        "autor": "minube", "licencia": "Archivo de minube" },
+      { "src": "https://images.mnstatic.com/8e/f8/8ef85af900dbf448843d1a64bbd57c26.jpg",
+        "titulo": "El circo de Soaso, aguas abajo", "sujeto": "Valle de Ordesa", "az": 288, "el": -7.2, "km": 4.8,
+        "autor": "minube", "licencia": "Archivo de minube" }
+    ],
+    "soaso": [
+      { "src": "https://images.mnstatic.com/a3/30/a330f0148fee7a45c896070c89eac989.jpg",
+        "titulo": "La Cola de Caballo bajo Monte Perdido", "sujeto": "Monte Perdido", "az": 26, "el": 26.0, "km": 3.3,
+        "autor": "minube", "licencia": "Archivo de minube" },
+      { "src": "https://images.mnstatic.com/42/c8/42c848b4e28c43530d1397f4de03ff06.jpg",
+        "titulo": "Las praderas del circo", "sujeto": "Monte Perdido", "az": 26, "el": 26.0, "km": 3.3,
+        "autor": "minube", "licencia": "Archivo de minube" },
+      { "src": "https://images.mnstatic.com/6a/a3/6aa3903e02f1b4b49b533916e8156e26.jpg",
+        "titulo": "Cabecera de Soaso", "sujeto": "Monte Perdido", "az": 26, "el": 26.0, "km": 3.3,
+        "autor": "minube", "licencia": "Archivo de minube" }
+    ],
+    "gradas": [
+      { "src": "https://images.mnstatic.com/06/18/061823575de332eceab0b6201b32fcd5.jpg",
+        "titulo": "La escalera del Arazas", "sujeto": "Monte Perdido", "az": 32, "el": 18.1, "km": 5.0,
+        "autor": "minube", "licencia": "Archivo de minube" },
+      { "src": "https://images.mnstatic.com/79/80/7980094fee4cb9dcc93b141da3ac7327.jpg",
+        "titulo": "Gradas de Soaso", "sujeto": "Monte Perdido", "az": 32, "el": 18.1, "km": 5.0,
+        "autor": "minube", "licencia": "Archivo de minube" },
+      { "src": "https://images.mnstatic.com/05/90/05903c1e59dd1f6b30386be12a554c4e.jpg",
+        "titulo": "El agua por peldaños", "sujeto": "Monte Perdido", "az": 32, "el": 18.1, "km": 5.0,
+        "autor": "minube", "licencia": "Archivo de minube" }
+    ],
+    "estrecho": [
+      { "src": "https://images.mnstatic.com/e6/6b/e66b2f8b1b94d3f7f458a5c9ebd53e1a.jpg",
+        "titulo": "El salto desde la pasarela", "sujeto": "Tozal del Mallo", "az": 318, "el": 15.9, "km": 2.7,
+        "autor": "minube", "licencia": "Archivo de minube" }
+    ],
+    "cueva": [
+      { "src": "https://images.mnstatic.com/ef/ab/efaba2a95fe6030c4c7f166951250fe3.jpg",
+        "titulo": "El salto entre hayas", "sujeto": "Tozal del Mallo", "az": 323, "el": 21.0, "km": 2.2,
+        "autor": "minube", "licencia": "Archivo de minube" }
+    ],
+    "arripas": [
+      { "src": "https://images.mnstatic.com/fc/69/fc699c1b61158d9d8635388c752856da.jpg",
+        "titulo": "El último salto", "sujeto": "Tozal del Mallo", "az": 331, "el": 30.5, "km": 1.5,
+        "autor": "minube", "licencia": "Archivo de minube" }
+    ]
+  }
 }

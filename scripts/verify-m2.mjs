@@ -182,7 +182,7 @@ async function main() {
         r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ fotos: {} }) }),
       );
       await enter(page);
-      await page.waitForFunction(() => document.querySelectorAll(".marker").length === 8, {}, { timeout: 60_000 });
+      await page.waitForFunction(() => document.querySelectorAll(".marker").length === 10, {}, { timeout: 60_000 });
       await page.evaluate(() => {
         const hit = document.querySelector('.marker[data-id="pradera"] .marker-hit');
         if (hit) hit.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -212,7 +212,7 @@ async function main() {
       r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ fotos: FOTOS }) }),
     );
     await enter(page);
-    await page.waitForFunction(() => document.querySelectorAll(".marker").length === 8, {}, { timeout: 60_000 });
+    await page.waitForFunction(() => document.querySelectorAll(".marker").length === 10, {}, { timeout: 60_000 });
 
     // 2) scroll devuelto ---------------------------------------------------
     {
@@ -374,7 +374,7 @@ async function main() {
     {
       const dp = await context.newPage();
       await enter(dp, "?fotos=demo");
-      await dp.waitForFunction(() => document.querySelectorAll(".marker").length === 8, {}, { timeout: 60_000 });
+      await dp.waitForFunction(() => document.querySelectorAll(".marker").length === 10, {}, { timeout: 60_000 });
       await openMarker(dp, "gradas");
       await dp.waitForTimeout(150);
       const D = await dp.evaluate(() => {
@@ -393,6 +393,101 @@ async function main() {
       gate("M2-demo-abre", D.text.includes("sin foto todavía") && D.corners === 4 && D.cards === 3 && D.azs === 3,
         `demo «${D.text.replace(/\s+/g, " ").trim()}» · escuadras=${D.corners} · tarjetas=${D.cards} · azimuts=${D.azs}`);
       await dp.close();
+    }
+
+    // --- §M4 runtime: fotos reales (CDN externo) -------------------------
+    {
+      const IDS = ["pradera", "cazadores", "calcilarruego", "faja-pelay", "sorores", "soaso", "gradas", "estrecho", "cueva", "arripas"];
+      const all = {};
+      for (const id of IDS) {
+        all[id] = [{ src: TINY, titulo: `Foto ${id}`, sujeto: "X", az: 10, el: 5, km: 1, autor: "minube", licencia: "Archivo de minube" }];
+      }
+
+      // M4-licencia-opcional: sin licenciaUrl → texto sin enlace, ficha intacta.
+      const lp = await context.newPage();
+      await lp.route("**/assets/photos.json", (r) =>
+        r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ fotos: all }) }),
+      );
+      await enter(lp);
+      await lp.waitForFunction(() => document.querySelectorAll(".marker").length === 10, {}, { timeout: 60_000 });
+      await openMarker(lp, "pradera");
+      await lp.waitForTimeout(150);
+      const L = await lp.evaluate(() => {
+        const cred = document.querySelector(".carrete-card.is-active .cc-credit");
+        const meta = document.querySelector(".carrete-meta");
+        return {
+          cardText: cred?.textContent ?? "",
+          cardLinks: cred?.querySelectorAll("a").length ?? -1,
+          metaText: meta?.textContent ?? "",
+          metaLinks: meta?.querySelectorAll("a").length ?? -1,
+          cards: document.querySelectorAll(".carrete-card").length,
+        };
+      });
+      await lp.keyboard.press("Escape");
+      await waitClosed(lp);
+      gate(
+        "M4-licencia-opcional",
+        L.cards === 1 &&
+          L.cardText.includes("minube") &&
+          L.cardText.includes("Archivo de minube") &&
+          L.cardLinks === 0 &&
+          L.metaText.includes("minube") &&
+          L.metaText.includes("Archivo de minube") &&
+          L.metaLinks === 0,
+        `tarjeta «${L.cardText}» enlaces=${L.cardLinks} · pie «${L.metaText}» enlaces=${L.metaLinks}`,
+      );
+
+      // M4-memoria-intacta: abrir/cerrar los 10 no acumula nodos ni src.
+      let opened = 0;
+      for (const id of IDS) {
+        await openMarker(lp, id);
+        await lp.waitForTimeout(80);
+        await lp.keyboard.press("Escape");
+        await waitClosed(lp);
+        opened++;
+      }
+      await lp.waitForTimeout(200);
+      const MEM = await lp.evaluate(() => ({
+        imgs: document.querySelectorAll(".carrete img").length,
+        data: document.querySelectorAll('img[src^="data:image"]').length,
+      }));
+      gate(
+        "M4-memoria-intacta",
+        opened === 10 && MEM.imgs === 0 && MEM.data === 0,
+        `abiertos/cerrados=${opened} · imgs en carrete=${MEM.imgs} · imgs data: en DOM=${MEM.data}`,
+      );
+      await lp.close();
+
+      // M4-imagen-caida: una URL rota deja el marco con el título y sigue navegable.
+      const broken = {
+        ...all,
+        arripas: [{ src: "https://invalid.invalid/nope.jpg", titulo: "El último salto", sujeto: "Tozal del Mallo", az: 331, el: 30.5, km: 1.5, autor: "minube", licencia: "Archivo de minube" }],
+      };
+      const ip = await context.newPage();
+      await ip.route("**/assets/photos.json", (r) =>
+        r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ fotos: broken }) }),
+      );
+      await ip.route("**/invalid.invalid/**", (r) => r.abort());
+      await enter(ip);
+      await ip.waitForFunction(() => document.querySelectorAll(".marker").length === 10, {}, { timeout: 60_000 });
+      await openMarker(ip, "arripas");
+      await ip
+        .waitForFunction(() => !!document.querySelector(".carrete-card.is-active .cc-img-fallback"), {}, { timeout: 8_000 })
+        .catch(() => {});
+      await ip.waitForTimeout(200);
+      const B = await ip.evaluate(() => ({
+        cards: document.querySelectorAll(".carrete-card").length,
+        fallback: document.querySelector(".carrete-card.is-active .cc-img-fallback")?.textContent ?? "",
+        open: !document.querySelector(".carrete")?.hidden,
+      }));
+      await ip.keyboard.press("Escape");
+      await waitClosed(ip);
+      gate(
+        "M4-imagen-caida",
+        B.cards >= 1 && B.fallback.includes("El último salto") && B.open,
+        `tarjetas=${B.cards} · fallback «${B.fallback}» · carrete abierto=${B.open}`,
+      );
+      await ip.close();
     }
   } finally {
     await browser.close();

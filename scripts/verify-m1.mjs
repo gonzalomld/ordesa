@@ -2,8 +2,8 @@
 // navegador real (Chrome headless + SwiftShader). Local only, no entra en
 // `npm run build`.
 //
-//   1) M1-ocho-marcadores — markers.json produce exactamente 8 runtimes (8
-//      .marker con los 8 ids).
+//   1) M1-diez-marcadores — markers.json produce exactamente 10 runtimes (10
+//      .marker con los 10 ids; §M4 añadió cazadores y sorores).
 //   2) M1-toque-44      — el área de toque mide 44×44 px con independencia del
 //      disco y el contenedor lleva touch-action: manipulation.
 //   3) M1-sin-texturas  — renderer.info.memory.textures es igual con y sin
@@ -76,8 +76,10 @@ function gate(name, ok, detail) {
 
 const EXPECTED_IDS = [
   "pradera",
+  "cazadores",
   "calcilarruego",
   "faja-pelay",
+  "sorores",
   "soaso",
   "gradas",
   "estrecho",
@@ -118,17 +120,17 @@ async function main() {
     const page = await context.newPage();
     await enter(page);
     // Los marcadores se construyen durante el boot, antes del gate.
-    await page.waitForFunction(() => document.querySelectorAll(".marker").length === 8, {}, { timeout: 60_000 });
+    await page.waitForFunction(() => document.querySelectorAll(".marker").length === 10, {}, { timeout: 60_000 });
 
-    // --- Puerta 1: 8 runtimes con los 8 ids ---
+    // --- Puerta 1: 10 runtimes con los 10 ids (§M4) ---
     const M = await page.evaluate(() => {
       const ms = [...document.querySelectorAll(".marker")];
       return { count: ms.length, ids: ms.map((m) => m.dataset.id) };
     });
-    const allIds = EXPECTED_IDS.every((id) => M.ids.includes(id)) && new Set(M.ids).size === 8;
+    const allIds = EXPECTED_IDS.every((id) => M.ids.includes(id)) && new Set(M.ids).size === 10;
     gate(
-      "M1-ocho-marcadores",
-      M.count === 8 && allIds,
+      "M1-diez-marcadores",
+      M.count === 10 && allIds,
       `${M.count} .marker · ids completos=${allIds} [${M.ids.join(", ")}]`,
     );
 
@@ -146,7 +148,7 @@ async function main() {
         .map((r) => [r.width, r.height]);
       return { touchAction: getComputedStyle(cont).touchAction, sizes, vis };
     });
-    const all44 = T.sizes.length === 8 && T.sizes.every(([w, h]) => w === "44px" && h === "44px");
+    const all44 = T.sizes.length === 10 && T.sizes.every(([w, h]) => w === "44px" && h === "44px");
     const vis44 = T.vis.every(([w, h]) => Math.abs(w - 44) <= 0.5 && Math.abs(h - 44) <= 0.5);
     gate(
       "M1-toque-44",

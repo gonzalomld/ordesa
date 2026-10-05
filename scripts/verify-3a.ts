@@ -3556,14 +3556,12 @@ function elevFull36(): Float32Array {
 {
   // M3-separacion-minima
   {
-    const umbral = separacionMinima(26, 20); // 37
-    const noTapado = !tapado(42, 26, 20, false);
-    const tapado30 = tapado(30, 26, 20, false);
-    // caso real medido: dos chapas al mismo palmo (diámetros en la banda
-    // 20-39 px, aquí 39 y 39) a 42 px de centro a centro → una se oculta.
-    const realTapado = tapado(42, 39, 39, false);
-    gate("M3-separacion-minima", umbral === 37 && noTapado && tapado30 && realTapado,
-      `umbral(26,20)=${umbral} (=37) · sep42 no tapado=${noTapado} · sep30 tapado=${tapado30} · 39/39@42 tapado=${realTapado}`);
+    const umbral = separacionMinima(26, 20); // 23 + 24 = 47
+    // casos medidos en producción:
+    const aterrizaje = !tapado(97, 20, 20, false); // sobra aire → no se toca
+    const apretada = tapado(42, 26, 23, false); // pegadas → se separa
+    gate("M3-separacion-minima", umbral === 47 && aterrizaje && apretada,
+      `umbral(26,20)=${umbral} (=47) · aterrizaje 97px/20·20 no tapado=${aterrizaje} · apretada 42px/26·23 tapado=${apretada}`);
   }
 
   // M3-gana-el-cercano
@@ -3621,6 +3619,66 @@ function elevFull36(): Float32Array {
       }
     }
     gate("M3-demo-tres", ok, ok ? "4 marcadores de prueba × 3 fotos con az / az+95 / az+240 distintas y demo=true" : msg);
+  }
+}
+
+// --- §M4 — cargar el contenido: 10 marcadores y fotos de CDN --------------
+{
+  const markersJson = JSON.parse(readFileSync("public/assets/markers.json", "utf8")) as {
+    markers: Array<{ id: string; km: number }>;
+  };
+  const photosJson = JSON.parse(readFileSync("public/assets/photos.json", "utf8")) as {
+    fotos: Record<string, Array<{ src: string }>>;
+  };
+  const ids = markersJson.markers.map((m) => m.id);
+
+  // M4-diez-marcadores
+  {
+    const sortedKm = markersJson.markers.every((m, i, a) => i === 0 || (a[i - 1]?.km ?? 0) <= m.km);
+    const iCaz = ids.indexOf("cazadores");
+    const iSor = ids.indexOf("sorores");
+    const order =
+      iCaz >= 0 &&
+      iSor >= 0 &&
+      ids.indexOf("pradera") < iCaz &&
+      iCaz < ids.indexOf("calcilarruego") &&
+      ids.indexOf("faja-pelay") < iSor &&
+      iSor < ids.indexOf("soaso");
+    gate("M4-diez-marcadores", markersJson.markers.length === 10 && order && sortedKm,
+      `${markersJson.markers.length} marcadores · orden km=${sortedKm} · cazadores[${iCaz}] entre pradera/calcilarruego y sorores[${iSor}] entre faja-pelay/soaso=${order}`);
+  }
+
+  // M4-fotos-cargadas
+  {
+    let missing = 0;
+    let tooMany = 0;
+    let msg = "";
+    for (const id of ids) {
+      const arr = photosJson.fotos[id];
+      if (!arr || arr.length < 1) {
+        missing++;
+        msg += ` sin:${id}`;
+      }
+      if (arr && arr.length > 3) {
+        tooMany++;
+        msg += ` >3:${id}(${arr.length})`;
+      }
+    }
+    gate("M4-fotos-cargadas", missing === 0 && tooMany === 0,
+      `${ids.length} marcadores · sin foto=${missing} · >3 fotos=${tooMany}${msg ? ` [${msg.trim()}]` : ""}`);
+  }
+
+  // M4-src-absoluto
+  {
+    const all = Object.values(photosJson.fotos).flat();
+    const https = all.length > 0 && all.every((f) => /^https:\/\//.test(f.src) && !f.src.includes("/assets/"));
+    const src = readFileSync("src/engine/carrete.ts", "utf8");
+    const attrs =
+      /img\.loading\s*=\s*"lazy"/.test(src) &&
+      /img\.decoding\s*=\s*"async"/.test(src) &&
+      /img\.referrerPolicy\s*=\s*"no-referrer"/.test(src);
+    gate("M4-src-absoluto", https && attrs,
+      `${all.length} src, todas https y fuera del repo=${https} · loading/decoding/referrerpolicy=${attrs}`);
   }
 }
 

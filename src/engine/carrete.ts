@@ -6,8 +6,8 @@ import { anguloRelativo, type MarkerDef } from "./markers.ts";
 
 export interface Foto {
   src: string;
-  w: number;
-  h: number;
+  w?: number;
+  h?: number;
   titulo: string;
   sujeto: string;
   az: number;
@@ -204,12 +204,23 @@ export function buildCarrete(opts: CarreteOpts): CarreteHandle {
     } else {
       const img = document.createElement("img");
       img.className = "cc-img";
-      img.loading = "eager";
+      img.loading = "lazy";
       img.decoding = "async";
+      // §M4: no filtrar el referer a un CDN externo.
+      img.referrerPolicy = "no-referrer";
       img.alt = `Foto: ${foto.titulo}`;
-      if (foto.w > 0) img.width = foto.w;
-      if (foto.h > 0) img.height = foto.h;
-      img.addEventListener("error", () => img.classList.add("cc-img-err"));
+      if ((foto.w ?? 0) > 0) img.width = foto.w as number;
+      if ((foto.h ?? 0) > 0) img.height = foto.h as number;
+      // §M4: si la URL del CDN cae, la tarjeta no desaparece — se muestra el
+      // marco con el título y el carrete sigue navegable.
+      img.addEventListener("error", () => {
+        const fb = document.createElement("div");
+        fb.className = "cc-demo cc-img-fallback";
+        const b = document.createElement("b");
+        b.textContent = foto.titulo;
+        fb.appendChild(b);
+        img.replaceWith(fb);
+      });
       img.src = foto.src;
       frame.appendChild(img);
       const cred = document.createElement("div");

@@ -176,7 +176,7 @@ export function alturaVastago(base: number, cajaDisco: Box, cajas: Box[]): numbe
 // ---------------------------------------------------------------------------
 // §M3 — descarte por separación en pantalla (mismo espíritu que las etiquetas)
 // ---------------------------------------------------------------------------
-const SEPARACION_MARGIN = 14;
+const SEPARACION_MARGIN = 24;
 
 /** Distancia mínima entre dos discos para no pisarse. Pura. */
 export function separacionMinima(diamA: number, diamB: number): number {
