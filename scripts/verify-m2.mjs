@@ -392,6 +392,17 @@ async function main() {
       });
       gate("M2-demo-abre", D.text.includes("sin foto todavía") && D.corners === 4 && D.cards === 3 && D.azs === 3,
         `demo «${D.text.replace(/\s+/g, " ").trim()}» · escuadras=${D.corners} · tarjetas=${D.cards} · azimuts=${D.azs}`);
+
+      // clic del ratón en una tarjeta lateral la trae al centro
+      const before = await dp.evaluate(() => document.querySelector(".carrete-card.is-active")?.dataset.i ?? "");
+      await dp.evaluate(() => {
+        const lateral = [...document.querySelectorAll(".carrete-card")].find((c) => !c.classList.contains("is-active"));
+        lateral?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+      await dp.waitForTimeout(150);
+      const after = await dp.evaluate(() => document.querySelector(".carrete-card.is-active")?.dataset.i ?? "");
+      gate("M2-clic-cambia-foto", before !== after && after !== "",
+        `activa ${before} → ${after} tras clic en tarjeta lateral`);
       await dp.close();
     }
 

@@ -178,6 +178,10 @@ export function buildCarrete(opts: CarreteOpts): CarreteHandle {
     const card = document.createElement("article");
     card.className = "carrete-card";
     card.dataset.i = String(i);
+    // §M2: pulsar una tarjeta lateral la trae al centro (el teclado también).
+    card.addEventListener("click", () => {
+      if (i !== active) setActive(i);
+    });
 
     const lab = document.createElement("span");
     lab.className = "cc-label";

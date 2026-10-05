@@ -728,6 +728,7 @@ body {
   flex: 0 0 auto;
   width: calc(min(38vw, 560px) * 0.575);
   pointer-events: auto;
+  cursor: pointer;
   transition:
     transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1),
     opacity 280ms cubic-bezier(0.22, 0.61, 0.36, 1),
